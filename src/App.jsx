@@ -4827,6 +4827,35 @@ function App() {
     });
   };
 
+  const resetAppToSeedData = () => {
+    if (typeof window !== "undefined") {
+      [
+        INGREDIENT_MASTER_STORAGE_KEY,
+        DELETED_INGREDIENT_SIGNATURES_STORAGE_KEY,
+        RECIPES_STORAGE_KEY,
+        MENUS_STORAGE_KEY,
+        VENUES_STORAGE_KEY,
+        DISH_INDEX_STORAGE_KEY,
+        BCH_AUDIT_STORAGE_KEY,
+      ].forEach((storageKey) => window.localStorage.removeItem(storageKey));
+    }
+
+    const seededRecipes = createRecipes().map((recipe) => enrichRecipeMetrics(recipe));
+    const seededMenus = createMenus(seededRecipes);
+    setDeletedIngredientSignatures([]);
+    setIngredientMaster([]);
+    setRecipes(seededRecipes);
+    setMenus(seededMenus);
+    setVenues([...DEFAULT_VENUES]);
+    setDishIndexRows([]);
+    setBchAuditDecisions([]);
+    setSelectedRecipeId(seededRecipes[0]?.id || null);
+    setSelectedMenuId(seededMenus[0]?.id || null);
+    setActiveTab("queue");
+    setImportError("");
+    setImportMessage("Reset browser-stored test data and restored the workbook-backed seed state.");
+  };
+
   return (
     <div className="app-page">
       <div className="app-shell">
@@ -4840,6 +4869,13 @@ function App() {
             </p>
           </div>
           <div className="page-header-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={resetAppToSeedData}
+            >
+              Reset test data
+            </button>
             <button
               type="button"
               className="secondary-button"
