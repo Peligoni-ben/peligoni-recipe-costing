@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "folders": [
+    {
+      "id": "google-drive-folder-id",
+      "label": "Tasi updated recipes",
+      "enabled": true,
+      "restaurant": "Tasi",
+      "source_format": "flat-component-export",
+      "file_patterns": [
+        "*.csv"
+      ],
+      "notes": "Maps incoming alternate recipe files into normalized Recipes and Recipe_Components."
+    }
+  ]
+}
