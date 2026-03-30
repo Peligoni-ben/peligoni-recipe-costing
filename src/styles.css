@@ -51,6 +51,12 @@ textarea {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+.auth-card {
+  max-width: 560px;
+  margin: 72px auto 0;
 }
 
 .page-header h1,

@@ -5,6 +5,7 @@ import { googleDriveConfigLocation } from "./imports/googleDriveConfig";
 import { listRecipeImportFormats, normalizeImportedRecipeSource } from "./imports";
 import { parseRecipeImportContents, parseRecipeImportFiles } from "./imports/parsers";
 import { supportsGoogleSheetsImport, toGoogleSheetsCsvExportUrl } from "./imports/googleSheets";
+import { supabase, supabaseAnonKey, supabaseEnabled, supabaseUrl } from "./lib/supabase";
 
 const INGREDIENT_MASTER_STORAGE_KEY = "peligoni-ingredient-master";
 const DELETED_INGREDIENT_SIGNATURES_STORAGE_KEY = "peligoni-deleted-ingredient-signatures";
@@ -568,7 +569,11 @@ const tabs = [
   { id: "menus", label: "Set menus", icon: "clipboard" },
   { id: "ingredients", label: "Ingredients", icon: "spark" },
   { id: "imports", label: "Imports", icon: "upload" },
+  { id: "users", label: "Users", icon: "spark" },
 ];
+
+const FOOD_APP_URL = "http://localhost:5174/";
+const DRINKS_APP_URL = "http://localhost:5173/";
 
 function Icon({ name }) {
   const paths = {
@@ -1318,6 +1323,339 @@ function saveStoredCollection(storageKey, value) {
   }
 }
 
+function toHex32(value) {
+  return (value >>> 0).toString(16).padStart(8, "0");
+}
+
+function buildStableUuid(input) {
+  const source = String(input || "").trim();
+  if (!source) {
+    return "00000000-0000-4000-8000-000000000000";
+  }
+  const hashes = [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35];
+  for (let index = 0; index < source.length; index += 1) {
+    const code = source.charCodeAt(index);
+    hashes[0] = Math.imul(hashes[0] ^ code, 0x01000193);
+    hashes[1] = Math.imul(hashes[1] ^ code, 0x85ebca6b);
+    hashes[2] = Math.imul(hashes[2] ^ code, 0xc2b2ae35);
+    hashes[3] = Math.imul(hashes[3] ^ code, 0x27d4eb2f);
+  }
+  const combined = hashes.map(toHex32).join("").slice(0, 32).split("");
+  combined[12] = "4";
+  combined[16] = ((parseInt(combined[16], 16) & 0x3) | 0x8).toString(16);
+  return [
+    combined.slice(0, 8).join(""),
+    combined.slice(8, 12).join(""),
+    combined.slice(12, 16).join(""),
+    combined.slice(16, 20).join(""),
+    combined.slice(20, 32).join(""),
+  ].join("-");
+}
+
+function normalizeSupabaseIngredientId(ingredient) {
+  const id = String(ingredient?.id || "").trim();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+    return id;
+  }
+  const key = id
+    || normalizeIngredientCode(ingredient?.ingredient_item_code)
+    || normalizeNameKey(ingredient?.ingredient_name)
+    || `ingredient-${Date.now()}`;
+  return buildStableUuid(key);
+}
+
+function normalizeSupabaseRecipeComponentId(recipeId, component) {
+  const id = String(component?.id || "").trim();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+    return id;
+  }
+  return buildStableUuid(
+    `${recipeId}:${id || component?.sort || ""}:${component?.code || ""}:${component?.ingredient || ""}`
+  );
+}
+
+function mapIngredientRowToSupabase(ingredient) {
+  return {
+    id: normalizeSupabaseIngredientId(ingredient),
+    ingredient_name: ingredient.ingredient_name || "",
+    ingredient_item_code: ingredient.ingredient_item_code || "",
+    unit_cost: numberValue(ingredient.unit_cost),
+    pack_size: ingredient.pack_size || "",
+    supplier: ingredient.supplier || "",
+    category: ingredient.category || "",
+    last_updated: ingredient.last_updated || null,
+    entry_type: ingredient.entry_type || "ingredient",
+    linked_recipe_id: ingredient.linked_recipe_id || null,
+    is_locked: normalizeBooleanFlag(ingredient.is_locked),
+  };
+}
+
+function mapSupabaseIngredientRow(row) {
+  return {
+    id: row.id,
+    ingredient_name: row.ingredient_name || "",
+    ingredient_item_code: row.ingredient_item_code || "",
+    unit_cost: numberValue(row.unit_cost),
+    pack_size: row.pack_size || "",
+    supplier: row.supplier || "",
+    category: row.category || "",
+    last_updated: row.last_updated || "",
+    entry_type: row.entry_type || "ingredient",
+    linked_recipe_id: row.linked_recipe_id || "",
+    is_locked: Boolean(row.is_locked),
+  };
+}
+
+function mapRecipeRowToSupabase(recipe) {
+  const methodSteps = getMethodSteps(recipe);
+  return {
+    id: recipe.id,
+    restaurant: recipe.restaurant || "",
+    name: recipe.name || "",
+    category: recipe.category || "",
+    selling_item_code: recipe.sellingItemCode || "",
+    current_sale_price: numberValue(recipe.currentSalePrice),
+    roundup: numberValue(recipe.roundup),
+    recipe_type: recipe.recipeType === "batch" ? "batch" : "dish",
+    batch_yield: recipe.recipeType === "batch" ? numberValue(recipe.batchYield) : null,
+    batch_yield_type: recipe.recipeType === "batch" ? recipe.batchYieldType || "portion" : null,
+    portion_count: recipe.recipeType === "batch" ? null : numberValue(recipe.portionCount) || 1,
+    method: methodSteps,
+    presentation_notes: recipe.presentationNotes || "",
+    recipe_complete: normalizeBooleanFlag(recipe.recipeComplete),
+    pricing_complete: normalizeBooleanFlag(recipe.pricingComplete),
+    is_live: normalizeBooleanFlag(recipe.isLive),
+    is_locked: normalizeBooleanFlag(recipe.isLocked),
+    workflow_stage: recipe.workflowStage || "draft",
+  };
+}
+
+function mapRecipeComponentRowToSupabase(recipeId, component, index) {
+  return {
+    id: normalizeSupabaseRecipeComponentId(recipeId, component),
+    recipe_id: recipeId,
+    component_order: numberValue(component.sort) || index + 1,
+    ingredient_name: component.ingredient || "",
+    ingredient_item_code: component.code || "",
+    qty: numberValue(component.qty),
+    cost: numberValue(component.cost),
+    source_type: component.sourceType || null,
+    source_recipe_id: component.sourceRecipeId || null,
+    source_unit_cost: numberValue(component.sourceUnitCost) || 0,
+    source_yield_type: component.sourceYieldType || null,
+  };
+}
+
+function mapSupabaseRecipeRow(row, components = []) {
+  const methodSteps = Array.isArray(row.method)
+    ? row.method.map((step) => String(step || "").trim()).filter(Boolean)
+    : String(row.method || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+  return enrichRecipeMetrics({
+    id: row.id,
+    sourceRow: "",
+    restaurant: row.restaurant || "",
+    name: row.name || "",
+    category: row.category || "",
+    sellingItemCode: row.selling_item_code || "",
+    currentSalePrice: numberValue(row.current_sale_price),
+    roundup: numberValue(row.roundup),
+    netPriceSource: 0,
+    grossPriceSource: 0,
+    sourceCost: 0,
+    posYtd: 0,
+    recipeComplete: row.recipe_complete ? "1" : "0",
+    pricingComplete: row.pricing_complete ? "1" : "0",
+    recipeType: row.recipe_type === "batch" ? "batch" : "dish",
+    portionCount: row.recipe_type === "batch" ? 1 : numberValue(row.portion_count) || 1,
+    batchYield: row.recipe_type === "batch" ? numberValue(row.batch_yield) || 1 : 1,
+    batchYieldType: row.recipe_type === "batch" ? row.batch_yield_type || "portion" : "portion",
+    method: methodSteps.join("\n"),
+    methodSteps,
+    presentationNotes: row.presentation_notes || "",
+    presentationImage: "",
+    workflowStage: row.workflow_stage || "draft",
+    isLocked: Boolean(row.is_locked),
+    isLive: Boolean(row.is_live),
+    components: components.map((component, index) => ({
+      id: component.id || `${row.id}-${index + 1}`,
+      sort: numberValue(component.component_order) || index + 1,
+      ingredient: component.ingredient_name || "",
+      code: component.ingredient_item_code || "",
+      qty: numberValue(component.qty),
+      cost: numberValue(component.cost),
+      sourceType: component.source_type || "",
+      sourceRecipeId: component.source_recipe_id || "",
+      sourceUnitCost: numberValue(component.source_unit_cost),
+      sourceYieldType: component.source_yield_type || "",
+    })),
+  });
+}
+
+function hydrateSupabaseRecipes(recipeRows, componentRows, ingredientMaster) {
+  const componentsByRecipeId = new Map();
+  (componentRows || []).forEach((component) => {
+    const recipeId = component.recipe_id;
+    if (!recipeId) return;
+    const nextComponents = componentsByRecipeId.get(recipeId) || [];
+    nextComponents.push(component);
+    componentsByRecipeId.set(recipeId, nextComponents);
+  });
+
+  const hydratedRecipes = (recipeRows || []).map((recipeRow) =>
+    mapSupabaseRecipeRow(
+      recipeRow,
+      (componentsByRecipeId.get(recipeRow.id) || []).sort(
+        (left, right) => numberValue(left.component_order) - numberValue(right.component_order)
+      )
+    )
+  );
+
+  return syncIngredientReferences(linkBatchReferences(hydratedRecipes), ingredientMaster);
+}
+
+function mapMenuRowToSupabase(menu) {
+  return {
+    id: menu.id,
+    name: menu.name || "",
+    venue: menu.restaurant || "",
+    guest_count: Math.round(numberValue(menu.guestCount)),
+    target_gp: numberValue(menu.targetGp),
+    is_live: normalizeBooleanFlag(menu.isLiveMenu),
+  };
+}
+
+function mapMenuLineRowToSupabase(menuId, line, index) {
+  return {
+    id: buildStableUuid(`${menuId}:${line.id || index + 1}`),
+    menu_id: menuId,
+    recipe_id: line.recipeId || null,
+    line_order: index + 1,
+  };
+}
+
+function hydrateSupabaseMenus(menuRows, menuLineRows, recipes) {
+  const linesByMenuId = new Map();
+  (menuLineRows || []).forEach((line) => {
+    const menuId = line.menu_id;
+    if (!menuId) return;
+    const nextLines = linesByMenuId.get(menuId) || [];
+    nextLines.push(line);
+    linesByMenuId.set(menuId, nextLines);
+  });
+
+  return (menuRows || []).map((menuRow) => {
+    const lines = (linesByMenuId.get(menuRow.id) || [])
+      .sort((left, right) => numberValue(left.line_order) - numberValue(right.line_order))
+      .map((line, index) => {
+        const recipe = recipes.find((item) => item.id === line.recipe_id) || null;
+        return {
+          id: line.id || `${menuRow.id}-${index + 1}`,
+          courseLabel: "",
+          recipeId: line.recipe_id || "",
+          dishName: recipe?.name || "",
+          restaurant: recipe?.restaurant || menuRow.venue || "",
+          lineCost: recipe ? recipe.recipeCost : 0,
+          lineSalePrice: recipe ? recipe.currentSalePrice : 0,
+          category: recipe?.category || "",
+          recipe,
+        };
+      });
+
+    return {
+      id: menuRow.id,
+      name: menuRow.name || "",
+      restaurant: menuRow.venue || "",
+      guestCount: Math.round(numberValue(menuRow.guest_count)),
+      targetGp: numberValue(menuRow.target_gp),
+      isLiveMenu: Boolean(menuRow.is_live),
+      lines,
+    };
+  });
+}
+
+function mapDishIndexRowToSupabase(row) {
+  return {
+    id: row.id,
+    source_tab: row.sourceTab || "",
+    venue: row.venue || "",
+    course: row.course || "",
+    dish_name: row.dishName || "",
+    old_flag: row.oldFlag || "",
+    linked_recipe_id: row.linkedRecipeId || null,
+    review_state: row.reviewState || null,
+    is_archived: Boolean(row.isArchived),
+  };
+}
+
+function mapSupabaseDishIndexRow(row) {
+  return {
+    id: row.id || row.entry_id || "",
+    sourceTab: row.source_tab || row.sourceTab || "",
+    venue: normalizeVenueName(row.venue, row.source_tab || row.sourceTab || ""),
+    course: row.course || "",
+    dishName: row.dish_name || row.dishName || "",
+    oldFlag: row.old_flag || row.oldFlag || "",
+    linkedRecipeId: row.linked_recipe_id || row.linkedRecipeId || "",
+    reviewState: row.review_state || row.reviewState || "",
+    isArchived: Boolean(row.is_archived || row.isArchived),
+  };
+}
+
+function mapBchAuditDecisionToSupabase(decision) {
+  return {
+    id: normalizeCodeKey(decision.code),
+    code: normalizeCodeKey(decision.code),
+    component_name: decision.componentName || null,
+    classification: decision.classification || "needs-review",
+    notes: decision.notes || "",
+  };
+}
+
+function mapSupabaseBchAuditDecision(row) {
+  return {
+    code: normalizeCodeKey(row.code || row.id || ""),
+    classification: row.classification || "needs-review",
+    notes: row.notes || "",
+  };
+}
+
+function mergeSupabaseRecipesIntoCurrent(currentRecipes, sharedRecipes, ingredientMaster) {
+  const sharedById = new Map((sharedRecipes || []).map((recipe) => [recipe.id, recipe]));
+  const mergedRecipes = [
+    ...(sharedRecipes || []),
+    ...(currentRecipes || []).filter((recipe) => !sharedById.has(recipe.id)),
+  ];
+  return syncIngredientReferences(linkBatchReferences(mergedRecipes), ingredientMaster);
+}
+
+function mergeSupabaseMenusIntoCurrent(currentMenus, sharedMenus, recipes) {
+  const sharedById = new Map((sharedMenus || []).map((menu) => [menu.id, menu]));
+  return [
+    ...(sharedMenus || []),
+    ...(currentMenus || []).filter((menu) => !sharedById.has(menu.id)),
+  ];
+}
+
+function mergeSupabaseDishIndexRowsIntoCurrent(currentRows, sharedRows) {
+  const sharedById = new Map((sharedRows || []).map((row) => [row.id, row]));
+  return [
+    ...(sharedRows || []),
+    ...(currentRows || []).filter((row) => !sharedById.has(row.id)),
+  ];
+}
+
+function mergeSupabaseBchAuditIntoCurrent(currentRows, sharedRows) {
+  const sharedByCode = new Map((sharedRows || []).map((row) => [normalizeCodeKey(row.code), row]));
+  return [
+    ...(sharedRows || []),
+    ...(currentRows || []).filter((row) => !sharedByCode.has(normalizeCodeKey(row.code))),
+  ];
+}
+
 function parseCsv(text) {
   const rows = [];
   let current = "";
@@ -2000,6 +2338,19 @@ function mergeImportedRecipes(currentRecipes, importedRecipes, ingredientMaster 
   return syncIngredientReferences(linkBatchReferences([...preserved, ...importedRecipes]), ingredientMaster);
 }
 
+function deriveComponentUnitCost(component) {
+  const explicitSourceUnitCost = numberValue(component?.sourceUnitCost);
+  if (explicitSourceUnitCost > 0) return explicitSourceUnitCost;
+
+  const quantityInGrams = numberValue(component?.qty);
+  const componentCost = numberValue(component?.cost);
+  if (quantityInGrams > 0 && componentCost > 0) {
+    return (componentCost / quantityInGrams) * 1000;
+  }
+
+  return 0;
+}
+
 function seedImportedIngredientRows(currentIngredientMaster, importedRecipes, deletedIngredientSignatures = new Set()) {
   const byCode = new Map();
   const byName = new Map();
@@ -2061,13 +2412,24 @@ function seedImportedIngredientRows(currentIngredientMaster, importedRecipes, de
       if (isBatchReference) return;
       if (!component.ingredient?.trim() && !component.code?.trim()) return;
       if (deletedIngredientSignatures.has(ingredientSignature)) return;
-      if ((codeKey && byCode.has(codeKey)) || (nameKey && byName.has(nameKey))) return;
+      const matchedExistingIngredient =
+        (codeKey && byCode.get(codeKey)) ||
+        (nameKey && byName.get(nameKey)) ||
+        null;
+      const derivedUnitCost = deriveComponentUnitCost(component);
+
+      if (matchedExistingIngredient) {
+        if (numberValue(matchedExistingIngredient.unit_cost) <= 0 && derivedUnitCost > 0) {
+          matchedExistingIngredient.unit_cost = derivedUnitCost;
+        }
+        return;
+      }
 
       const row = {
         id: makeSeedId(),
         ingredient_name: component.ingredient || component.code || "Imported ingredient",
         ingredient_item_code: component.code || "",
-        unit_cost: numberValue(component.sourceUnitCost) || 0,
+        unit_cost: derivedUnitCost,
         pack_size: "",
         supplier: recipe.restaurant || "",
         category: recipe.category || "",
@@ -2125,20 +2487,37 @@ function hydrateStoredRecipes(storedRecipes) {
   );
 }
 
+function getBaselineRecipes() {
+  const workbookRecipes = createRecipes().map((recipe) => enrichRecipeMetrics(recipe));
+  const storedRecipes = loadStoredCollection(RECIPES_STORAGE_KEY);
+  if (!storedRecipes.length) return workbookRecipes;
+
+  const hydratedStoredRecipes = hydrateStoredRecipes(storedRecipes);
+  const storedById = new Map(hydratedStoredRecipes.map((recipe) => [recipe.id, recipe]));
+  return [
+    ...hydratedStoredRecipes,
+    ...workbookRecipes.filter((recipe) => !storedById.has(recipe.id)),
+  ];
+}
+
+function getBaselineMenus(recipes) {
+  const workbookMenus = createMenus(recipes);
+  const storedMenus = loadStoredCollection(MENUS_STORAGE_KEY);
+  if (!storedMenus.length) return workbookMenus;
+
+  const storedById = new Map(storedMenus.map((menu) => [menu.id, menu]));
+  return [
+    ...storedMenus,
+    ...workbookMenus.filter((menu) => !storedById.has(menu.id)),
+  ];
+}
+
 function App() {
   const [recipes, setRecipes] = useState(() => {
-    const storedRecipes = loadStoredCollection(RECIPES_STORAGE_KEY);
-    if (storedRecipes.length) {
-      return hydrateStoredRecipes(storedRecipes);
-    }
-    return createRecipes().map((recipe) => enrichRecipeMetrics(recipe));
+    return getBaselineRecipes();
   });
   const [menus, setMenus] = useState(() => {
-    const storedMenus = loadStoredCollection(MENUS_STORAGE_KEY);
-    if (storedMenus.length) {
-      return storedMenus;
-    }
-    return createMenus(recipes);
+    return getBaselineMenus(getBaselineRecipes());
   });
   const [venues, setVenues] = useState(() => {
     const storedVenues = loadStoredCollection(VENUES_STORAGE_KEY)
@@ -2216,6 +2595,19 @@ function App() {
     createRecipeDraft(recipes[0]?.restaurant || "Tasi")
   );
   const [newVenueName, setNewVenueName] = useState("");
+  const [backendStatus, setBackendStatus] = useState(
+    supabaseEnabled ? "Supabase connected (setup mode)" : "Local mode only"
+  );
+  const [authSession, setAuthSession] = useState(null);
+  const [authUser, setAuthUser] = useState(null);
+  const [authProfile, setAuthProfile] = useState(null);
+  const [userProfiles, setUserProfiles] = useState([]);
+  const [authLoading, setAuthLoading] = useState(supabaseEnabled);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [userAdminMessage, setUserAdminMessage] = useState("");
+  const [userAdminError, setUserAdminError] = useState("");
   const [dishIndexStatusFilter, setDishIndexStatusFilter] = useState("all");
   const [dishIndexSearch, setDishIndexSearch] = useState("");
   const [activeDishIndexLookupId, setActiveDishIndexLookupId] = useState(null);
@@ -2226,6 +2618,10 @@ function App() {
   const previousActiveTabRef = useRef("recipes");
   const ingredientNavigationTargetRef = useRef(null);
   const previousIngredientsTabOpenRef = useRef(false);
+  const currentUserRole =
+    authProfile?.role
+    || (String(authUser?.email || "").trim().toLowerCase() === "ben@peligoni.com" ? "manager" : "viewer");
+  const canEditSharedData = !supabaseEnabled || !authUser || ["manager", "editor"].includes(currentUserRole);
 
   useEffect(() => {
     window.localStorage.setItem(INGREDIENT_MASTER_STORAGE_KEY, JSON.stringify(ingredientMaster));
@@ -2244,12 +2640,354 @@ function App() {
   }, [venues]);
 
   useEffect(() => {
+    if (!supabaseEnabled || !supabase) {
+      setAuthLoading(false);
+      return undefined;
+    }
+
+    let isCancelled = false;
+    const loadingTimeout = window.setTimeout(() => {
+      if (isCancelled) return;
+      setAuthLoading(false);
+      setAuthError("Session check took too long. Please try signing in again.");
+    }, 5000);
+
+    const loadProfile = async (user) => {
+      if (!user) {
+        if (!isCancelled) {
+          setAuthProfile(null);
+        }
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, email, full_name, role")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (isCancelled) return;
+
+      if (error) {
+        setAuthProfile({
+          id: user.id,
+          email: user.email || "",
+          full_name: "",
+          role: "viewer",
+          profileError: error.message,
+        });
+        return;
+      }
+
+      if (!data && user.email) {
+        const { data: emailData, error: emailError } = await supabase
+          .from("profiles")
+          .select("id, email, full_name, role")
+          .eq("email", user.email)
+          .maybeSingle();
+
+        if (isCancelled) return;
+
+        if (emailError) {
+          setAuthProfile({
+            id: user.id,
+            email: user.email || "",
+            full_name: "",
+            role: "viewer",
+            profileError: emailError.message,
+          });
+          return;
+        }
+
+        if (emailData) {
+          setAuthProfile(emailData);
+          return;
+        }
+      }
+
+      setAuthProfile(
+        data || {
+          id: user.id,
+          email: user.email || "",
+          full_name: "",
+          role: "viewer",
+          profileError: "No matching profile row was found for this signed-in user.",
+        }
+      );
+    };
+
+    supabase.auth
+      .getSession()
+      .then(async ({ data, error }) => {
+        if (isCancelled) return;
+        if (error) {
+          setAuthError(error.message || "Could not check the current session.");
+          setAuthLoading(false);
+          return;
+        }
+        setAuthSession(data.session || null);
+        setAuthUser(data.session?.user || null);
+        await loadProfile(data.session?.user || null);
+        if (!isCancelled) setAuthLoading(false);
+      })
+      .catch((error) => {
+        if (isCancelled) return;
+        setAuthError(error?.message || "Could not check the current session.");
+        setAuthLoading(false);
+      });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (isCancelled) return;
+      setAuthSession(session || null);
+      setAuthUser(session?.user || null);
+      setAuthError("");
+      await loadProfile(session?.user || null);
+      if (!isCancelled) setAuthLoading(false);
+    });
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(loadingTimeout);
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function hydrateSharedData() {
+      if (!supabaseEnabled || !supabase) return;
+      if (authLoading || !authUser) return;
+
+      try {
+        const [
+          { data: venueRows, error: venueError },
+          { data: ingredientRows, error: ingredientError },
+          { data: recipeRows, error: recipeError },
+          { data: componentRows, error: componentError },
+          { data: menuRows, error: menuError },
+          { data: menuLineRows, error: menuLineError },
+          { data: dishIndexRowsShared, error: dishIndexError },
+          { data: bchAuditRowsShared, error: bchAuditError },
+        ] =
+          await Promise.all([
+            supabase.from("venues").select("name").order("name"),
+            supabase.from("ingredients").select("*").order("ingredient_name"),
+            supabase.from("recipes").select("*").order("name"),
+            supabase.from("recipe_components").select("*").order("component_order"),
+            supabase.from("menus").select("*").order("name"),
+            supabase.from("menu_lines").select("*").order("line_order"),
+            supabase.from("dish_index").select("*").order("dish_name"),
+            supabase.from("bch_audit").select("*").order("code"),
+          ]);
+
+        if (venueError) throw venueError;
+        if (ingredientError) throw ingredientError;
+        if (recipeError) throw recipeError;
+        if (componentError) throw componentError;
+        if (menuError) throw menuError;
+        if (menuLineError) throw menuLineError;
+        if (dishIndexError) throw dishIndexError;
+        if (bchAuditError) throw bchAuditError;
+        if (isCancelled) return;
+
+        if (Array.isArray(venueRows) && venueRows.length) {
+          setVenues(Array.from(new Set([...DEFAULT_VENUES, ...venueRows.map((row) => String(row.name || "").trim()).filter(Boolean)])));
+        }
+
+        const mappedIngredients = Array.isArray(ingredientRows) && ingredientRows.length
+          ? sanitizeIngredientMasterRows(ingredientRows.map(mapSupabaseIngredientRow))
+          : null;
+        const baselineRecipes = getBaselineRecipes();
+        const baselineMenus = getBaselineMenus(baselineRecipes);
+
+        if (Array.isArray(ingredientRows) && ingredientRows.length) {
+          setIngredientMaster(mappedIngredients);
+          setRecipes((current) => syncIngredientReferences(current, mappedIngredients));
+        }
+
+        if (Array.isArray(recipeRows) && recipeRows.length) {
+          const sharedRecipes = hydrateSupabaseRecipes(
+            recipeRows,
+            componentRows || [],
+            mappedIngredients || ingredientMaster
+          );
+          const nextRecipes = mergeSupabaseRecipesIntoCurrent(
+            baselineRecipes,
+            sharedRecipes,
+            mappedIngredients || ingredientMaster
+          );
+          setRecipes(nextRecipes);
+          setSelectedRecipeId((current) => current || nextRecipes[0]?.id || null);
+          if (Array.isArray(menuRows) && menuRows.length) {
+            const sharedMenus = hydrateSupabaseMenus(menuRows, menuLineRows || [], nextRecipes);
+            const nextMenus = mergeSupabaseMenusIntoCurrent(baselineMenus, sharedMenus, nextRecipes);
+            setMenus(nextMenus);
+            setSelectedMenuId((current) => current || nextMenus[0]?.id || null);
+          }
+        } else if (Array.isArray(menuRows) && menuRows.length) {
+          const sharedMenus = hydrateSupabaseMenus(menuRows, menuLineRows || [], baselineRecipes);
+          const nextMenus = mergeSupabaseMenusIntoCurrent(baselineMenus, sharedMenus, baselineRecipes);
+          setMenus(nextMenus);
+          setSelectedMenuId((current) => current || nextMenus[0]?.id || null);
+        }
+
+        if (Array.isArray(dishIndexRowsShared) && dishIndexRowsShared.length) {
+          const nextDishIndexRows = mergeSupabaseDishIndexRowsIntoCurrent(
+            dishIndexRows,
+            dishIndexRowsShared.map(mapSupabaseDishIndexRow)
+          );
+          setDishIndexRows(nextDishIndexRows);
+        }
+
+        if (Array.isArray(bchAuditRowsShared) && bchAuditRowsShared.length) {
+          const nextBchAuditDecisions = mergeSupabaseBchAuditIntoCurrent(
+            bchAuditDecisions,
+            bchAuditRowsShared.map(mapSupabaseBchAuditDecision)
+          );
+          setBchAuditDecisions(nextBchAuditDecisions);
+        }
+
+        setBackendStatus("Supabase connected");
+      } catch (error) {
+        if (isCancelled) return;
+        setBackendStatus("Supabase connected, but shared data could not be loaded yet");
+      }
+    }
+
+    hydrateSharedData();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [authLoading, authUser]);
+
+  useEffect(() => {
+    if (!supabaseEnabled || !supabase || !authUser || currentUserRole !== "manager") {
+      if (currentUserRole !== "manager") {
+        setUserProfiles([]);
+      }
+      return;
+    }
+
+    if (activeTab !== "users") return;
+
+    let isCancelled = false;
+
+    loadUserProfiles().catch((error) => {
+      if (isCancelled) return;
+      setUserAdminError(`Could not load users: ${error.message}`);
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeTab, authUser, currentUserRole]);
+
+  useEffect(() => {
     window.localStorage.setItem(DISH_INDEX_STORAGE_KEY, JSON.stringify(dishIndexRows));
   }, [dishIndexRows]);
 
   useEffect(() => {
     window.localStorage.setItem(BCH_AUDIT_STORAGE_KEY, JSON.stringify(bchAuditDecisions));
   }, [bchAuditDecisions]);
+
+  const requireEditAccess = () => {
+    if (canEditSharedData) return false;
+    setImportError("Your account is in viewer mode. You can review data, but only editors and managers can make changes.");
+    return true;
+  };
+
+  const handleSignIn = async (event) => {
+    event.preventDefault();
+    if (!supabaseEnabled || !supabase) return;
+
+    setAuthError("");
+    setAuthLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({
+      email: authEmail.trim(),
+      password: authPassword,
+    });
+
+    if (error) {
+      setAuthError(error.message || "Could not sign in.");
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    if (!supabaseEnabled || !supabase) return;
+    await supabase.auth.signOut();
+    setAuthProfile(null);
+    setAuthSession(null);
+    setAuthUser(null);
+  };
+
+  const loadUserProfiles = async () => {
+    if (!supabaseEnabled || !supabase || !authUser || currentUserRole !== "manager") return;
+    const accessToken = authSession?.access_token;
+    if (!accessToken || !supabaseUrl || !supabaseAnonKey) {
+      setUserAdminError("Could not verify the signed-in session for loading users. Please sign out and back in.");
+      return;
+    }
+
+    const response = await fetch(
+      `${supabaseUrl}/rest/v1/profiles?select=id,email,full_name,role,created_at&order=email.asc`,
+      {
+        headers: {
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      setUserAdminError(`Could not load users: ${payload?.message || payload?.error || `Request failed with ${response.status}`}`);
+      return;
+    }
+
+    const rows = Array.isArray(payload) ? payload : [];
+    setUserProfiles(rows);
+    setUserAdminError("");
+    setUserAdminMessage(`Loaded ${rows.length} user${rows.length === 1 ? "" : "s"}.`);
+  };
+
+  const updateUserRole = async (profileId, role) => {
+    if (!supabaseEnabled || !supabase || currentUserRole !== "manager") return;
+
+    setUserAdminError("");
+    setUserAdminMessage("");
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ role, updated_at: new Date().toISOString() })
+      .eq("id", profileId);
+
+    if (error) {
+      setUserAdminError(`Could not update user role: ${error.message}`);
+      return;
+    }
+
+    await loadUserProfiles();
+
+    if (authProfile?.id === profileId) {
+      setAuthProfile((current) => (current ? { ...current, role } : current));
+    }
+
+    setUserAdminMessage("Updated user role.");
+    setBackendStatus("Supabase connected");
+  };
+
+  const handleRefreshUsersButton = () => {
+    setUserAdminError("");
+    setUserAdminMessage("");
+    void loadUserProfiles().catch((error) => {
+      setUserAdminError(`Could not load users: ${error.message}`);
+    });
+  };
 
   useEffect(() => {
     setIngredientMaster((current) => {
@@ -2946,12 +3684,30 @@ function App() {
     },
     [batchCatalog, ingredientCatalog]
   );
+  const ingredientCatalogueSummary = useMemo(
+    () => ({
+      total: combinedIngredientCatalog.length,
+      needsReview: combinedIngredientCatalog.filter((row) => row.validation.reviewStatus === "needs-review").length,
+      ready: combinedIngredientCatalog.filter((row) => row.validation.reviewStatus === "ready").length,
+      unlinkedBatchRows: combinedIngredientCatalog.filter(
+        (row) =>
+          row.rowType === "batch" &&
+          row.sourceKind === "ingredient-master" &&
+          ["missing", "wrong-type"].includes(row.batchLink?.status)
+      ).length,
+    }),
+    [combinedIngredientCatalog]
+  );
   const filteredIngredientCatalog = useMemo(() => {
     const q = search.trim().toLowerCase();
     const filteredRows = combinedIngredientCatalog.filter((row) => {
       const matchesType = ingredientTypeFilter === "all" || row.rowType === ingredientTypeFilter;
-      const matchesBatchLinkState =
+      const matchesCatalogueFilter =
         ingredientBatchLinkFilter === "all" ||
+        (ingredientBatchLinkFilter === "needs-review" &&
+          row.validation.reviewStatus === "needs-review") ||
+        (ingredientBatchLinkFilter === "ready" &&
+          row.validation.reviewStatus === "ready") ||
         (ingredientBatchLinkFilter === "ingredient-master" &&
           row.sourceKind === "ingredient-master" &&
           row.rowType === "batch") ||
@@ -2962,7 +3718,7 @@ function App() {
         (ingredientBatchLinkFilter === "unlinked" &&
           row.sourceKind === "ingredient-master" &&
           ["missing", "wrong-type"].includes(row.batchLink?.status));
-      if (!matchesType || !matchesBatchLinkState) return false;
+      if (!matchesType || !matchesCatalogueFilter) return false;
       if (!q) return true;
       return getIngredientColumnSearchText(row, ingredientColumnFilter).toLowerCase().includes(q);
     });
@@ -3124,6 +3880,7 @@ function App() {
   };
 
   const createRecipeFromDishIndex = (row) => {
+    if (requireEditAccess()) return;
     const nextVenue = normalizeVenueName(row.venue, row.sourceTab) || "Tasi";
     const nextDraft = {
       ...createRecipeDraft(nextVenue),
@@ -3137,14 +3894,27 @@ function App() {
     setActiveTab("builder");
   };
 
-  const updateDishIndexRow = (rowId, updates) => {
+  const updateDishIndexRow = async (rowId, updates) => {
+    let nextRow = null;
     setDishIndexRows((current) =>
-      current.map((row) => (row.id === rowId ? { ...row, ...updates } : row))
+      current.map((row) => {
+        if (row.id !== rowId) return row;
+        nextRow = { ...row, ...updates };
+        return nextRow;
+      })
     );
+    if (nextRow && supabaseEnabled && supabase) {
+      const { error } = await syncDishIndexRowToSupabase(nextRow);
+      if (error) {
+        setImportError(`Saved dish index change locally, but could not sync to Supabase: ${error.message}`);
+      } else {
+        setBackendStatus("Supabase connected");
+      }
+    }
   };
 
-  const confirmDishIndexMatch = (rowId, recipeId) => {
-    updateDishIndexRow(rowId, {
+  const confirmDishIndexMatch = async (rowId, recipeId) => {
+    await updateDishIndexRow(rowId, {
       linkedRecipeId: recipeId,
       reviewState: "confirmed",
     });
@@ -3152,8 +3922,8 @@ function App() {
     setDishIndexLookupQuery("");
   };
 
-  const markDishIndexNoRecipe = (rowId) => {
-    updateDishIndexRow(rowId, {
+  const markDishIndexNoRecipe = async (rowId) => {
+    await updateDishIndexRow(rowId, {
       linkedRecipeId: "",
       reviewState: "no-recipe",
     });
@@ -3161,8 +3931,8 @@ function App() {
     setDishIndexLookupQuery("");
   };
 
-  const clearDishIndexDecision = (rowId) => {
-    updateDishIndexRow(rowId, {
+  const clearDishIndexDecision = async (rowId) => {
+    await updateDishIndexRow(rowId, {
       linkedRecipeId: "",
       reviewState: "",
       isArchived: false,
@@ -3176,26 +3946,39 @@ function App() {
     setDishIndexLookupQuery(row.dishName || "");
   };
 
-  const updateBchAuditDecision = (code, updates) => {
+  const updateBchAuditDecision = async (code, updates) => {
+    if (requireEditAccess()) return;
+    let nextDecision = null;
     setBchAuditDecisions((current) => {
       const normalizedCode = normalizeCodeKey(code);
       const existing = current.find((decision) => normalizeCodeKey(decision.code) === normalizedCode);
       if (!existing) {
-        return [...current, { code: normalizedCode, classification: "needs-review", notes: "", ...updates }];
+        nextDecision = { code: normalizedCode, classification: "needs-review", notes: "", ...updates };
+        return [...current, nextDecision];
       }
-      return current.map((decision) =>
-        normalizeCodeKey(decision.code) === normalizedCode ? { ...decision, ...updates } : decision
-      );
+      return current.map((decision) => {
+        if (normalizeCodeKey(decision.code) !== normalizedCode) return decision;
+        nextDecision = { ...decision, ...updates };
+        return nextDecision;
+      });
     });
+    if (nextDecision && supabaseEnabled && supabase) {
+      const { error } = await syncBchAuditDecisionToSupabase(nextDecision);
+      if (error) {
+        setImportError(`Saved BCH audit change locally, but could not sync to Supabase: ${error.message}`);
+      } else {
+        setBackendStatus("Supabase connected");
+      }
+    }
   };
 
-  const archiveDishIndexRow = (rowId) => {
-    updateDishIndexRow(rowId, { isArchived: true });
+  const archiveDishIndexRow = async (rowId) => {
+    await updateDishIndexRow(rowId, { isArchived: true });
     setActiveDishIndexLookupId(null);
   };
 
-  const unarchiveDishIndexRow = (rowId) => {
-    updateDishIndexRow(rowId, { isArchived: false });
+  const unarchiveDishIndexRow = async (rowId) => {
+    await updateDishIndexRow(rowId, { isArchived: false });
   };
 
   const updateComponentField = (recipeId, componentId, field, value) => {
@@ -3263,6 +4046,7 @@ function App() {
   };
 
   const addRecipe = () => {
+    if (requireEditAccess()) return;
     const next = String(recipes.length + 1).padStart(3, "0");
     const newRecipe = {
       id: `NEW-${next}`,
@@ -3312,6 +4096,7 @@ function App() {
   };
 
   const createBatchRecipeFromIngredient = (ingredient) => {
+    if (requireEditAccess()) return;
     const next = String(recipes.length + 1).padStart(3, "0");
     const inferredRestaurant = restaurant !== "all" && restaurant !== "Batch" ? restaurant : "";
     const name = ingredient.ingredient_name?.trim() || `New Batch ${next}`;
@@ -3543,6 +4328,7 @@ function App() {
   };
 
   const saveNewRecipeDraft = () => {
+    if (requireEditAccess()) return;
     const next = String(recipes.length + 1).padStart(3, "0");
     const generatedBatchCode =
       newRecipeDraft.recipeType === "batch"
@@ -3840,20 +4626,116 @@ function App() {
   };
 
   const saveIngredientMasterChanges = () => {
+    if (requireEditAccess()) return;
     saveStoredCollection(INGREDIENT_MASTER_STORAGE_KEY, ingredientMaster);
     setRecipes((current) => syncIngredientReferences(current, ingredientMaster));
     setIngredientUploadError("");
     setIngredientUploadMessage(`Saved ${ingredientMaster.length} ingredient rows and refreshed linked recipe costs.`);
+
+    if (supabaseEnabled && supabase) {
+      supabase
+        .from("ingredients")
+        .upsert(ingredientMaster.map(mapIngredientRowToSupabase), { onConflict: "id" })
+        .then(({ error }) => {
+          if (error) {
+            setIngredientUploadError(`Saved locally, but could not sync ingredients to Supabase: ${error.message}`);
+            return;
+          }
+          setBackendStatus("Supabase connected");
+          setIngredientUploadMessage(
+            `Saved ${ingredientMaster.length} ingredient rows locally and to Supabase.`
+          );
+        });
+    }
   };
 
-  const saveCurrentRecipeChanges = () => {
+  const syncRecipeToSupabase = async (recipe) => {
+    if (!supabaseEnabled || !supabase || !recipe) return { error: null };
+
+    const recipePayload = mapRecipeRowToSupabase(recipe);
+    const componentPayload = (recipe.components || []).map((component, index) =>
+      mapRecipeComponentRowToSupabase(recipe.id, component, index)
+    );
+
+    const { error: recipeError } = await supabase.from("recipes").upsert(recipePayload, { onConflict: "id" });
+    if (recipeError) return { error: recipeError };
+
+    const { error: deleteError } = await supabase.from("recipe_components").delete().eq("recipe_id", recipe.id);
+    if (deleteError) return { error: deleteError };
+
+    if (componentPayload.length) {
+      const { error: componentError } = await supabase.from("recipe_components").insert(componentPayload);
+      if (componentError) return { error: componentError };
+    }
+
+    return { error: null };
+  };
+
+  const syncRecipeCollectionToSupabase = async (recipesToSync) => {
+    const syncTargets = Array.isArray(recipesToSync) ? recipesToSync.filter(Boolean) : [];
+    let syncedCount = 0;
+    const failed = [];
+
+    for (const recipe of syncTargets) {
+      const { error } = await syncRecipeToSupabase(recipe);
+      if (error) {
+        failed.push({
+          recipeId: recipe.id,
+          recipeName: recipe.name || recipe.id,
+          message: error.message,
+        });
+      } else {
+        syncedCount += 1;
+      }
+    }
+
+    return {
+      syncedCount,
+      failed,
+    };
+  };
+
+  const syncDishIndexRowToSupabase = async (row) => {
+    if (!supabaseEnabled || !supabase || !row) return { error: null };
+    const { error } = await supabase
+      .from("dish_index")
+      .upsert(mapDishIndexRowToSupabase(row), { onConflict: "id" });
+    return { error };
+  };
+
+  const syncDishIndexCollectionToSupabase = async (rows) => {
+    const syncTargets = Array.isArray(rows) ? rows.filter(Boolean) : [];
+    if (!supabaseEnabled || !supabase || !syncTargets.length) {
+      return { error: null, syncedCount: 0 };
+    }
+    const { error } = await supabase
+      .from("dish_index")
+      .upsert(syncTargets.map(mapDishIndexRowToSupabase), { onConflict: "id" });
+    return {
+      error,
+      syncedCount: error ? 0 : syncTargets.length,
+    };
+  };
+
+  const syncBchAuditDecisionToSupabase = async (decision) => {
+    if (!supabaseEnabled || !supabase || !decision) return { error: null };
+    const { error } = await supabase
+      .from("bch_audit")
+      .upsert(mapBchAuditDecisionToSupabase(decision), { onConflict: "id" });
+    return { error };
+  };
+
+  const saveCurrentRecipeChanges = async () => {
+    if (requireEditAccess()) return;
     if (!selectedRecipe) return;
 
     const syncedRecipes = syncIngredientReferences(recipes, ingredientMaster);
     setRecipes(syncedRecipes);
     saveStoredCollection(RECIPES_STORAGE_KEY, syncedRecipes);
+    const syncedSelectedRecipe =
+      syncedRecipes.find((recipe) => recipe.id === selectedRecipe.id) || selectedRecipe;
 
-    if (selectedRecipe.recipeType === "batch") {
+    if (syncedSelectedRecipe.recipeType === "batch") {
       setTimeout(() => {
         syncBatchIngredientsWithRecipes();
       }, 0);
@@ -3864,21 +4746,75 @@ function App() {
     setRecipeLookupQuery("");
     setImportError("");
     setImportMessage(
-      `Saved ${selectedRecipe.recipeType === "batch" ? "batch" : "recipe"} ${
-        selectedRecipe.name || selectedRecipe.id
+      `Saved ${syncedSelectedRecipe.recipeType === "batch" ? "batch" : "recipe"} ${
+        syncedSelectedRecipe.name || syncedSelectedRecipe.id
       }.`
     );
+
+    if (supabaseEnabled && supabase) {
+      const { error } = await syncRecipeToSupabase(syncedSelectedRecipe);
+      if (error) {
+        setImportError(
+          `Saved locally, but could not sync ${syncedSelectedRecipe.recipeType === "batch" ? "batch" : "recipe"} to Supabase: ${error.message}`
+        );
+        return;
+      }
+      setBackendStatus("Supabase connected");
+      setImportMessage(
+        `Saved ${syncedSelectedRecipe.recipeType === "batch" ? "batch" : "recipe"} ${
+          syncedSelectedRecipe.name || syncedSelectedRecipe.id
+        } locally and to Supabase.`
+      );
+    }
   };
 
-  const saveMenuChanges = () => {
+  const syncMenuToSupabase = async (menu) => {
+    if (!supabaseEnabled || !supabase || !menu) return { error: null };
+
+    const menuPayload = mapMenuRowToSupabase(menu);
+    const linePayload = (menu.lines || []).map((line, index) =>
+      mapMenuLineRowToSupabase(menu.id, line, index)
+    );
+
+    const { error: menuError } = await supabase.from("menus").upsert(menuPayload, { onConflict: "id" });
+    if (menuError) return { error: menuError };
+
+    const { error: deleteError } = await supabase.from("menu_lines").delete().eq("menu_id", menu.id);
+    if (deleteError) return { error: deleteError };
+
+    if (linePayload.length) {
+      const { error: lineError } = await supabase.from("menu_lines").insert(linePayload);
+      if (lineError) return { error: lineError };
+    }
+
+    return { error: null };
+  };
+
+  const saveMenuChanges = async () => {
+    if (requireEditAccess()) return;
     saveStoredCollection(MENUS_STORAGE_KEY, menus);
     setImportError("");
     setImportMessage(
       `Saved ${selectedMenu?.name || "menu"}${selectedMenu?.restaurant ? ` for ${selectedMenu.restaurant}` : ""}.`
     );
+
+    if (supabaseEnabled && supabase && selectedMenu) {
+      const { error } = await syncMenuToSupabase(selectedMenu);
+      if (error) {
+        setImportError(
+          `Saved locally, but could not sync menu ${selectedMenu.name || selectedMenu.id} to Supabase: ${error.message}`
+        );
+        return;
+      }
+      setBackendStatus("Supabase connected");
+      setImportMessage(
+        `Saved ${selectedMenu.name || "menu"}${selectedMenu.restaurant ? ` for ${selectedMenu.restaurant}` : ""} locally and to Supabase.`
+      );
+    }
   };
 
   const addVenue = () => {
+    if (requireEditAccess()) return;
     const trimmedVenue = newVenueName.trim();
     if (!trimmedVenue) {
       setImportError("Enter a venue name before adding it.");
@@ -3897,9 +4833,20 @@ function App() {
     setNewVenueName("");
     setImportError("");
     setImportMessage(`Added venue ${trimmedVenue}.`);
+
+    if (supabaseEnabled && supabase) {
+      supabase.from("venues").upsert({ name: trimmedVenue }, { onConflict: "name" }).then(({ error }) => {
+        if (error) {
+          setImportError(`Added venue locally, but could not sync ${trimmedVenue} to Supabase: ${error.message}`);
+          return;
+        }
+        setBackendStatus("Supabase connected");
+      });
+    }
   };
 
   const addIngredientRow = () => {
+    if (requireEditAccess()) return;
     const next = String(ingredientMaster.length + 1).padStart(3, "0");
     const nextId = `local-ingredient-${next}`;
     setActiveTab("ingredients");
@@ -3919,6 +4866,7 @@ function App() {
   };
 
   const deleteIngredientRow = (ingredient) => {
+    if (requireEditAccess()) return;
     if (!ingredient || ingredient.is_locked) {
       setIngredientUploadError("Unlock the ingredient before deleting it.");
       setIngredientUploadMessage("");
@@ -3950,6 +4898,7 @@ function App() {
   };
 
   const deleteRecipe = (recipe) => {
+    if (requireEditAccess()) return;
     if (!recipe || recipe.isLocked) {
       setImportError("Unlock the recipe before deleting it.");
       setImportMessage("");
@@ -4276,6 +5225,7 @@ function App() {
   };
 
   const handleRecipeImportFiles = async (event) => {
+    if (requireEditAccess()) return;
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
 
@@ -4308,6 +5258,7 @@ function App() {
   };
 
   const handleGoogleSheetsImport = async () => {
+    if (requireEditAccess()) return;
     try {
       const urlEntries =
         selectedImportFormat === "normalized-workbook-pair"
@@ -4363,7 +5314,8 @@ function App() {
     }
   };
 
-  const applyRecipeImport = () => {
+  const applyRecipeImport = async () => {
+    if (requireEditAccess()) return;
     if (!importPreview) return;
 
     if (importPreview.output.Dish_Index) {
@@ -4392,6 +5344,17 @@ function App() {
       setImportMessage(
         `Imported ${importedDishIndexRows.length} dish index rows. Review them in Queue.`
       );
+      if (supabaseEnabled && supabase && importedDishIndexRows.length) {
+        const { error, syncedCount } = await syncDishIndexCollectionToSupabase(importedDishIndexRows);
+        if (error) {
+          setImportError(`Imported dish index locally, but could not sync to Supabase: ${error.message}`);
+        } else {
+          setBackendStatus("Supabase connected");
+          setImportMessage(
+            `Imported ${importedDishIndexRows.length} dish index rows locally and synced ${syncedCount} to Supabase.`
+          );
+        }
+      }
       setActiveTab("queue");
       return;
     }
@@ -4403,9 +5366,26 @@ function App() {
     if (importedRecipes[0]?.id) {
       setSelectedRecipeId(importedRecipes[0].id);
     }
+    setImportError("");
     setImportMessage(
       `Imported ${importedRecipes.length} recipes into the working dataset. Matching recipe IDs were replaced.`
     );
+
+    if (supabaseEnabled && supabase && importedRecipes.length) {
+      const { syncedCount, failed } = await syncRecipeCollectionToSupabase(importedRecipes);
+      if (failed.length) {
+        setImportError(
+          `Imported locally, but ${failed.length} recipe sync${failed.length === 1 ? "" : "s"} to Supabase failed. First issue: ${
+            failed[0].recipeName
+          } - ${failed[0].message}`
+        );
+      } else {
+        setBackendStatus("Supabase connected");
+        setImportMessage(
+          `Imported ${importedRecipes.length} recipes locally and synced ${syncedCount} to Supabase.`
+        );
+      }
+    }
   };
 
   const buildRecipeCostSheetRows = (recipe) =>
@@ -4539,6 +5519,7 @@ function App() {
   };
 
   const importBundledBatchWorkbook = async () => {
+    if (requireEditAccess()) return;
     try {
       const response = await fetch("/batchs.xlsx");
       if (!response.ok) {
@@ -4567,6 +5548,22 @@ function App() {
       setImportMessage(
         `Re-imported ${importedRecipes.length} batch recipes from batchs.xlsx and switched the recipe list to batch view.`
       );
+
+      if (supabaseEnabled && supabase && importedRecipes.length) {
+        const { syncedCount, failed } = await syncRecipeCollectionToSupabase(importedRecipes);
+        if (failed.length) {
+          setImportError(
+            `Re-imported locally, but ${failed.length} batch recipe sync${failed.length === 1 ? "" : "s"} to Supabase failed. First issue: ${
+              failed[0].recipeName
+            } - ${failed[0].message}`
+          );
+        } else {
+          setBackendStatus("Supabase connected");
+          setImportMessage(
+            `Re-imported ${importedRecipes.length} batch recipes locally and synced ${syncedCount} to Supabase.`
+          );
+        }
+      }
     } catch (error) {
       setImportError(error.message || "Batch workbook import failed.");
       setImportMessage("");
@@ -4574,6 +5571,7 @@ function App() {
   };
 
   const syncBchRecipeLinks = () => {
+    if (requireEditAccess()) return;
     setRecipes((current) => linkBatchReferences(current));
     setImportMessage("Linked BCH-coded dish components to the imported batch recipe records.");
     setImportError("");
@@ -4692,7 +5690,24 @@ function App() {
     });
   };
 
+  const focusIngredientCatalogueRow = (ingredientId) => {
+    if (!ingredientId) return;
+    const matchedIngredient =
+      ingredientMaster.find((ingredient) => ingredient.id === ingredientId) || null;
+    setActiveIngredientDraftId(ingredientId);
+    setIngredientEditLookup(ingredientId);
+    setIngredientEditLookupQuery(
+      matchedIngredient
+        ? `${matchedIngredient.ingredient_name || "Unnamed ingredient"}${
+            matchedIngredient.ingredient_item_code ? ` (${matchedIngredient.ingredient_item_code})` : ""
+          }`
+        : ""
+    );
+    setIngredientEditLookupOpen(false);
+  };
+
   const addMenu = () => {
+    if (requireEditAccess()) return;
     const next = String(menus.length + 1).padStart(3, "0");
     const nextVenue =
       restaurant === "all"
@@ -4856,6 +5871,64 @@ function App() {
     setImportMessage("Reset browser-stored test data and restored the workbook-backed seed state.");
   };
 
+  if (supabaseEnabled && authLoading) {
+    return (
+      <div className="app-page">
+        <div className="app-shell">
+          <Card className="auth-card">
+            <div className="eyebrow">Peligoni internal tool</div>
+            <h1>Recipe Cost Calculator</h1>
+            <p className="support-text">Checking your Supabase session…</p>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
+  if (supabaseEnabled && !authUser) {
+    return (
+      <div className="app-page">
+        <div className="app-shell">
+          <Card className="auth-card">
+            <div className="eyebrow">Peligoni internal tool</div>
+            <h1>Sign in to continue</h1>
+            <p className="support-text">
+              Use your Supabase email and password. For now, new users should be created in the Supabase dashboard.
+            </p>
+            <form className="support-stack" onSubmit={handleSignIn}>
+              <label className="form-field">
+                <span>Email</span>
+                <input
+                  type="email"
+                  value={authEmail}
+                  onChange={(event) => setAuthEmail(event.target.value)}
+                  placeholder="you@peligoni.com"
+                  autoComplete="email"
+                />
+              </label>
+              <label className="form-field">
+                <span>Password</span>
+                <input
+                  type="password"
+                  value={authPassword}
+                  onChange={(event) => setAuthPassword(event.target.value)}
+                  placeholder="Password"
+                  autoComplete="current-password"
+                />
+              </label>
+              <div className="upload-actions">
+                <button type="submit" className="primary-button">
+                  Sign in
+                </button>
+              </div>
+              {authError ? <p className="support-text error-text">{authError}</p> : null}
+            </form>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-page">
       <div className="app-shell">
@@ -4867,8 +5940,34 @@ function App() {
               Workbook-backed first version using the verified normalized spreadsheet, presented in the
               tabbed card layout you sketched.
             </p>
+            <p className="support-text">{backendStatus}</p>
+            {supabaseEnabled && authUser ? (
+              <p className="support-text">
+                Signed in as {authProfile?.full_name || authUser.email || "user"} · role: {currentUserRole}
+              </p>
+            ) : null}
+            {authProfile?.profileError ? (
+              <p className="support-text error-text">
+                Profile lookup issue: {authProfile.profileError}
+              </p>
+            ) : null}
           </div>
           <div className="page-header-actions">
+            {supabaseEnabled && authUser ? (
+              <>
+                <a href={FOOD_APP_URL} className="secondary-button">Food app</a>
+                <a href={DRINKS_APP_URL} className="secondary-button">Drinks app</a>
+              </>
+            ) : null}
+            {supabaseEnabled && authUser ? (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={handleSignOut}
+              >
+                Sign out
+              </button>
+            ) : null}
             <button
               type="button"
               className="secondary-button"
@@ -4887,6 +5986,13 @@ function App() {
             </button>
           </div>
         </div>
+
+        {supabaseEnabled && authUser && !canEditSharedData ? (
+          <div className="callout callout-default">
+            <strong>Viewer mode</strong>
+            <span>You can review data, but only editors and managers can make shared changes.</span>
+          </div>
+        ) : null}
 
         <div className="stats-grid">
           <StatCard
@@ -5239,6 +6345,7 @@ function App() {
               </button>
             </div>
             {importMessage ? <p className="support-text success-text">{importMessage}</p> : null}
+            {importError ? <p className="support-text error-text">{importError}</p> : null}
 
             <div className="panel-stack">
               <Card>
@@ -5734,6 +6841,8 @@ function App() {
                     </button>
                   </div>
                 </div>
+                {importMessage ? <p className="support-text success-text">{importMessage}</p> : null}
+                {importError ? <p className="support-text error-text">{importError}</p> : null}
 
                 <div className="recipe-context">
                   <details className="recipe-picker" open={false}>
@@ -6932,42 +8041,48 @@ function App() {
             <div className="stats-grid">
               <StatCard
                 label="Catalogue rows"
-                value={combinedIngredientCatalog.length}
+                value={ingredientCatalogueSummary.total}
                 onClick={() => {
                   setActiveTab("ingredients");
                   setIngredientTypeFilter("all");
                   setIngredientBatchLinkFilter("all");
+                  setIngredientColumnFilter("all-columns");
+                  setSearch("");
                 }}
               />
               <StatCard
                 label="Need review"
-                value={
-                  ingredientSummary.needsReview + batchSummary.needsReview
-                }
-                tone={ingredientSummary.needsReview + batchSummary.needsReview ? "negative" : ""}
+                value={ingredientCatalogueSummary.needsReview}
+                tone={ingredientCatalogueSummary.needsReview ? "negative" : ""}
                 onClick={() => {
                   setActiveTab("ingredients");
                   setIngredientTypeFilter("all");
-                  setIngredientBatchLinkFilter("all");
+                  setIngredientBatchLinkFilter("needs-review");
+                  setIngredientColumnFilter("all-columns");
+                  setSearch("");
                 }}
               />
               <StatCard
                 label="Reviewed"
-                value={combinedIngredientCatalog.length - (ingredientSummary.needsReview + batchSummary.needsReview)}
+                value={ingredientCatalogueSummary.ready}
                 onClick={() => {
                   setActiveTab("ingredients");
                   setIngredientTypeFilter("all");
-                  setIngredientBatchLinkFilter("all");
+                  setIngredientBatchLinkFilter("ready");
+                  setIngredientColumnFilter("all-columns");
+                  setSearch("");
                 }}
               />
               <StatCard
                 label="Batch links to resolve"
-                value={ingredientSummary.unlinkedBatchRows}
-                tone={ingredientSummary.unlinkedBatchRows ? "negative" : ""}
+                value={ingredientCatalogueSummary.unlinkedBatchRows}
+                tone={ingredientCatalogueSummary.unlinkedBatchRows ? "negative" : ""}
                 onClick={() => {
                   setActiveTab("ingredients");
                   setIngredientTypeFilter("batch");
                   setIngredientBatchLinkFilter("unlinked");
+                  setIngredientColumnFilter("all-columns");
+                  setSearch("");
                 }}
               />
             </div>
@@ -7297,7 +8412,9 @@ function App() {
                         value={ingredientBatchLinkFilter}
                         onChange={(event) => setIngredientBatchLinkFilter(event.target.value)}
                       >
-                        <option value="all">All batch states</option>
+                        <option value="all">All rows</option>
+                        <option value="needs-review">Needs review</option>
+                        <option value="ready">Ready</option>
                         <option value="ingredient-master">Batch ingredient rows</option>
                         <option value="recipe-batch">Recipe-backed batches</option>
                         <option value="linked">Linked batch rows</option>
@@ -7375,6 +8492,7 @@ function App() {
                                     <input
                                       type="checkbox"
                                       checked={Boolean(row.source.is_locked)}
+                                      onFocus={() => focusIngredientCatalogueRow(row.source.id)}
                                       onChange={(event) =>
                                         updateIngredientField(row.source.id, "is_locked", event.target.checked)
                                       }
@@ -7390,6 +8508,7 @@ function App() {
                                     className="table-input"
                                     value={row.rowType}
                                     disabled={row.source.is_locked}
+                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
                                     onChange={(event) =>
                                       updateIngredientField(row.source.id, "entry_type", event.target.value)
                                     }
@@ -7411,6 +8530,7 @@ function App() {
                                     }`}
                                     value={row.source.ingredient_name}
                                     disabled={row.source.is_locked}
+                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
                                     onChange={(event) =>
                                       updateIngredientField(row.source.id, "ingredient_name", event.target.value)
                                     }
@@ -7428,6 +8548,7 @@ function App() {
                                     }`}
                                     value={row.source.ingredient_item_code}
                                     disabled={row.source.is_locked}
+                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
                                     onChange={(event) =>
                                       updateIngredientField(row.source.id, "ingredient_item_code", event.target.value)
                                     }
@@ -7446,6 +8567,7 @@ function App() {
                                     }`}
                                     value={row.source.unit_cost}
                                     disabled={row.source.is_locked}
+                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
                                     onChange={(event) =>
                                       updateIngredientField(row.source.id, "unit_cost", event.target.value)
                                     }
@@ -7463,6 +8585,7 @@ function App() {
                                       className="table-input numeric-input pack-size-value"
                                       value={parsePackSizeParts(row.source.pack_size).value}
                                       disabled={row.source.is_locked}
+                                      onFocus={() => focusIngredientCatalogueRow(row.source.id)}
                                       onChange={(event) =>
                                         updateIngredientPackSize(row.source.id, "value", event.target.value)
                                       }
@@ -7473,6 +8596,7 @@ function App() {
                                       className="table-input pack-size-unit"
                                       value={parsePackSizeParts(row.source.pack_size).unit}
                                       disabled={row.source.is_locked}
+                                      onFocus={() => focusIngredientCatalogueRow(row.source.id)}
                                       onChange={(event) =>
                                         updateIngredientPackSize(row.source.id, "unit", event.target.value)
                                       }
@@ -7492,6 +8616,7 @@ function App() {
                                     className="table-input"
                                     value={row.source.category}
                                     disabled={row.source.is_locked}
+                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
                                     onChange={(event) =>
                                       updateIngredientField(row.source.id, "category", event.target.value)
                                     }
@@ -7507,6 +8632,7 @@ function App() {
                                     className="table-input"
                                     value={row.source.supplier}
                                     disabled={row.source.is_locked}
+                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
                                     onChange={(event) =>
                                       updateIngredientField(row.source.id, "supplier", event.target.value)
                                     }
@@ -8262,6 +9388,89 @@ function App() {
                 </p>
               </div>
             </Card>
+          </div>
+        )}
+
+        {activeTab === "users" && (
+          <div className="tab-panel">
+            {currentUserRole !== "manager" ? (
+              <Card>
+                <p className="support-text">Only managers can access user administration.</p>
+              </Card>
+            ) : (
+              <Card>
+                <div className="card-header">
+                  <div>
+                    <div className="eyebrow">User administration</div>
+                    <h2>Manage access roles</h2>
+                  </div>
+                  <div className="panel-actions">
+                    <button
+                      type="button"
+                      className="tab-button"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        handleRefreshUsersButton();
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        handleRefreshUsersButton();
+                      }}
+                    >
+                      Refresh users
+                    </button>
+                  </div>
+                </div>
+                <p className="support-text">
+                  Use this screen to set each signed-in user as `viewer`, `editor`, or `manager`.
+                </p>
+                <div className="review-box">
+                  <strong>Create users in Supabase</strong>
+                  <p className="support-text">
+                    Add new users in Supabase `Authentication &gt; Users`, then come back here to assign each person as
+                    `viewer`, `editor`, or `manager`.
+                  </p>
+                </div>
+                {userAdminMessage ? <p className="support-text success-text">{userAdminMessage}</p> : null}
+                {userAdminError ? <p className="support-text error-text">{userAdminError}</p> : null}
+                <div className="table-wrap">
+                  <table className="dish-index-table">
+                    <thead>
+                      <tr>
+                        <th>Email</th>
+                        <th>Name</th>
+                        <th>Role</th>
+                        <th>Created</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userProfiles.map((profile) => (
+                        <tr key={profile.id}>
+                          <td className="strong-cell">{profile.email || "No email"}</td>
+                          <td>{profile.full_name || "—"}</td>
+                          <td>
+                            <select
+                              value={profile.role || "viewer"}
+                              onChange={(event) => updateUserRole(profile.id, event.target.value)}
+                            >
+                              <option value="viewer">Viewer</option>
+                              <option value="editor">Editor</option>
+                              <option value="manager">Manager</option>
+                            </select>
+                          </td>
+                          <td>{profile.created_at ? String(profile.created_at).slice(0, 10) : "—"}</td>
+                        </tr>
+                      ))}
+                      {!userProfiles.length ? (
+                        <tr>
+                          <td colSpan="4" className="empty-cell">No user profiles found yet.</td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            )}
           </div>
         )}
 
