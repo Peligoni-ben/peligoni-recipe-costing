@@ -8,6 +8,7 @@ import { supportsGoogleSheetsImport, toGoogleSheetsCsvExportUrl } from "./import
 import { supabase, supabaseAnonKey, supabaseEnabled, supabaseUrl } from "./lib/supabase";
 import BuilderTab from "./tabs/BuilderTab";
 import ExistingRecipeEditor from "./tabs/ExistingRecipeEditor";
+import DishInventoryTab from "./tabs/DishInventoryTab";
 import IngredientsTab from "./tabs/IngredientsTab";
 import MenusTab from "./tabs/MenusTab";
 import NewRecipeBuilder from "./tabs/NewRecipeBuilder";
@@ -36,21 +37,37 @@ const OPTIONAL_INGREDIENT_COLUMNS = [
   "linked_recipe_id",
   "is_locked",
 ];
-const MENU_COURSE_PRESETS = ["Starter", "Main", "Dessert", "Side", "Snack"];
-const DEFAULT_SERVICE_PERIODS = ["breakfast", "lunch", "aperitivo", "dinner", "all day"];
-const DEFAULT_VENUES = ["Tasi", "Terraces", "Courtyard"];
-const VENUE_SERVICE_PERIODS = {
-  Tasi: ["breakfast", "lunch", "aperitivo", "dinner", "all day"],
-  Terraces: ["lunch", "aperitivo", "dinner", "all day"],
-  Courtyard: ["lunch", "aperitivo", "dinner", "all day"],
-};
+const MENU_COURSE_PRESETS = ["Starter", "Main", "Dessert", "Side", "Small plates", "Large plates"];
+const DEFAULT_SERVICE_PERIODS = ["breakfast", "brunch", "lunch", "aperitivo", "dinner", "all day"];
+const DEFAULT_VENUES = [
+  "Tasi",
+  "Terraces",
+  "Courtyard",
+  "Pop up Kitchen",
+  "The Deli Kitchen",
+  "Mikro Nisi",
+  "Special Events",
+];
+const VENUE_SERVICE_PERIODS = Object.fromEntries(
+  DEFAULT_VENUES.map((venue) => [venue, DEFAULT_SERVICE_PERIODS])
+);
 const VENUE_ALIASES = {
   cy: "Courtyard",
   courtyard: "Courtyard",
   tasi: "Tasi",
   terraces: "Terraces",
-  "pop up": "Pop up",
-  popup: "Pop up",
+  "pop up": "Pop up Kitchen",
+  popup: "Pop up Kitchen",
+  "pop up kitchen": "Pop up Kitchen",
+  "popup kitchen": "Pop up Kitchen",
+  deli: "The Deli Kitchen",
+  "the deli": "The Deli Kitchen",
+  "deli kitchen": "The Deli Kitchen",
+  "the deli kitchen": "The Deli Kitchen",
+  mikronisi: "Mikro Nisi",
+  "mikro nisi": "Mikro Nisi",
+  "special event": "Special Events",
+  "special events": "Special Events",
   dessert: "Dessert",
 };
 
@@ -609,6 +626,7 @@ const tabs = [
   { id: "queue", label: "Queue", icon: "chart" },
   { id: "recipes", label: "Recipes", icon: "chef" },
   { id: "builder", label: "Builder", icon: "calculator" },
+  { id: "dish-inventory", label: "Dish inventory", icon: "clipboard" },
   { id: "venue-menus", label: "Menus", icon: "clipboard" },
   { id: "menus", label: "Set menus", icon: "clipboard" },
   { id: "ingredients", label: "Ingredients", icon: "spark" },
@@ -2752,7 +2770,7 @@ function App() {
   });
   const [venues, setVenues] = useState(() => {
     const storedVenues = loadStoredCollection(VENUES_STORAGE_KEY)
-      .map((venue) => String(venue || "").trim())
+      .map((venue) => normalizeVenueName(String(venue || "").trim()))
       .filter(Boolean);
     return Array.from(new Set([...DEFAULT_VENUES, ...storedVenues]));
   });
@@ -3353,32 +3371,6 @@ function App() {
       .sort((left, right) => left[0].localeCompare(right[0], undefined, { numeric: true, sensitivity: "base" }))
       .map(([venue, count]) => ({ venue, count }));
   }, [recipes]);
-  const availabilityRows = useMemo(
-    () =>
-      recipes
-        .filter((recipe) => recipe.recipeType !== "batch")
-        .map((recipe) => ({
-          ...recipe,
-          availableVenues: getAvailableVenueListForRecipe(recipe, recipeAvailableVenues),
-        }))
-        .filter((recipe) => {
-          const query = availabilitySearch.trim().toLowerCase();
-          const matchesVenue =
-            availabilityVenueFilter === "all" || recipe.availableVenues.includes(availabilityVenueFilter);
-          if (!matchesVenue) return false;
-          if (!query) return true;
-          return (
-            recipe.name.toLowerCase().includes(query) ||
-            recipe.category.toLowerCase().includes(query) ||
-            recipe.sellingItemCode.toLowerCase().includes(query) ||
-            recipe.availableVenues.some((venue) => venue.toLowerCase().includes(query))
-          );
-        })
-        .sort((left, right) =>
-          left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" })
-        ),
-    [availabilitySearch, availabilityVenueFilter, recipeAvailableVenues, recipes]
-  );
   const availabilityVenueSummary = useMemo(() => {
     const grouped = new Map();
 
@@ -3469,6 +3461,49 @@ function App() {
       })),
     [dishIndexRows, recipes]
   );
+  const availabilityRows = useMemo(() => {
+    const query = availabilitySearch.trim().toLowerCase();
+    const recipeRows = recipes
+      .filter((recipe) => recipe.recipeType !== "batch")
+      .map((recipe) => ({
+        ...recipe,
+        rowSource: "recipe",
+        availableVenues: getAvailableVenueListForRecipe(recipe, recipeAvailableVenues),
+      }));
+    const inventoryRows = dishIndexRowsWithMatches
+      .filter((row) => !row.isArchived && !row.match.recipe)
+      .map((row) => ({
+        id: `inventory-${row.id}`,
+        inventoryId: row.id,
+        rowSource: "inventory",
+        name: row.dishName,
+        category: row.course || "",
+        sellingItemCode: "",
+        restaurant: row.venue || "",
+        availableVenues: row.venue ? [row.venue] : [],
+        inventoryRow: row,
+      }));
+
+    return [...recipeRows, ...inventoryRows]
+      .filter((row) => {
+        const matchesVenue =
+          availabilityVenueFilter === "all" || row.availableVenues.includes(availabilityVenueFilter);
+        if (!matchesVenue) return false;
+        if (!query) return true;
+        return (
+          String(row.name || "").toLowerCase().includes(query) ||
+          String(row.category || "").toLowerCase().includes(query) ||
+          String(row.sellingItemCode || "").toLowerCase().includes(query) ||
+          row.availableVenues.some((venue) => String(venue || "").toLowerCase().includes(query))
+        );
+      })
+      .sort((left, right) =>
+        String(left.name || "").localeCompare(String(right.name || ""), undefined, {
+          numeric: true,
+          sensitivity: "base",
+        })
+      );
+  }, [availabilitySearch, availabilityVenueFilter, dishIndexRowsWithMatches, recipeAvailableVenues, recipes]);
   const filteredDishIndexRows = useMemo(() => {
     const query = normalizeMatchKey(dishIndexSearch);
     return dishIndexRowsWithMatches.filter((row) => {
@@ -3482,6 +3517,31 @@ function App() {
       return matchesArchive && matchesStatus && matchesSearch;
     });
   }, [dishIndexRowsWithMatches, dishIndexSearch, dishIndexStatusFilter, showArchivedDishIndexRows]);
+  const [dishInventorySearch, setDishInventorySearch] = useState("");
+  const [dishInventoryStatusFilter, setDishInventoryStatusFilter] = useState("all");
+  const dishInventoryRows = useMemo(() => {
+    const query = normalizeMatchKey(dishInventorySearch);
+    return dishIndexRowsWithMatches.filter((row) => {
+      if (row.isArchived) return false;
+      const ready = Boolean(row.match.recipe);
+      const matchesStatus =
+        dishInventoryStatusFilter === "all" ||
+        (dishInventoryStatusFilter === "ready" && ready) ||
+        (dishInventoryStatusFilter === "missing" && !ready);
+      const matchesSearch =
+        !query ||
+        normalizeMatchKey([row.venue, row.course, row.dishName, row.match.recipe?.name || ""].join(" ")).includes(query);
+      return matchesStatus && matchesSearch;
+    });
+  }, [dishIndexRowsWithMatches, dishInventorySearch, dishInventoryStatusFilter]);
+  const dishInventorySummary = useMemo(
+    () => ({
+      total: dishIndexRowsWithMatches.filter((row) => !row.isArchived).length,
+      ready: dishIndexRowsWithMatches.filter((row) => !row.isArchived && row.match.recipe).length,
+      missing: dishIndexRowsWithMatches.filter((row) => !row.isArchived && !row.match.recipe).length,
+    }),
+    [dishIndexRowsWithMatches]
+  );
   const dishIndexSummary = useMemo(
     () => {
       const visibleRows = dishIndexRowsWithMatches.filter((row) =>
@@ -3618,7 +3678,11 @@ function App() {
       });
     });
 
-    const allVenues = Array.from(new Set([...inventoryByVenue.keys(), ...menuCountsByVenue.keys()]));
+    const allVenues = Array.from(
+      new Set([...DEFAULT_VENUES, ...venues, ...inventoryByVenue.keys(), ...menuCountsByVenue.keys()])
+    )
+      .map((venue) => normalizeVenueName(venue))
+      .filter(Boolean);
     return allVenues
       .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }))
       .map((venue) => {
@@ -3629,7 +3693,7 @@ function App() {
           ...menuCounts,
         };
       });
-  }, [menuCards, recipeAvailableVenues, recipes]);
+  }, [menuCards, recipeAvailableVenues, recipes, venues]);
   const dashboardVenueMenus = useMemo(() => {
     if (menuDashboardVenue === "all") return menuCards;
     return menuCards.filter((menu) => getBaseVenueName(menu.restaurant) === menuDashboardVenue);
@@ -4366,6 +4430,76 @@ function App() {
     setNewRecipeDraft(nextDraft);
     setBuilderMode("create");
     setActiveTab("builder");
+  };
+
+  const createDraftRecipeFromDishInventory = async (row, { menuRestaurant = "", courseLabel = "" } = {}) => {
+    if (requireEditAccess()) return null;
+    const next = String(recipes.length + 1).padStart(3, "0");
+    const nextVenue = normalizeVenueName(row.venue, row.sourceTab) || "Tasi";
+    const draftRecipe = enrichRecipeMetrics({
+      id: `NEW-${next}`,
+      sourceRow: row.id || "",
+      restaurant: nextVenue,
+      name: toTitleCaseWords(row.dishName || "New Dish"),
+      category: row.course || "Uncategorised",
+      sellingItemCode: `NEW${next}`,
+      currentSalePrice: 0,
+      roundup: 0,
+      netPriceSource: 0,
+      grossPriceSource: 0,
+      sourceCost: 0,
+      posYtd: 0,
+      recipeComplete: "0",
+      pricingComplete: "0",
+      recipeType: "dish",
+      portionCount: 1,
+      batchYield: 1,
+      batchYieldType: "portion",
+      method: "",
+      methodSteps: [],
+      presentationNotes: "",
+      presentationImage: "",
+      workflowStage: "draft",
+      isLocked: false,
+      isLive: false,
+      components: [
+        {
+          id: `NEW-${next}-1`,
+          sort: 1,
+          ingredient: "",
+          code: "",
+          qty: 0,
+          cost: 0,
+          sourceType: "",
+          sourceRecipeId: "",
+          sourceUnitCost: 0,
+          sourceYieldType: "",
+        },
+      ],
+    });
+
+    setRecipes((current) => [draftRecipe, ...current]);
+
+    if (menuRestaurant) {
+      const update = buildServiceMenuPublishUpdate(menus, draftRecipe, menuRestaurant, courseLabel || row.course || "");
+      if (update) {
+        setMenus(update.nextMenus);
+        setSelectedMenuId(update.nextMenu.id);
+        setMenuDashboardVenue(getBaseVenueName(menuRestaurant));
+        setMenuDashboardService(getMenuServicePeriod(menuRestaurant) || "all");
+        setImportError("");
+        setImportMessage(`Created draft recipe and added ${draftRecipe.name} to ${update.nextMenu.name}.`);
+      }
+    }
+
+    return draftRecipe;
+  };
+
+  const openMenusForDishInventoryRow = (row) => {
+    const venue = normalizeVenueName(row.venue, row.sourceTab) || "Tasi";
+    setAvailabilityVenueFilter(venue);
+    focusMenuDashboardVenue(venue);
+    setActiveTab("venue-menus");
   };
 
   const updateDishIndexRow = async (rowId, updates) => {
@@ -6838,10 +6972,24 @@ function App() {
 
   const focusMenuDashboardVenue = (venue) => {
     setMenuDashboardVenue(venue);
-    setMenuDashboardService("all");
+    const defaultService = venue === "all" ? "all" : (VENUE_SERVICE_PERIODS[venue]?.[0] || DEFAULT_SERVICE_PERIODS[0]);
+    setMenuDashboardService(defaultService);
     const scopedMenus =
       venue === "all" ? menuCards : menuCards.filter((menu) => getBaseVenueName(menu.restaurant) === venue);
-    const targetMenu = scopedMenus.find((menu) => menu.isLiveMenu) || scopedMenus[0] || null;
+    const targetMenu =
+      (venue === "all"
+        ? scopedMenus.find((menu) => menu.isLiveMenu) || scopedMenus[0]
+        : scopedMenus.find(
+            (menu) =>
+              (getMenuServicePeriod(menu.restaurant) || DEFAULT_SERVICE_PERIODS[0]) === defaultService &&
+              menu.isLiveMenu
+          ) ||
+          scopedMenus.find(
+            (menu) => (getMenuServicePeriod(menu.restaurant) || DEFAULT_SERVICE_PERIODS[0]) === defaultService
+          ) ||
+          scopedMenus.find((menu) => menu.isLiveMenu) ||
+          scopedMenus[0]) ||
+      null;
     if (targetMenu) {
       setSelectedMenuId(targetMenu.id);
     }
@@ -8060,6 +8208,7 @@ function App() {
             setAvailabilityVenueFilter={setAvailabilityVenueFilter}
             availabilityVenueSummary={availabilityVenueSummary}
             availabilityRows={availabilityRows}
+            venues={venues}
             venueOptions={venueOptions}
             toggleRecipeAvailableVenue={toggleRecipeAvailableVenue}
             publishRecipeToVenueMenu={publishRecipeToVenueMenu}
@@ -8067,6 +8216,7 @@ function App() {
             removeRecipeFromVenueMenus={removeRecipeFromVenueMenus}
             isRecipeOnVenueMenu={isRecipeOnVenueMenu}
             menuCoursePresets={MENU_COURSE_PRESETS}
+            servicePeriodOptions={DEFAULT_SERVICE_PERIODS}
             inferMenuCourseFromRecipe={inferMenuCourseFromRecipe}
             activeVenueMenus={activeVenueMenus}
             activeVenueMenuDishCount={activeVenueMenuDishCount}
@@ -8090,11 +8240,29 @@ function App() {
             publishRecipesToServiceMenus={publishRecipesToServiceMenus}
             removeRecipeFromServiceMenu={removeRecipeFromServiceMenu}
             removeRecipesFromServiceMenus={removeRecipesFromServiceMenus}
+            createDraftRecipeFromDishInventory={createDraftRecipeFromDishInventory}
             getMenuServicePeriod={getMenuServicePeriod}
             focusMenuBuilder={focusMenuBuilder}
             updateMenuLine={updateMenuLine}
             importMessage={importMessage}
             importError={importError}
+          />
+        )}
+
+        {activeTab === "dish-inventory" && (
+          <DishInventoryTab
+            Card={Card}
+            StatCard={StatCard}
+            Badge={Badge}
+            dishInventoryRows={dishInventoryRows}
+            dishInventorySummary={dishInventorySummary}
+            dishInventorySearch={dishInventorySearch}
+            setDishInventorySearch={setDishInventorySearch}
+            dishInventoryStatusFilter={dishInventoryStatusFilter}
+            setDishInventoryStatusFilter={setDishInventoryStatusFilter}
+            openRecipeInBuilder={openRecipeInBuilder}
+            createRecipeFromDishIndex={createRecipeFromDishIndex}
+            openMenusForDishInventoryRow={openMenusForDishInventoryRow}
           />
         )}
 

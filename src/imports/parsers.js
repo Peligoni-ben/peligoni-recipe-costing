@@ -96,7 +96,10 @@ function mapImportedVenue(value, fallback = "") {
   if (key === "cy" || key === "courtyard") return "Courtyard";
   if (key === "tasi") return "Tasi";
   if (key === "terraces") return "Terraces";
-  if (key === "popup" || key === "pop up") return "Pop up";
+  if (key === "popup" || key === "pop up" || key === "popup kitchen" || key === "pop up kitchen") return "Pop up Kitchen";
+  if (key === "deli" || key === "the deli" || key === "deli kitchen" || key === "the deli kitchen") return "The Deli Kitchen";
+  if (key === "mikronisi" || key === "mikro nisi") return "Mikro Nisi";
+  if (key === "special event" || key === "special events") return "Special Events";
   if (key === "dessert") return "Dessert";
   return normalized;
 }

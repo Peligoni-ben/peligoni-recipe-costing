@@ -11,6 +11,7 @@ export default function MenusTab({
   setAvailabilityVenueFilter,
   availabilityVenueSummary,
   availabilityRows,
+  venues,
   venueOptions,
   toggleRecipeAvailableVenue,
   publishRecipeToVenueMenu,
@@ -18,6 +19,7 @@ export default function MenusTab({
   removeRecipeFromVenueMenus,
   isRecipeOnVenueMenu,
   menuCoursePresets,
+  servicePeriodOptions,
   inferMenuCourseFromRecipe,
   activeVenueMenus,
   activeVenueMenuDishCount,
@@ -41,6 +43,7 @@ export default function MenusTab({
   publishRecipesToServiceMenus,
   removeRecipeFromServiceMenu,
   removeRecipesFromServiceMenus,
+  createDraftRecipeFromDishInventory,
   getMenuServicePeriod,
   focusMenuBuilder,
   updateMenuLine,
@@ -48,10 +51,6 @@ export default function MenusTab({
   importError,
 }) {
   const [publishCourses, setPublishCourses] = useState({});
-  const [publishTargets, setPublishTargets] = useState({});
-  const [selectedRecipeIds, setSelectedRecipeIds] = useState([]);
-  const [bulkVenueTargets, setBulkVenueTargets] = useState([]);
-  const [bulkServicePeriod, setBulkServicePeriod] = useState("lunch");
 
   const rowCourseDefaults = useMemo(() => {
     const entries = availabilityRows.map((recipe) => [recipe.id, publishCourses[recipe.id] || inferMenuCourseFromRecipe(recipe)]);
@@ -64,18 +63,6 @@ export default function MenusTab({
     setAvailabilityVenueFilter(venue);
     focusMenuDashboardVenue(venue);
   };
-
-  const clearVenueWorkspace = () => {
-    setAvailabilityVenueFilter("all");
-    focusMenuDashboardVenue("all");
-  };
-
-  const getSelectedTargets = (recipe) =>
-    publishTargets[recipe.id]?.length
-      ? publishTargets[recipe.id]
-      : isVenueWorkspace && recipe.availableVenues.includes(availabilityVenueFilter)
-        ? [availabilityVenueFilter]
-        : [];
 
   const renderAvailableVenueSummary = (recipe) => {
     const venues = recipe.availableVenues || [];
@@ -96,84 +83,51 @@ export default function MenusTab({
           ))}
           {remainingCount > 0 ? <span className="badge">+{remainingCount} more</span> : null}
         </div>
-        <details className="menus-venue-manage">
-          <summary className="menus-venue-manage-summary">Manage</summary>
-          <div className="availability-checkboxes compact">
-            {venueOptions
-              .filter((venue) => venue !== "Batch" && venue !== "Blank")
-              .map((venue) => {
-                const checked = venues.includes(venue);
-                return (
-                  <label key={`${recipe.id}-${venue}`} className="checkbox-field availability-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(event) => toggleRecipeAvailableVenue(recipe.id, venue, event.target.checked)}
-                    />
-                    <span>{venue}</span>
-                  </label>
-                );
-              })}
-          </div>
-        </details>
+        {recipe.rowSource !== "inventory" ? (
+          <details className="menus-venue-manage">
+            <summary className="menus-venue-manage-summary">Manage</summary>
+            <div className="availability-checkboxes compact">
+              {venues
+                .filter((venue) => venue !== "Batch" && venue !== "Blank")
+                .map((venue) => {
+                  const checked = recipe.availableVenues.includes(venue);
+                  return (
+                    <label key={`${recipe.id}-${venue}`} className="checkbox-field availability-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => toggleRecipeAvailableVenue(recipe.id, venue, event.target.checked)}
+                      />
+                      <span>{venue}</span>
+                    </label>
+                  );
+                })}
+            </div>
+          </details>
+        ) : null}
       </div>
     );
   };
 
-  const selectedRecipes = useMemo(
-    () => availabilityRows.filter((recipe) => selectedRecipeIds.includes(recipe.id)),
-    [availabilityRows, selectedRecipeIds]
-  );
-
-  const allVisibleRecipeIds = useMemo(() => availabilityRows.map((recipe) => recipe.id), [availabilityRows]);
-  const availableBulkVenues = useMemo(
-    () => venueOptions.filter((venue) => venue !== "Batch" && venue !== "Blank"),
-    [venueOptions]
-  );
-  const allVisibleSelected =
-    Boolean(allVisibleRecipeIds.length) && allVisibleRecipeIds.every((recipeId) => selectedRecipeIds.includes(recipeId));
-  const someVisibleSelected = allVisibleRecipeIds.some((recipeId) => selectedRecipeIds.includes(recipeId));
-
-  const toggleSelectedRecipe = (recipeId, checked) => {
-    setSelectedRecipeIds((current) =>
-      checked ? [...new Set([...current, recipeId])] : current.filter((id) => id !== recipeId)
-    );
-  };
-
-  const toggleSelectAllVisible = (checked) => {
-    setSelectedRecipeIds((current) =>
-      checked
-        ? [...new Set([...current, ...allVisibleRecipeIds])]
-        : current.filter((id) => !allVisibleRecipeIds.includes(id))
-    );
-  };
-
-  const toggleBulkVenueTarget = (venue, checked) => {
-    setBulkVenueTargets((current) =>
-      checked ? [...new Set([...current, venue])] : current.filter((item) => item !== venue)
-    );
-  };
+  const selectedMenuRestaurant =
+    menuDashboardVenue !== "all" && menuDashboardService !== "all"
+      ? dashboardMenu?.restaurant || `${menuDashboardVenue} ${menuDashboardService}`
+      : "";
 
   return (
     <div className="tab-panel">
       <Card>
         <div className="card-header">
           <div>
-            <div className="eyebrow">Venue workspace</div>
-            <h2>Pick a venue, publish dishes, and review the live menu</h2>
+            <div className="eyebrow">Menus workflow</div>
+            <h2>Choose a venue, then choose a service menu</h2>
           </div>
         </div>
         <div className="stats-grid">
-          <StatCard
-            label="All venues"
-            value={menuDashboardSummary.length}
-            tone={menuDashboardVenue === "all" ? "positive" : ""}
-            onClick={clearVenueWorkspace}
-          />
-            {menuDashboardSummary.map((entry) => (
-              <StatCard
-                key={entry.venue}
-                label={entry.venue}
+          {menuDashboardSummary.map((entry) => (
+            <StatCard
+              key={entry.venue}
+              label={entry.venue}
               value={`${entry.inventoryCount} dishes · ${entry.liveCount} live`}
               tone={menuDashboardVenue === entry.venue ? "positive" : ""}
               onClick={() => focusVenueWorkspace(entry.venue)}
@@ -181,8 +135,8 @@ export default function MenusTab({
           ))}
         </div>
         <p className="support-text">
-          Pick a venue first for the cleanest flow. In venue view, you can quickly add or remove dishes from that
-          venue's live menu. Switch back to `All venues` only when you want bulk planning.
+          Menus now works one service at a time. Pick a venue first, then pick `Breakfast`, `Brunch`, `Lunch`,
+          `Aperitivo`, `Dinner`, or `All day` for that venue.
         </p>
         {importMessage ? <p className="support-text success-text">{importMessage}</p> : null}
         {importError ? <p className="support-text error-text">{importError}</p> : null}
@@ -214,16 +168,6 @@ export default function MenusTab({
                 </div>
               </div>
               <div className="menu-service-picker">
-                <button
-                  type="button"
-                  className={`menu-service-tab ${menuDashboardService === "all" ? "active" : ""}`}
-                  onClick={() => setMenuDashboardService("all")}
-                >
-                  <span className="menu-service-tab-label">All menus</span>
-                  <span className="menu-service-tab-meta">
-                    {dashboardServiceSummary.reduce((sum, entry) => sum + entry.menuCount, 0)} menus
-                  </span>
-                </button>
                 {dashboardServiceSummary.map((entry) => (
                   <button
                     key={`${menuDashboardVenue}-${entry.service}`}
@@ -240,7 +184,7 @@ export default function MenusTab({
               </div>
               <div className="menu-service-summary">
                 <Badge tone={dashboardMenu?.isLiveMenu ? "good" : "default"}>
-                  {dashboardMenu ? `${getMenuServicePeriod(dashboardMenu.restaurant) || "General"} selected` : "No menu selected"}
+                  {dashboardMenu ? `${getMenuServicePeriod(dashboardMenu.restaurant) || "Service"} selected` : "No menu selected"}
                 </Badge>
                 <span>
                   {dashboardInventoryRecipes.length} available dish{dashboardInventoryRecipes.length === 1 ? "" : "es"}
@@ -358,18 +302,25 @@ export default function MenusTab({
                   </div>
                 </>
               ) : (
-                <p className="support-text">No menu exists for this venue yet. Use `Add menu` below to start building one.</p>
+                <p className="support-text">
+                  No menu exists for this service yet. Add dishes from the list below and the app will create this
+                  service menu automatically.
+                </p>
               )}
             </Card>
           </div>
         </Card>
-      ) : null}
+      ) : (
+        <Card>
+          <p className="support-text">Choose one of the 7 venues above to start building or importing a service menu.</p>
+        </Card>
+      )}
 
       <Card>
         <div className="card-header">
           <div>
             <div className="eyebrow">Dish availability</div>
-            <h2>{isVenueWorkspace ? `Publish dishes for ${availabilityVenueFilter}` : "Master dish list and bulk publishing"}</h2>
+            <h2>{isVenueWorkspace ? `Build the ${menuDashboardService === "all" ? "selected" : menuDashboardService} menu for ${availabilityVenueFilter}` : "Select a venue first"}</h2>
           </div>
         </div>
         <div className="toolbar-row">
@@ -382,236 +333,111 @@ export default function MenusTab({
             />
           </label>
         </div>
-        {!isVenueWorkspace ? (
+        {isVenueWorkspace ? (
           <p className="support-text">
-            Select dishes from the master list, choose venue targets and a service once, then publish or remove them in bulk.
+            Use this dish list to add dishes into the selected venue and service menu. Review and amend courses in the
+            current menu card above.
           </p>
-        ) : (
-          <p className="support-text">
-            This is now focused on one venue. Choose a course, then add or remove dishes from that venue's menu.
-          </p>
-        )}
-        {!isVenueWorkspace ? (
-          <div className="menus-master-bulk">
-            <div className="menus-master-bulk-summary">
-              <Badge tone={selectedRecipes.length ? "good" : "default"}>{selectedRecipes.length} selected</Badge>
-              <span>
-                {bulkVenueTargets.length} venue target{bulkVenueTargets.length === 1 ? "" : "s"} · {bulkServicePeriod}
-              </span>
-            </div>
-            <div className="menus-master-bulk-grid">
-              <div className="menus-publish-targets">
-                {availableBulkVenues.map((venue) => (
-                  <label key={`bulk-${venue}`} className="checkbox-field availability-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={bulkVenueTargets.includes(venue)}
-                      onChange={(event) => toggleBulkVenueTarget(venue, event.target.checked)}
-                    />
-                    <span>{venue}</span>
-                  </label>
-                ))}
-              </div>
-              <label className="form-field compact">
-                <span>Service</span>
-                <select value={bulkServicePeriod} onChange={(event) => setBulkServicePeriod(event.target.value)}>
-                  {["breakfast", "lunch", "aperitivo", "dinner", "all day"].map((service) => (
-                    <option key={service} value={service}>
-                      {service}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="inline-actions">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={!selectedRecipes.length || !bulkVenueTargets.length}
-                  onClick={() => publishRecipesToServiceMenus(selectedRecipes, bulkVenueTargets, bulkServicePeriod)}
-                >
-                  Add selected dishes
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={!selectedRecipes.length || !bulkVenueTargets.length}
-                  onClick={() => removeRecipesFromServiceMenus(selectedRecipes, bulkVenueTargets, bulkServicePeriod)}
-                >
-                  Remove selected dishes
-                </button>
-              </div>
-            </div>
-          </div>
         ) : null}
         <div className="table-wrap">
           <table className="dish-index-table menus-availability-table">
             <thead>
               <tr>
-                {!isVenueWorkspace ? (
-                  <th>
-                    <label className="checkbox-field availability-checkbox compact-checkbox">
-                      <input
-                        type="checkbox"
-                        checked={allVisibleSelected}
-                        ref={(input) => {
-                          if (input) input.indeterminate = !allVisibleSelected && someVisibleSelected;
-                        }}
-                        onChange={(event) => toggleSelectAllVisible(event.target.checked)}
-                      />
-                    </label>
-                  </th>
-                ) : null}
                 <th>Dish</th>
                 <th>Primary venue</th>
                 <th>Category</th>
                 <th>Code</th>
                 <th>Available venues</th>
-                <th>{isVenueWorkspace ? "Menu action" : "Action"}</th>
+                <th>{isVenueWorkspace ? "Menu action" : "Status"}</th>
               </tr>
             </thead>
             <tbody>
               {availabilityRows.map((recipe) => (
                 <tr key={recipe.id}>
-                  {!isVenueWorkspace ? (
-                    <td>
-                      <label className="checkbox-field availability-checkbox compact-checkbox">
-                        <input
-                          type="checkbox"
-                          checked={selectedRecipeIds.includes(recipe.id)}
-                          onChange={(event) => toggleSelectedRecipe(recipe.id, event.target.checked)}
-                        />
-                      </label>
-                    </td>
-                  ) : null}
                   <td>{recipe.name}</td>
                   <td>{recipe.restaurant}</td>
                   <td>{recipe.category}</td>
-                  <td>{recipe.sellingItemCode || "—"}</td>
+                  <td>{recipe.sellingItemCode || (recipe.rowSource === "inventory" ? "Inventory only" : "—")}</td>
                   <td>{renderAvailableVenueSummary(recipe)}</td>
                   <td>
                     {isVenueWorkspace ? (
                       <div className="menus-publish-actions menus-publish-actions-compact">
-                        <span
-                          className={`menus-publish-status ${
-                            dashboardMenu?.restaurant && isRecipeOnVenueMenu(recipe.id, getMenuServicePeriod(dashboardMenu.restaurant) ? dashboardMenu.restaurant : availabilityVenueFilter)
-                              ? "on-menu"
-                              : "off-menu"
-                          }`}
-                        >
-                          {dashboardMenu?.restaurant && isRecipeOnVenueMenu(recipe.id, getMenuServicePeriod(dashboardMenu.restaurant) ? dashboardMenu.restaurant : availabilityVenueFilter)
-                            ? "On menu"
-                            : "Not on menu"}
-                        </span>
-                        <select
-                          value={rowCourseDefaults[recipe.id] || ""}
-                          onChange={(event) =>
-                            setPublishCourses((current) => ({ ...current, [recipe.id]: event.target.value }))
-                          }
-                        >
-                          {menuCoursePresets.map((course) => (
-                            <option key={course} value={course}>
-                              {course}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          disabled={!dashboardMenu?.restaurant}
-                          onClick={() =>
-                            publishRecipeToServiceMenu(
-                              recipe,
-                              dashboardMenu?.restaurant,
-                              rowCourseDefaults[recipe.id] || ""
-                            )
-                          }
-                        >
-                          Add to menu
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          disabled={!dashboardMenu?.restaurant}
-                          onClick={() => removeRecipeFromServiceMenu(recipe, dashboardMenu?.restaurant)}
-                        >
-                          Remove
-                        </button>
+                        {recipe.rowSource === "inventory" ? (
+                          <>
+                            <span className="menus-publish-status off-menu">No recipe yet</span>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              disabled={!selectedMenuRestaurant}
+                              onClick={() =>
+                                createDraftRecipeFromDishInventory(recipe.inventoryRow, {
+                                  menuRestaurant: selectedMenuRestaurant,
+                                  courseLabel: recipe.category || "",
+                                })
+                              }
+                            >
+                              Create draft + add
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <span
+                              className={`menus-publish-status ${
+                                dashboardMenu?.restaurant && isRecipeOnVenueMenu(recipe.id, getMenuServicePeriod(dashboardMenu.restaurant) ? dashboardMenu.restaurant : availabilityVenueFilter)
+                                  ? "on-menu"
+                                  : "off-menu"
+                              }`}
+                            >
+                              {dashboardMenu?.restaurant && isRecipeOnVenueMenu(recipe.id, getMenuServicePeriod(dashboardMenu.restaurant) ? dashboardMenu.restaurant : availabilityVenueFilter)
+                                ? "On menu"
+                                : "Not on menu"}
+                            </span>
+                            <select
+                              value={rowCourseDefaults[recipe.id] || ""}
+                              onChange={(event) =>
+                                setPublishCourses((current) => ({ ...current, [recipe.id]: event.target.value }))
+                              }
+                            >
+                              {menuCoursePresets.map((course) => (
+                                <option key={course} value={course}>
+                                  {course}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              disabled={!selectedMenuRestaurant}
+                              onClick={() =>
+                                publishRecipeToServiceMenu(
+                                  recipe,
+                                  selectedMenuRestaurant,
+                                  rowCourseDefaults[recipe.id] || ""
+                                )
+                              }
+                            >
+                              Add to menu
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              disabled={!selectedMenuRestaurant}
+                              onClick={() => removeRecipeFromServiceMenu(recipe, selectedMenuRestaurant)}
+                            >
+                              Remove
+                            </button>
+                          </>
+                        )}
                       </div>
                     ) : (
-                      <details className="menus-bulk-card">
-                        <summary className="menus-bulk-summary">Bulk publish</summary>
-                        <div className="menus-publish-actions">
-                          <div className="menus-publish-targets">
-                            {recipe.availableVenues.map((venue) => {
-                              const selectedTargets = getSelectedTargets(recipe);
-                              const checked = selectedTargets.includes(venue);
-                              const onMenu = isRecipeOnVenueMenu(recipe.id, venue);
-                              return (
-                                <label key={`${recipe.id}-publish-${venue}`} className="checkbox-field availability-checkbox">
-                                  <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    onChange={(event) =>
-                                      setPublishTargets((current) => {
-                                        const baseTargets = getSelectedTargets(recipe);
-                                        const nextTargets = event.target.checked
-                                          ? [...new Set([...baseTargets, venue])]
-                                          : baseTargets.filter((item) => item !== venue);
-                                        return { ...current, [recipe.id]: nextTargets };
-                                      })
-                                    }
-                                  />
-                                  <span>{venue}</span>
-                                  <span className={`menus-publish-status ${onMenu ? "on-menu" : "off-menu"}`}>
-                                    {onMenu ? "On menu" : "Not on menu"}
-                                  </span>
-                                </label>
-                              );
-                            })}
-                          </div>
-                          <select
-                            value={rowCourseDefaults[recipe.id] || ""}
-                            onChange={(event) =>
-                              setPublishCourses((current) => ({ ...current, [recipe.id]: event.target.value }))
-                            }
-                          >
-                            {menuCoursePresets.map((course) => (
-                              <option key={course} value={course}>
-                                {course}
-                              </option>
-                            ))}
-                          </select>
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            disabled={!getSelectedTargets(recipe).length}
-                            onClick={() =>
-                              publishRecipeToVenueMenus(
-                                recipe,
-                                getSelectedTargets(recipe),
-                                rowCourseDefaults[recipe.id] || ""
-                              )
-                            }
-                          >
-                            Add to selected menus
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            disabled={!getSelectedTargets(recipe).length}
-                            onClick={() => removeRecipeFromVenueMenus(recipe, getSelectedTargets(recipe))}
-                          >
-                            Remove from selected menus
-                          </button>
-                        </div>
-                      </details>
+                      <span className="support-text">Choose a venue above to work on a menu.</span>
                     )}
                   </td>
                 </tr>
               ))}
               {!availabilityRows.length ? (
                 <tr>
-                  <td colSpan={isVenueWorkspace ? 6 : 7} className="empty-state-cell">
+                  <td colSpan={6} className="empty-state-cell">
                     No dishes match the current venue filter.
                   </td>
                 </tr>
