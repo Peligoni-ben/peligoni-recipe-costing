@@ -6,6 +6,13 @@ import { listRecipeImportFormats, normalizeImportedRecipeSource } from "./import
 import { parseRecipeImportContents, parseRecipeImportFiles } from "./imports/parsers";
 import { supportsGoogleSheetsImport, toGoogleSheetsCsvExportUrl } from "./imports/googleSheets";
 import { supabase, supabaseAnonKey, supabaseEnabled, supabaseUrl } from "./lib/supabase";
+import BuilderTab from "./tabs/BuilderTab";
+import ExistingRecipeEditor from "./tabs/ExistingRecipeEditor";
+import IngredientsTab from "./tabs/IngredientsTab";
+import MenusTab from "./tabs/MenusTab";
+import NewRecipeBuilder from "./tabs/NewRecipeBuilder";
+import RecipesTab from "./tabs/RecipesTab";
+import SetMenusTab from "./tabs/SetMenusTab";
 
 const INGREDIENT_MASTER_STORAGE_KEY = "peligoni-ingredient-master";
 const DELETED_INGREDIENT_SIGNATURES_STORAGE_KEY = "peligoni-deleted-ingredient-signatures";
@@ -14,6 +21,7 @@ const MENUS_STORAGE_KEY = "peligoni-working-menus";
 const VENUES_STORAGE_KEY = "peligoni-working-venues";
 const DISH_INDEX_STORAGE_KEY = "peligoni-dish-index";
 const BCH_AUDIT_STORAGE_KEY = "peligoni-bch-audit";
+const RECIPE_AVAILABLE_VENUES_STORAGE_KEY = "peligoni-recipe-available-venues";
 const REQUIRED_INGREDIENT_COLUMNS = [
   "ingredient_name",
   "ingredient_item_code",
@@ -28,12 +36,13 @@ const OPTIONAL_INGREDIENT_COLUMNS = [
   "linked_recipe_id",
   "is_locked",
 ];
-const DEFAULT_SERVICE_PERIODS = ["breakfast", "lunch", "dinner"];
+const MENU_COURSE_PRESETS = ["Starter", "Main", "Dessert", "Side", "Snack"];
+const DEFAULT_SERVICE_PERIODS = ["breakfast", "lunch", "aperitivo", "dinner", "all day"];
 const DEFAULT_VENUES = ["Tasi", "Terraces", "Courtyard"];
 const VENUE_SERVICE_PERIODS = {
-  Tasi: ["breakfast", "lunch", "dinner"],
-  Terraces: ["lunch", "dinner"],
-  Courtyard: ["lunch", "dinner"],
+  Tasi: ["breakfast", "lunch", "aperitivo", "dinner", "all day"],
+  Terraces: ["lunch", "aperitivo", "dinner", "all day"],
+  Courtyard: ["lunch", "aperitivo", "dinner", "all day"],
 };
 const VENUE_ALIASES = {
   cy: "Courtyard",
@@ -58,6 +67,15 @@ const numberValue = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+function toTitleCaseWords(value) {
+  const raw = String(value || "");
+  if (!raw.trim()) return "";
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/(^|[\s\-\/(])([a-z])/g, (_, prefix, letter) => `${prefix}${letter.toUpperCase()}`);
+}
 
 function calculateRoundupTarget(recipeCost) {
   const cost = numberValue(recipeCost);
@@ -318,9 +336,20 @@ function normalizeBooleanFlag(value) {
 function getBaseVenueName(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  const parts = raw.split(/\s+/);
-  const lastPart = parts[parts.length - 1]?.toLowerCase();
-  return DEFAULT_SERVICE_PERIODS.includes(lastPart) ? parts.slice(0, -1).join(" ") : raw;
+  const matchedService = [...DEFAULT_SERVICE_PERIODS]
+    .sort((left, right) => right.length - left.length)
+    .find((service) => raw.toLowerCase().endsWith(` ${service}`));
+  if (!matchedService) return raw;
+  return raw.slice(0, raw.length - matchedService.length).trim();
+}
+
+function getMenuServicePeriod(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const matchedService = [...DEFAULT_SERVICE_PERIODS]
+    .sort((left, right) => right.length - left.length)
+    .find((service) => raw.toLowerCase().endsWith(` ${service}`));
+  return matchedService || "";
 }
 
 function normalizeVenueName(value, fallback = "") {
@@ -346,6 +375,20 @@ function getRecipeVenueLabel(recipe) {
 
 function getRecipeVenueKey(recipe) {
   return getRecipeVenueLabel(recipe) || "";
+}
+
+function getAvailableVenueListForRecipe(recipe, availableVenueMap = {}) {
+  if (!recipe || recipe.recipeType === "batch") return [];
+  const storedVenues = Array.isArray(availableVenueMap?.[recipe.id])
+    ? availableVenueMap[recipe.id].map((venue) => String(venue || "").trim()).filter(Boolean)
+    : [];
+  if (storedVenues.length) {
+    return Array.from(new Set(storedVenues)).sort((left, right) =>
+      left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
+    );
+  }
+  const primaryVenue = String(recipe.restaurant || "").trim();
+  return primaryVenue ? [primaryVenue] : [];
 }
 
 function tokenizeMatchText(value) {
@@ -566,6 +609,7 @@ const tabs = [
   { id: "queue", label: "Queue", icon: "chart" },
   { id: "recipes", label: "Recipes", icon: "chef" },
   { id: "builder", label: "Builder", icon: "calculator" },
+  { id: "venue-menus", label: "Menus", icon: "clipboard" },
   { id: "menus", label: "Set menus", icon: "clipboard" },
   { id: "ingredients", label: "Ingredients", icon: "spark" },
   { id: "imports", label: "Imports", icon: "upload" },
@@ -586,6 +630,7 @@ function Icon({ name }) {
     back: "M15 18l-6-6 6-6M9 12h12",
     search: "m21 21-4.35-4.35M10 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16Z",
     plus: "M12 5v14M5 12h14",
+    edit: "M4 20h4l10-10-4-4L4 16v4Zm11-13 4 4m-2-6 2 2",
     trash: "M4 7h16M9 7V5h6v2m-7 4v6m4-6v6m4-6v6M6 7l1 12h10l1-12",
     spark: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z",
     upload: "M12 16V5m0 0-4 4m4-4 4 4M5 19h14",
@@ -754,6 +799,18 @@ function validateRecipe(recipe) {
   };
 }
 
+function inferMenuCourseFromRecipe(recipe) {
+  const text = `${recipe?.category || ""} ${recipe?.name || ""}`.toLowerCase();
+  if (text.includes("dessert")) return "Dessert";
+  if (text.includes("side")) return "Side";
+  if (text.includes("snack")) return "Snack";
+  if (text.includes("small")) return "Small plates";
+  if (text.includes("large")) return "Large plates";
+  if (text.includes("starter")) return "Starter";
+  if (text.includes("main")) return "Main";
+  return recipe?.category || "Menu";
+}
+
 function derivePricingComplete(recipe) {
   if (!recipe.components?.length) {
     return String(recipe.pricingComplete ?? "0");
@@ -819,6 +876,109 @@ function calculateMenuCard(menu, recipes) {
     menuGp: perGuestSell > 0 ? (perGuestSell - perGuestCost) / perGuestSell : 0,
     targetRevenue: targetSellPerGuest * numberValue(menu.guestCount),
   };
+}
+
+function getMenuCourseGroups(menu) {
+  const grouped = new Map();
+
+  (menu?.lines || []).forEach((line) => {
+    const courseLabel = String(line.courseLabel || "Unassigned").trim() || "Unassigned";
+    const currentGroup = grouped.get(courseLabel) || [];
+    currentGroup.push(line);
+    grouped.set(courseLabel, currentGroup);
+  });
+
+  return Array.from(grouped.entries()).map(([courseLabel, lines]) => ({
+    courseLabel,
+    lines,
+  }));
+}
+
+function buildMenuPrintSheetHtml(menu) {
+  const courseGroups = getMenuCourseGroups(menu);
+  const groupedHtml = courseGroups
+    .map(
+      (group) => `
+        <section class="course-block">
+          <h2>${escapeHtml(group.courseLabel)}</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Dish</th>
+                <th>Category</th>
+                <th>Food cost</th>
+                <th>Current price</th>
+                <th>Suggested price</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${group.lines
+                .map((line) => {
+                  const suggestedPrice = line.recipe?.roundup ? money(line.recipe.roundup) : "N/A";
+                  return `
+                    <tr>
+                      <td>${escapeHtml(line.dishName || "Untitled dish")}</td>
+                      <td>${escapeHtml(line.category || "Uncategorised")}</td>
+                      <td>${escapeHtml(money(line.lineCost))}</td>
+                      <td>${escapeHtml(money(line.lineSalePrice))}</td>
+                      <td>${escapeHtml(suggestedPrice)}</td>
+                    </tr>
+                  `;
+                })
+                .join("")}
+            </tbody>
+          </table>
+        </section>
+      `
+    )
+    .join("");
+
+  return `<!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapeHtml(menu.name)} menu sheet</title>
+        <style>
+          body { margin: 0; background: #f8fafc; color: #0f172a; font-family: "Helvetica Neue", Arial, sans-serif; }
+          .page { max-width: 1080px; margin: 0 auto; padding: 32px; }
+          .header { display: flex; justify-content: space-between; gap: 24px; align-items: start; margin-bottom: 24px; }
+          .eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: #64748b; font-weight: 700; }
+          h1 { margin: 6px 0 10px; font-size: 34px; }
+          .meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 24px; }
+          .stat { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 14px; }
+          .stat span { display: block; font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+          .stat strong { font-size: 20px; }
+          .course-block { background: white; border: 1px solid #e2e8f0; border-radius: 18px; padding: 20px; margin-bottom: 20px; }
+          .course-block h2 { margin: 0 0 14px; font-size: 20px; }
+          table { width: 100%; border-collapse: collapse; font-size: 14px; }
+          th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+          th { color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+          @media print { body { background: white; } .page { padding: 0; } }
+        </style>
+      </head>
+      <body>
+        <div class="page">
+          <div class="header">
+            <div>
+              <div class="eyebrow">Peligoni venue menu</div>
+              <h1>${escapeHtml(menu.name)}</h1>
+              <div>${escapeHtml(menu.restaurant || "No venue")}</div>
+            </div>
+            <div>
+              <div class="eyebrow">Live state</div>
+              <strong>${escapeHtml(menu.isLiveMenu ? "Live menu" : "Draft menu")}</strong>
+            </div>
+          </div>
+          <div class="meta">
+            <div class="stat"><span>Guests</span><strong>${escapeHtml(Math.round(numberValue(menu.guestCount)))}</strong></div>
+            <div class="stat"><span>Per guest cost</span><strong>${escapeHtml(money(menu.perGuestCost))}</strong></div>
+            <div class="stat"><span>Per guest sell</span><strong>${escapeHtml(money(menu.perGuestSell))}</strong></div>
+            <div class="stat"><span>Menu GP</span><strong>${escapeHtml(percent(menu.menuGp))}</strong></div>
+          </div>
+          ${groupedHtml || '<div class="course-block"><p>No menu lines added yet.</p></div>'}
+        </div>
+      </body>
+    </html>`;
 }
 
 function getRestaurantLiveRecipeIds(menus) {
@@ -1124,6 +1284,64 @@ function isEmptyIngredientDraftRow(ingredient) {
   );
 }
 
+function getIngredientDuplicateKey(ingredient, mode) {
+  if (!ingredient) return "";
+  if (mode === "code") {
+    return normalizeCodeKey(ingredient.ingredient_item_code);
+  }
+  return normalizeMatchKey(ingredient.ingredient_name);
+}
+
+function scoreDuplicateMergeCandidate(ingredient) {
+  if (!ingredient) return -1;
+  return [
+    ingredient.ingredient_name?.trim() ? 3 : 0,
+    ingredient.ingredient_item_code?.trim() ? 4 : 0,
+    numberValue(ingredient.unit_cost) > 0 ? 3 : 0,
+    String(ingredient.pack_size || "").trim() ? 2 : 0,
+    String(ingredient.category || "").trim() ? 1 : 0,
+    String(ingredient.supplier || "").trim() ? 1 : 0,
+    String(ingredient.linked_recipe_id || "").trim() ? 2 : 0,
+    normalizeBooleanFlag(ingredient.is_locked) ? 1 : 0,
+    numberValue(ingredient.usageCount) * 5,
+  ].reduce((sum, value) => sum + value, 0);
+}
+
+function pickPrimaryIngredientForMerge(ingredients) {
+  return [...ingredients].sort((left, right) => {
+    const scoreDifference = scoreDuplicateMergeCandidate(right) - scoreDuplicateMergeCandidate(left);
+    if (scoreDifference !== 0) return scoreDifference;
+    return String(left.ingredient_name || "").localeCompare(String(right.ingredient_name || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  })[0] || null;
+}
+
+function mergeIngredientRecords(primaryIngredient, duplicateIngredients) {
+  const allIngredients = [primaryIngredient, ...duplicateIngredients].filter(Boolean);
+  const firstFilledValue = (field, fallback = "") =>
+    allIngredients.find((ingredient) => String(ingredient?.[field] || "").trim())?.[field] || fallback;
+  const firstPositiveNumber = (field) => {
+    const match = allIngredients.find((ingredient) => numberValue(ingredient?.[field]) > 0);
+    return match ? match[field] : primaryIngredient?.[field] || "";
+  };
+
+  return {
+    ...primaryIngredient,
+    ingredient_name: firstFilledValue("ingredient_name", primaryIngredient?.ingredient_name || ""),
+    ingredient_item_code: firstFilledValue("ingredient_item_code", primaryIngredient?.ingredient_item_code || ""),
+    unit_cost: firstPositiveNumber("unit_cost"),
+    pack_size: firstFilledValue("pack_size", primaryIngredient?.pack_size || ""),
+    supplier: firstFilledValue("supplier", primaryIngredient?.supplier || ""),
+    category: firstFilledValue("category", primaryIngredient?.category || ""),
+    linked_recipe_id: firstFilledValue("linked_recipe_id", primaryIngredient?.linked_recipe_id || ""),
+    entry_type: firstFilledValue("entry_type", primaryIngredient?.entry_type || "ingredient"),
+    is_locked: allIngredients.some((ingredient) => normalizeBooleanFlag(ingredient.is_locked)),
+    last_updated: getTodayDateString(),
+  };
+}
+
 function sanitizeIngredientMasterRows(rows) {
   const sanitizedRows = [];
   let keptBlankDraft = false;
@@ -1310,6 +1528,19 @@ function loadStoredCollection(storageKey) {
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
+  }
+}
+
+function loadStoredObject(storageKey) {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const stored = window.localStorage.getItem(storageKey);
+    if (!stored) return {};
+    const parsed = JSON.parse(stored);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
   }
 }
 
@@ -2545,6 +2776,9 @@ function App() {
     const stored = loadStoredCollection(BCH_AUDIT_STORAGE_KEY);
     return Array.isArray(stored) ? stored : [];
   });
+  const [recipeAvailableVenues, setRecipeAvailableVenues] = useState(() =>
+    loadStoredObject(RECIPE_AVAILABLE_VENUES_STORAGE_KEY)
+  );
   const [deletedIngredientSignatures, setDeletedIngredientSignatures] = useState(() => {
     const stored = loadStoredCollection(DELETED_INGREDIENT_SIGNATURES_STORAGE_KEY);
     return Array.isArray(stored) ? stored.filter(Boolean) : [];
@@ -2570,6 +2804,8 @@ function App() {
   const [ingredientEditLookup, setIngredientEditLookup] = useState("");
   const [ingredientEditLookupQuery, setIngredientEditLookupQuery] = useState("");
   const [ingredientEditLookupOpen, setIngredientEditLookupOpen] = useState(false);
+  const [availabilitySearch, setAvailabilitySearch] = useState("");
+  const [availabilityVenueFilter, setAvailabilityVenueFilter] = useState("all");
   const [selectedImportFormat, setSelectedImportFormat] = useState("flat-component-export");
   const [importPreview, setImportPreview] = useState(null);
   const [importError, setImportError] = useState("");
@@ -2582,6 +2818,9 @@ function App() {
   const [selectedMenuId, setSelectedMenuId] = useState(
     () => createMenus(createRecipes().map((recipe) => enrichRecipeMetrics(recipe)))[0]?.id || null
   );
+  const [menuDashboardVenue, setMenuDashboardVenue] = useState("all");
+  const [menuDashboardService, setMenuDashboardService] = useState("all");
+  const [menuLiveVenueFilter, setMenuLiveVenueFilter] = useState("all");
   const [reviewFilter, setReviewFilter] = useState("all");
   const [recipeListTypeFilter, setRecipeListTypeFilter] = useState("all");
   const [builderMode, setBuilderMode] = useState("create");
@@ -2614,6 +2853,7 @@ function App() {
   const [dishIndexLookupQuery, setDishIndexLookupQuery] = useState("");
   const [showArchivedDishIndexRows, setShowArchivedDishIndexRows] = useState(false);
   const [pageHistory, setPageHistory] = useState([]);
+  const menuBuilderRef = useRef(null);
   const exportPreviewFrameRef = useRef(null);
   const previousActiveTabRef = useRef("recipes");
   const ingredientNavigationTargetRef = useRef(null);
@@ -2630,6 +2870,9 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(RECIPES_STORAGE_KEY, JSON.stringify(recipes));
   }, [recipes]);
+  useEffect(() => {
+    saveStoredCollection(RECIPE_AVAILABLE_VENUES_STORAGE_KEY, recipeAvailableVenues);
+  }, [recipeAvailableVenues]);
 
   useEffect(() => {
     window.localStorage.setItem(MENUS_STORAGE_KEY, JSON.stringify(menus));
@@ -3096,6 +3339,62 @@ function App() {
       return matchesRestaurant && matchesSearch && matchesReview;
     });
   }, [recipes, restaurant, reviewFilter, search]);
+  const liveRecipeVenueSummary = useMemo(() => {
+    const grouped = new Map();
+
+    recipes
+      .filter((recipe) => recipe.recipeType !== "batch" && recipe.isLive)
+      .forEach((recipe) => {
+        const venueLabel = getRecipeVenueKey(recipe) || "Blank";
+        grouped.set(venueLabel, (grouped.get(venueLabel) || 0) + 1);
+      });
+
+    return Array.from(grouped.entries())
+      .sort((left, right) => left[0].localeCompare(right[0], undefined, { numeric: true, sensitivity: "base" }))
+      .map(([venue, count]) => ({ venue, count }));
+  }, [recipes]);
+  const availabilityRows = useMemo(
+    () =>
+      recipes
+        .filter((recipe) => recipe.recipeType !== "batch")
+        .map((recipe) => ({
+          ...recipe,
+          availableVenues: getAvailableVenueListForRecipe(recipe, recipeAvailableVenues),
+        }))
+        .filter((recipe) => {
+          const query = availabilitySearch.trim().toLowerCase();
+          const matchesVenue =
+            availabilityVenueFilter === "all" || recipe.availableVenues.includes(availabilityVenueFilter);
+          if (!matchesVenue) return false;
+          if (!query) return true;
+          return (
+            recipe.name.toLowerCase().includes(query) ||
+            recipe.category.toLowerCase().includes(query) ||
+            recipe.sellingItemCode.toLowerCase().includes(query) ||
+            recipe.availableVenues.some((venue) => venue.toLowerCase().includes(query))
+          );
+        })
+        .sort((left, right) =>
+          left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" })
+        ),
+    [availabilitySearch, availabilityVenueFilter, recipeAvailableVenues, recipes]
+  );
+  const availabilityVenueSummary = useMemo(() => {
+    const grouped = new Map();
+
+    recipes
+      .filter((recipe) => recipe.recipeType !== "batch")
+      .forEach((recipe) => {
+        const availableVenues = getAvailableVenueListForRecipe(recipe, recipeAvailableVenues);
+        availableVenues.forEach((venue) => {
+          grouped.set(venue, (grouped.get(venue) || 0) + 1);
+        });
+      });
+
+    return Array.from(grouped.entries())
+      .sort((left, right) => left[0].localeCompare(right[0], undefined, { numeric: true, sensitivity: "base" }))
+      .map(([venue, count]) => ({ venue, count }));
+  }, [recipeAvailableVenues, recipes]);
 
   const selectedRecipe = useMemo(
     () => recipes.find((recipe) => recipe.id === selectedRecipeId) || filteredRecipes[0] || null,
@@ -3267,6 +3566,116 @@ function App() {
   const selectedMenu =
     menuCards.find((menu) => menu.id === selectedMenuId) || menuCards[0] || null;
   const restaurantLiveRecipeIds = useMemo(() => getRestaurantLiveRecipeIds(menuCards), [menuCards]);
+  const activeVenueMenus = useMemo(
+    () => menuCards.filter((menu) => menu.isLiveMenu),
+    [menuCards]
+  );
+  const activeVenueMenuSummary = useMemo(() => {
+    const grouped = new Map();
+
+    activeVenueMenus.forEach((menu) => {
+      const venueLabel = menu.restaurant || "Unassigned";
+      const current = grouped.get(venueLabel) || { menuCount: 0, dishCount: 0 };
+      grouped.set(venueLabel, {
+        menuCount: current.menuCount + 1,
+        dishCount: current.dishCount + (menu.lines?.length || 0),
+      });
+    });
+
+    return Array.from(grouped.entries())
+      .sort((left, right) => left[0].localeCompare(right[0], undefined, { numeric: true, sensitivity: "base" }))
+      .map(([venue, counts]) => ({ venue, ...counts }));
+  }, [activeVenueMenus]);
+  const activeVenueMenuDishCount = useMemo(
+    () => activeVenueMenus.reduce((sum, menu) => sum + (menu.lines?.length || 0), 0),
+    [activeVenueMenus]
+  );
+  const filteredActiveVenueMenus = useMemo(() => {
+    if (menuLiveVenueFilter === "all") return activeVenueMenus;
+    return activeVenueMenus.filter((menu) => (menu.restaurant || "Unassigned") === menuLiveVenueFilter);
+  }, [activeVenueMenus, menuLiveVenueFilter]);
+  const menuDashboardSummary = useMemo(() => {
+    const inventoryByVenue = new Map();
+
+    recipes
+      .filter((recipe) => recipe.recipeType !== "batch")
+      .forEach((recipe) => {
+        const availableVenues = getAvailableVenueListForRecipe(recipe, recipeAvailableVenues);
+        availableVenues.forEach((venue) => {
+          const baseVenue = getBaseVenueName(venue) || venue || "Unassigned";
+          inventoryByVenue.set(baseVenue, (inventoryByVenue.get(baseVenue) || 0) + 1);
+        });
+      });
+
+    const menuCountsByVenue = new Map();
+    menuCards.forEach((menu) => {
+      const baseVenue = getBaseVenueName(menu.restaurant) || menu.restaurant || "Unassigned";
+      const current = menuCountsByVenue.get(baseVenue) || { menuCount: 0, liveCount: 0, dishCount: 0 };
+      menuCountsByVenue.set(baseVenue, {
+        menuCount: current.menuCount + 1,
+        liveCount: current.liveCount + (menu.isLiveMenu ? 1 : 0),
+        dishCount: current.dishCount + (menu.lines?.length || 0),
+      });
+    });
+
+    const allVenues = Array.from(new Set([...inventoryByVenue.keys(), ...menuCountsByVenue.keys()]));
+    return allVenues
+      .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }))
+      .map((venue) => {
+        const menuCounts = menuCountsByVenue.get(venue) || { menuCount: 0, liveCount: 0, dishCount: 0 };
+        return {
+          venue,
+          inventoryCount: inventoryByVenue.get(venue) || 0,
+          ...menuCounts,
+        };
+      });
+  }, [menuCards, recipeAvailableVenues, recipes]);
+  const dashboardVenueMenus = useMemo(() => {
+    if (menuDashboardVenue === "all") return menuCards;
+    return menuCards.filter((menu) => getBaseVenueName(menu.restaurant) === menuDashboardVenue);
+  }, [menuCards, menuDashboardVenue]);
+  const dashboardServiceSummary = useMemo(() => {
+    if (menuDashboardVenue === "all") return [];
+    const serviceCounts = new Map();
+    dashboardVenueMenus.forEach((menu) => {
+      const service = getMenuServicePeriod(menu.restaurant) || "unspecified";
+      const current = serviceCounts.get(service) || { menuCount: 0, liveCount: 0, dishCount: 0 };
+      serviceCounts.set(service, {
+        menuCount: current.menuCount + 1,
+        liveCount: current.liveCount + (menu.isLiveMenu ? 1 : 0),
+        dishCount: current.dishCount + (menu.lines?.length || 0),
+      });
+    });
+    const knownServices = VENUE_SERVICE_PERIODS[menuDashboardVenue] || DEFAULT_SERVICE_PERIODS;
+    const allServices = Array.from(new Set([...knownServices, ...serviceCounts.keys()]));
+    return allServices.map((service) => {
+      const counts = serviceCounts.get(service) || { menuCount: 0, liveCount: 0, dishCount: 0 };
+      return {
+        service,
+        ...counts,
+      };
+    });
+  }, [dashboardVenueMenus, menuDashboardVenue]);
+  const filteredDashboardVenueMenus = useMemo(() => {
+    if (menuDashboardService === "all") return dashboardVenueMenus;
+    return dashboardVenueMenus.filter(
+      (menu) => (getMenuServicePeriod(menu.restaurant) || "unspecified") === menuDashboardService
+    );
+  }, [dashboardVenueMenus, menuDashboardService]);
+  const dashboardMenu = useMemo(() => {
+    if (!filteredDashboardVenueMenus.length) return null;
+    return filteredDashboardVenueMenus.find((menu) => menu.isLiveMenu) || filteredDashboardVenueMenus[0];
+  }, [filteredDashboardVenueMenus]);
+  const dashboardInventoryRecipes = useMemo(() => {
+    if (menuDashboardVenue === "all") return [];
+    return recipes.filter(
+      (recipe) =>
+        recipe.recipeType !== "batch" &&
+        getAvailableVenueListForRecipe(recipe, recipeAvailableVenues).some(
+          (venue) => getBaseVenueName(venue) === menuDashboardVenue
+        )
+    );
+  }, [menuDashboardVenue, recipeAvailableVenues, recipes]);
   const recipeListRows = useMemo(
     () =>
       filteredRecipes
@@ -3486,6 +3895,62 @@ function App() {
     }),
     [ingredientCatalog]
   );
+  const duplicateIngredientGroups = useMemo(() => {
+    const grouped = new Map();
+    const signatures = new Set();
+    const ingredientRows = ingredientCatalog.filter((ingredient) => !isEmptyIngredientDraftRow(ingredient));
+
+    ingredientRows.forEach((ingredient) => {
+      ["code", "name"].forEach((mode) => {
+        const value = getIngredientDuplicateKey(ingredient, mode);
+        if (!value) return;
+        const groupKey = `${mode}:${ingredient.entry_type || "ingredient"}:${value}`;
+        const currentGroup = grouped.get(groupKey) || [];
+        currentGroup.push(ingredient);
+        grouped.set(groupKey, currentGroup);
+      });
+    });
+
+    return Array.from(grouped.entries())
+      .filter(([, ingredients]) => ingredients.length > 1)
+      .map(([groupKey, ingredients]) => {
+        const [mode] = groupKey.split(":");
+        const uniqueIngredients = Array.from(
+          new Map(ingredients.map((ingredient) => [ingredient.id, ingredient])).values()
+        );
+        if (uniqueIngredients.length <= 1) return null;
+        const sortedIngredients = [...uniqueIngredients].sort((left, right) =>
+          String(left.ingredient_name || "").localeCompare(String(right.ingredient_name || ""), undefined, {
+            numeric: true,
+            sensitivity: "base",
+          })
+        );
+        const signature = sortedIngredients
+          .map((ingredient) => ingredient.id)
+          .sort((left, right) => left.localeCompare(right))
+          .join("|");
+        if (signatures.has(signature)) return null;
+        signatures.add(signature);
+        const primaryIngredient = pickPrimaryIngredientForMerge(sortedIngredients);
+        return {
+          id: groupKey,
+          mode,
+          value: mode === "code" ? primaryIngredient?.ingredient_item_code || "" : primaryIngredient?.ingredient_name || "",
+          ingredients: sortedIngredients,
+          primaryIngredient,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => {
+        if (right.ingredients.length !== left.ingredients.length) {
+          return right.ingredients.length - left.ingredients.length;
+        }
+        return left.value.localeCompare(right.value, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+      });
+  }, [ingredientCatalog]);
   const batchCatalog = useMemo(
     () =>
       recipes
@@ -3724,9 +4189,6 @@ function App() {
     });
 
     return [...filteredRows].sort((leftRow, rightRow) => {
-      const leftPinned = isIngredientBuilderRow(leftRow);
-      const rightPinned = isIngredientBuilderRow(rightRow);
-      if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
       const leftValue = getIngredientSortValue(leftRow, ingredientSortColumn);
       const rightValue = getIngredientSortValue(rightRow, ingredientSortColumn);
       let comparison = 0;
@@ -3780,6 +4242,17 @@ function App() {
     return buildIngredientSuggestions({ query, recipes, ingredientMaster });
   }, [activeDraftLookupId, ingredientMaster, newRecipeDraft.components, recipes]);
 
+  const ingredientExistsByNameOrCode = (ingredientName = "", ingredientCode = "") => {
+    const normalizedName = normalizeMatchKey(ingredientName);
+    const normalizedCode = normalizeCodeKey(ingredientCode);
+
+    return ingredientMaster.some((ingredient) => {
+      if (normalizedCode && normalizeCodeKey(ingredient.ingredient_item_code) === normalizedCode) return true;
+      if (normalizedName && normalizeMatchKey(ingredient.ingredient_name) === normalizedName) return true;
+      return false;
+    });
+  };
+
   const resolveComponentSource = (ingredientName, code, options = {}) => {
     const normalizedCode = normalizeCodeKey(code);
     const normalizedName = normalizeMatchKey(ingredientName);
@@ -3831,7 +4304,8 @@ function App() {
       current.map((recipe) => {
         if (recipe.id !== recipeId) return recipe;
         if (recipe.isLocked && field !== "isLocked") return recipe;
-        const nextRecipe = { ...recipe, [field]: value };
+        const normalizedValue = field === "name" ? toTitleCaseWords(value) : value;
+        const nextRecipe = { ...recipe, [field]: normalizedValue };
         if (field === "recipeType" && value === "batch") {
           nextRecipe.isLive = false;
         }
@@ -3885,7 +4359,7 @@ function App() {
     const nextDraft = {
       ...createRecipeDraft(nextVenue),
       restaurant: nextVenue,
-      name: row.dishName || "",
+      name: toTitleCaseWords(row.dishName || ""),
       category: row.course || "",
     };
 
@@ -3903,14 +4377,12 @@ function App() {
         return nextRow;
       })
     );
-    if (nextRow && supabaseEnabled && supabase) {
-      const { error } = await syncDishIndexRowToSupabase(nextRow);
-      if (error) {
-        setImportError(`Saved dish index change locally, but could not sync to Supabase: ${error.message}`);
-      } else {
-        setBackendStatus("Supabase connected");
-      }
-    }
+    await runOptionalSharedSync({
+      enabled: Boolean(nextRow),
+      sync: () => syncDishIndexRowToSupabase(nextRow),
+      onError: (error) =>
+        setImportError(`Saved dish index change locally, but could not sync to Supabase: ${error.message}`),
+    });
   };
 
   const confirmDishIndexMatch = async (rowId, recipeId) => {
@@ -3962,14 +4434,12 @@ function App() {
         return nextDecision;
       });
     });
-    if (nextDecision && supabaseEnabled && supabase) {
-      const { error } = await syncBchAuditDecisionToSupabase(nextDecision);
-      if (error) {
-        setImportError(`Saved BCH audit change locally, but could not sync to Supabase: ${error.message}`);
-      } else {
-        setBackendStatus("Supabase connected");
-      }
-    }
+    await runOptionalSharedSync({
+      enabled: Boolean(nextDecision),
+      sync: () => syncBchAuditDecisionToSupabase(nextDecision),
+      onError: (error) =>
+        setImportError(`Saved BCH audit change locally, but could not sync to Supabase: ${error.message}`),
+    });
   };
 
   const archiveDishIndexRow = async (rowId) => {
@@ -4163,7 +4633,8 @@ function App() {
 
   const updateNewRecipeField = (field, value) => {
     setNewRecipeDraft((current) => {
-      const nextDraft = { ...current, [field]: value };
+      const normalizedValue = field === "name" ? toTitleCaseWords(value) : value;
+      const nextDraft = { ...current, [field]: normalizedValue };
       if (field === "recipeType") {
         if (value === "batch") {
           nextDraft.restaurant = "";
@@ -4548,6 +5019,38 @@ function App() {
     setActiveDraftLookupId(null);
   };
 
+  const createIngredientFromRecipeBuilder = ({
+    ingredientName = "",
+    ingredientCode = "",
+    supplier = "",
+    category = "",
+    recipeId = "",
+    recipeName = "",
+    draftComponentId = "",
+    componentId = "",
+  }) => {
+    if (requireEditAccess()) return;
+    const trimmedIngredientName = String(ingredientName || "").trim();
+    const trimmedIngredientCode = String(ingredientCode || "").trim();
+
+    setIngredientReturnTarget({
+      recipeId,
+      recipeName,
+      componentId,
+      draftComponentId,
+    });
+    addIngredientRow({
+      openQuickEdit: true,
+      ingredientName: trimmedIngredientName,
+      ingredientCode: trimmedIngredientCode,
+      supplier,
+      category,
+      switchToIngredients: false,
+    });
+    setActiveLookup(null);
+    setActiveDraftLookupId(null);
+  };
+
   const handleIngredientUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -4590,13 +5093,14 @@ function App() {
 
   const updateIngredientField = (ingredientId, field, value) => {
     setIngredientMaster((current) => {
+      const normalizedValue = field === "ingredient_name" ? toTitleCaseWords(value) : value;
       const nextIngredients = current.map((ingredient) =>
         ingredient.id === ingredientId
           ? ingredient.is_locked && field !== "is_locked"
             ? ingredient
             : {
                 ...ingredient,
-                [field]: field === "is_locked" ? Boolean(value) : value,
+                [field]: field === "is_locked" ? Boolean(value) : normalizedValue,
                 last_updated: field === "last_updated" ? value : getTodayDateString(),
               }
           : ingredient
@@ -4625,28 +5129,102 @@ function App() {
     });
   };
 
-  const saveIngredientMasterChanges = () => {
+  const normalizeExistingNames = () => {
+    if (requireEditAccess()) return;
+
+    const normalizedIngredientMaster = ingredientMaster.map((ingredient) => ({
+      ...ingredient,
+      ingredient_name: toTitleCaseWords(ingredient.ingredient_name),
+      last_updated: ingredient.ingredient_name !== toTitleCaseWords(ingredient.ingredient_name)
+        ? getTodayDateString()
+        : ingredient.last_updated,
+    }));
+
+    const normalizedRecipes = recipes.map((recipe) =>
+      enrichRecipeMetrics({
+        ...recipe,
+        name: toTitleCaseWords(recipe.name),
+        components: (recipe.components || []).map((component) => ({
+          ...component,
+          ingredient: toTitleCaseWords(component.ingredient),
+        })),
+      })
+    );
+
+    const syncedRecipes = syncIngredientReferences(normalizedRecipes, normalizedIngredientMaster);
+
+    setIngredientMaster(normalizedIngredientMaster);
+    setRecipes(syncedRecipes);
+    setIngredientUploadError("");
+    setIngredientUploadMessage("Normalized existing ingredient, batch, and recipe names to title case.");
+  };
+
+  const createMissingIngredientRowsFromRecipes = () => {
+    if (requireEditAccess()) return;
+    const deletedSet = new Set(deletedIngredientSignatures);
+    const seededIngredientMaster = seedImportedIngredientRows(ingredientMaster, recipes, deletedSet);
+    const nextIngredientMaster = seededIngredientMaster.map((ingredient) => ({
+      ...ingredient,
+      is_locked: true,
+      last_updated: getTodayDateString(),
+    }));
+    const addedRows = seededIngredientMaster.length - ingredientMaster.length;
+    const addedBatchRows = seededIngredientMaster
+      .slice(ingredientMaster.length)
+      .filter((ingredient) => (ingredient.entry_type || "ingredient") === "batch").length;
+    const addedIngredientRows = addedRows - addedBatchRows;
+
+    setIngredientMaster(nextIngredientMaster);
+    setRecipes((current) => syncIngredientReferences(current, nextIngredientMaster));
+    setIngredientUploadError("");
+    setIngredientUploadMessage(
+      addedRows > 0
+        ? `Added ${addedRows} missing ingredient row${addedRows === 1 ? "" : "s"} from recipes and batches (${addedIngredientRows} ingredient, ${addedBatchRows} batch) and locked the ingredient master.`
+        : "No missing ingredient rows were found in the current recipes and batches. Locked the ingredient master."
+    );
+  };
+
+  const toggleRecipeAvailableVenue = (recipeId, venue, checked) => {
+    setRecipeAvailableVenues((current) => {
+      const existing = Array.isArray(current?.[recipeId]) ? current[recipeId] : [];
+      const nextVenues = checked
+        ? Array.from(new Set([...existing, venue]))
+        : existing.filter((item) => item !== venue);
+
+      if (!nextVenues.length) {
+        const nextMap = { ...current };
+        delete nextMap[recipeId];
+        return nextMap;
+      }
+
+      return {
+        ...current,
+        [recipeId]: nextVenues.sort((left, right) =>
+          left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
+        ),
+      };
+    });
+  };
+
+  const saveIngredientMasterChanges = async () => {
     if (requireEditAccess()) return;
     saveStoredCollection(INGREDIENT_MASTER_STORAGE_KEY, ingredientMaster);
     setRecipes((current) => syncIngredientReferences(current, ingredientMaster));
     setIngredientUploadError("");
     setIngredientUploadMessage(`Saved ${ingredientMaster.length} ingredient rows and refreshed linked recipe costs.`);
 
-    if (supabaseEnabled && supabase) {
-      supabase
-        .from("ingredients")
-        .upsert(ingredientMaster.map(mapIngredientRowToSupabase), { onConflict: "id" })
-        .then(({ error }) => {
-          if (error) {
-            setIngredientUploadError(`Saved locally, but could not sync ingredients to Supabase: ${error.message}`);
-            return;
-          }
-          setBackendStatus("Supabase connected");
-          setIngredientUploadMessage(
-            `Saved ${ingredientMaster.length} ingredient rows locally and to Supabase.`
-          );
-        });
-    }
+    await runOptionalSharedSync({
+      sync: () =>
+        supabase
+          .from("ingredients")
+          .upsert(ingredientMaster.map(mapIngredientRowToSupabase), { onConflict: "id" }),
+      onError: (error) =>
+        setIngredientUploadError(`Saved locally, but could not sync ingredients to Supabase: ${error.message}`),
+      onSuccess: () =>
+        setIngredientUploadMessage(
+          `Saved ${ingredientMaster.length} ingredient rows locally and to Supabase.`
+        ),
+    });
   };
 
   const syncRecipeToSupabase = async (recipe) => {
@@ -4725,6 +5303,29 @@ function App() {
     return { error };
   };
 
+  const runOptionalSharedSync = async ({ enabled = true, sync, onSuccess, onError } = {}) => {
+    if (!enabled || !supabaseEnabled || !supabase || typeof sync !== "function") {
+      return { error: null, skipped: true };
+    }
+
+    const result = await sync();
+    const error = result?.error || null;
+
+    if (error) {
+      if (typeof onError === "function") {
+        onError(error);
+      }
+      return { error, skipped: false };
+    }
+
+    setBackendStatus("Supabase connected");
+    if (typeof onSuccess === "function") {
+      onSuccess(result);
+    }
+
+    return { error: null, skipped: false };
+  };
+
   const saveCurrentRecipeChanges = async () => {
     if (requireEditAccess()) return;
     if (!selectedRecipe) return;
@@ -4751,21 +5352,19 @@ function App() {
       }.`
     );
 
-    if (supabaseEnabled && supabase) {
-      const { error } = await syncRecipeToSupabase(syncedSelectedRecipe);
-      if (error) {
+    await runOptionalSharedSync({
+      sync: () => syncRecipeToSupabase(syncedSelectedRecipe),
+      onError: (error) =>
         setImportError(
           `Saved locally, but could not sync ${syncedSelectedRecipe.recipeType === "batch" ? "batch" : "recipe"} to Supabase: ${error.message}`
-        );
-        return;
-      }
-      setBackendStatus("Supabase connected");
-      setImportMessage(
-        `Saved ${syncedSelectedRecipe.recipeType === "batch" ? "batch" : "recipe"} ${
-          syncedSelectedRecipe.name || syncedSelectedRecipe.id
-        } locally and to Supabase.`
-      );
-    }
+        ),
+      onSuccess: () =>
+        setImportMessage(
+          `Saved ${syncedSelectedRecipe.recipeType === "batch" ? "batch" : "recipe"} ${
+            syncedSelectedRecipe.name || syncedSelectedRecipe.id
+          } locally and to Supabase.`
+        ),
+    });
   };
 
   const syncMenuToSupabase = async (menu) => {
@@ -4798,19 +5397,18 @@ function App() {
       `Saved ${selectedMenu?.name || "menu"}${selectedMenu?.restaurant ? ` for ${selectedMenu.restaurant}` : ""}.`
     );
 
-    if (supabaseEnabled && supabase && selectedMenu) {
-      const { error } = await syncMenuToSupabase(selectedMenu);
-      if (error) {
+    await runOptionalSharedSync({
+      enabled: Boolean(selectedMenu),
+      sync: () => syncMenuToSupabase(selectedMenu),
+      onError: (error) =>
         setImportError(
           `Saved locally, but could not sync menu ${selectedMenu.name || selectedMenu.id} to Supabase: ${error.message}`
-        );
-        return;
-      }
-      setBackendStatus("Supabase connected");
-      setImportMessage(
-        `Saved ${selectedMenu.name || "menu"}${selectedMenu.restaurant ? ` for ${selectedMenu.restaurant}` : ""} locally and to Supabase.`
-      );
-    }
+        ),
+      onSuccess: () =>
+        setImportMessage(
+          `Saved ${selectedMenu.name || "menu"}${selectedMenu.restaurant ? ` for ${selectedMenu.restaurant}` : ""} locally and to Supabase.`
+        ),
+    });
   };
 
   const addVenue = () => {
@@ -4845,24 +5443,82 @@ function App() {
     }
   };
 
-  const addIngredientRow = () => {
+  const addIngredientRow = ({
+    openQuickEdit = false,
+    ingredientName = "",
+    ingredientCode = "",
+    supplier = "",
+    category = "",
+    switchToIngredients = true,
+  } = {}) => {
     if (requireEditAccess()) return;
+    const trimmedIngredientName = toTitleCaseWords(ingredientName);
+    const trimmedIngredientCode = String(ingredientCode || "").trim();
+    const trimmedSupplier = String(supplier || "").trim();
+    const trimmedCategory = String(category || "").trim();
+    if (switchToIngredients) {
+      setActiveTab("ingredients");
+      setIngredientTypeFilter("all");
+      setIngredientBatchLinkFilter("all");
+      setIngredientColumnFilter("all-columns");
+      setSearch("");
+    }
+    setIngredientUploadError("");
+    setIngredientEditLookup("");
+    setIngredientEditLookupQuery(trimmedIngredientName);
+
+    const existingBlankRow = ingredientMaster.find((ingredient) => isEmptyIngredientDraftRow(ingredient));
+    if (existingBlankRow) {
+      setIngredientUploadMessage(
+        trimmedIngredientName
+          ? `Started a new ingredient draft for ${trimmedIngredientName}.`
+          : "Added a new blank ingredient row at the top of the catalogue."
+      );
+      setActiveIngredientDraftId(existingBlankRow.id);
+      setIngredientMaster((current) =>
+        current.map((ingredient) =>
+          ingredient.id === existingBlankRow.id
+            ? {
+                ...ingredient,
+                ingredient_name: trimmedIngredientName || ingredient.ingredient_name,
+                ingredient_item_code: trimmedIngredientCode || ingredient.ingredient_item_code,
+                supplier: trimmedSupplier || ingredient.supplier,
+                category: trimmedCategory || ingredient.category,
+              }
+            : ingredient
+        )
+      );
+      if (openQuickEdit) {
+        setQuickPanel({
+          type: "ingredient",
+          ingredientId: existingBlankRow.id,
+        });
+      }
+      return;
+    }
+
     const next = String(ingredientMaster.length + 1).padStart(3, "0");
     const nextId = `local-ingredient-${next}`;
-    setActiveTab("ingredients");
-    setIngredientTypeFilter("all");
-    setIngredientBatchLinkFilter("all");
-    setIngredientColumnFilter("all-columns");
-    setSearch("");
-    setIngredientUploadError("");
-    setIngredientUploadMessage("Added a new blank ingredient row at the top of the catalogue.");
+    const draftedIngredient = {
+      ...createBlankIngredientRow(nextId),
+      ingredient_name: trimmedIngredientName,
+      ingredient_item_code: trimmedIngredientCode,
+      supplier: trimmedSupplier,
+      category: trimmedCategory,
+    };
+    setIngredientUploadMessage(
+      trimmedIngredientName
+        ? `Started a new ingredient draft for ${trimmedIngredientName}.`
+        : "Added a new blank ingredient row at the top of the catalogue."
+    );
     setActiveIngredientDraftId(nextId);
-    setIngredientEditLookup("");
-    setIngredientEditLookupQuery("");
-    setIngredientMaster((current) => [
-      createBlankIngredientRow(nextId),
-      ...current,
-    ]);
+    setIngredientMaster((current) => [draftedIngredient, ...current]);
+    if (openQuickEdit) {
+      setQuickPanel({
+        type: "ingredient",
+        ingredientId: nextId,
+      });
+    }
   };
 
   const deleteIngredientRow = (ingredient) => {
@@ -4894,6 +5550,56 @@ function App() {
     setIngredientUploadError("");
     setIngredientUploadMessage(
       `Deleted ingredient ${ingredient.ingredient_name || ingredient.ingredient_item_code || ingredient.id}.`
+    );
+  };
+
+  const mergeDuplicateIngredientGroup = (group) => {
+    if (requireEditAccess()) return;
+    if (!group?.ingredients?.length || !group.primaryIngredient) return;
+
+    const primaryId = group.primaryIngredient.id;
+    const duplicateIds = group.ingredients
+      .map((ingredient) => ingredient.id)
+      .filter((ingredientId) => ingredientId !== primaryId);
+    if (!duplicateIds.length) return;
+
+    setIngredientMaster((current) => {
+      const currentGroupIngredients = group.ingredients
+        .map((ingredient) => current.find((row) => row.id === ingredient.id))
+        .filter(Boolean);
+      const livePrimaryIngredient =
+        current.find((ingredient) => ingredient.id === primaryId) ||
+        pickPrimaryIngredientForMerge(currentGroupIngredients);
+      if (!livePrimaryIngredient) return current;
+
+      const liveDuplicateIngredients = currentGroupIngredients.filter(
+        (ingredient) => ingredient.id !== livePrimaryIngredient.id
+      );
+      const mergedIngredient = mergeIngredientRecords(livePrimaryIngredient, liveDuplicateIngredients);
+      const nextIngredients = current
+        .filter((ingredient) => !liveDuplicateIngredients.some((duplicate) => duplicate.id === ingredient.id))
+        .map((ingredient) => (ingredient.id === livePrimaryIngredient.id ? mergedIngredient : ingredient));
+
+      if (activeIngredientDraftId && duplicateIds.includes(activeIngredientDraftId)) {
+        setActiveIngredientDraftId(livePrimaryIngredient.id);
+      }
+      if (ingredientEditLookup && duplicateIds.includes(ingredientEditLookup)) {
+        setIngredientEditLookup(livePrimaryIngredient.id);
+      }
+      if (quickPanel?.type === "ingredient" && duplicateIds.includes(quickPanel.ingredientId)) {
+        setQuickPanel({
+          type: "ingredient",
+          ingredientId: livePrimaryIngredient.id,
+        });
+      }
+
+      setRecipes((recipesCurrent) => syncIngredientReferences(recipesCurrent, nextIngredients));
+      return nextIngredients;
+    });
+
+    setIngredientUploadError("");
+    setIngredientUploadMessage(
+      `Merged ${group.ingredients.length} duplicate rows into ${group.primaryIngredient.ingredient_name || "one ingredient"}.`
     );
   };
 
@@ -5031,12 +5737,9 @@ function App() {
       setIngredientEditLookupQuery("");
       return;
     }
-    const next = String(ingredientMaster.length + 1).padStart(3, "0");
-    const nextId = `local-ingredient-${next}`;
-    setActiveIngredientDraftId(nextId);
-    setIngredientEditLookup(nextId);
+    setActiveIngredientDraftId(null);
+    setIngredientEditLookup("");
     setIngredientEditLookupQuery("");
-    setIngredientMaster((current) => [createBlankIngredientRow(nextId), ...current]);
   }, [activeTab, ingredientEditOptions, ingredientMaster]);
 
   useEffect(() => {
@@ -5075,6 +5778,300 @@ function App() {
     </button>
   );
 
+  const renderIngredientCatalogRow = (row) => (
+    <tr
+      key={row.id}
+      className={`${row.validation.reviewStatus === "needs-review" ? "review-row" : ""}`.trim()}
+    >
+      <td className="lock-cell">
+        {row.sourceKind === "ingredient-master" ? (
+          <label className="lock-toggle" aria-label={`Lock ${row.displayName || "ingredient"}`}>
+            <input
+              type="checkbox"
+              checked={Boolean(row.source.is_locked)}
+              onFocus={() => focusIngredientCatalogueRow(row.source.id)}
+              onChange={(event) =>
+                updateIngredientField(row.source.id, "is_locked", event.target.checked)
+              }
+            />
+          </label>
+        ) : (
+          <div className="table-static">-</div>
+        )}
+      </td>
+      <td>
+        {row.sourceKind === "ingredient-master" ? (
+          <button
+            type="button"
+            className="secondary-button table-action-button"
+            onClick={() => {
+              focusIngredientCatalogueRow(row.source.id);
+              openIngredientQuickPanel(row.source);
+            }}
+          >
+            Edit
+          </button>
+        ) : (
+          <div className="table-static">-</div>
+        )}
+      </td>
+      <td>
+        {row.sourceKind === "ingredient-master" ? (
+          <select
+            className="table-input"
+            value={row.rowType}
+            disabled={row.source.is_locked}
+            onFocus={() => focusIngredientCatalogueRow(row.source.id)}
+            onChange={(event) =>
+              updateIngredientField(row.source.id, "entry_type", event.target.value)
+            }
+          >
+            <option value="ingredient">Ingredient</option>
+            <option value="batch">Batch</option>
+          </select>
+        ) : (
+          <div className="badge-row compact">
+            <Badge tone="default">Batch recipe</Badge>
+          </div>
+        )}
+      </td>
+      <td>
+        {row.sourceKind === "ingredient-master" ? (
+          <input
+            className={`table-input ${
+              row.validation.issues.includes("Missing ingredient name") ? "input-error" : ""
+            }`}
+            value={row.source.ingredient_name}
+            disabled={row.source.is_locked}
+            onFocus={() => focusIngredientCatalogueRow(row.source.id)}
+            onChange={(event) =>
+              updateIngredientField(row.source.id, "ingredient_name", event.target.value)
+            }
+            placeholder="Ingredient name"
+          />
+        ) : (
+          <div className="table-static strong-cell">{row.displayName || "Missing"}</div>
+        )}
+      </td>
+      <td>
+        {row.sourceKind === "ingredient-master" ? (
+          <input
+            className={`table-input ${
+              row.validation.issues.some((issue) => issue.includes("item code")) ? "input-error" : ""
+            }`}
+            value={row.source.ingredient_item_code}
+            disabled={row.source.is_locked}
+            onFocus={() => focusIngredientCatalogueRow(row.source.id)}
+            onChange={(event) =>
+              updateIngredientField(row.source.id, "ingredient_item_code", event.target.value)
+            }
+            placeholder="Item code"
+          />
+        ) : (
+          <div className="table-static">{row.displayCode || "Missing"}</div>
+        )}
+      </td>
+      <td>
+        {row.sourceKind === "ingredient-master" ? (
+          <input
+            inputMode="decimal"
+            className={`table-input numeric-input ${
+              row.validation.issues.some((issue) => issue.includes("price")) ? "input-error" : ""
+            }`}
+            value={row.source.unit_cost}
+            disabled={row.source.is_locked}
+            onFocus={() => focusIngredientCatalogueRow(row.source.id)}
+            onChange={(event) =>
+              updateIngredientField(row.source.id, "unit_cost", event.target.value)
+            }
+            placeholder="0.00"
+          />
+        ) : (
+          <div className="table-static">{money(row.displayPrice)}</div>
+        )}
+      </td>
+      <td>
+        {row.sourceKind === "ingredient-master" ? (
+          <div className="pack-size-cell">
+            <input
+              inputMode="decimal"
+              className="table-input numeric-input pack-size-value"
+              value={parsePackSizeParts(row.source.pack_size).value}
+              disabled={row.source.is_locked}
+              onFocus={() => focusIngredientCatalogueRow(row.source.id)}
+              onChange={(event) =>
+                updateIngredientPackSize(row.source.id, "value", event.target.value)
+              }
+              placeholder="500"
+              aria-label="Pack size value"
+            />
+            <select
+              className="table-input pack-size-unit"
+              value={parsePackSizeParts(row.source.pack_size).unit}
+              disabled={row.source.is_locked}
+              onFocus={() => focusIngredientCatalogueRow(row.source.id)}
+              onChange={(event) =>
+                updateIngredientPackSize(row.source.id, "unit", event.target.value)
+              }
+              aria-label="Pack size unit"
+            >
+              <option value="g">g</option>
+              <option value="kg">kg</option>
+            </select>
+          </div>
+        ) : (
+          <div className="table-static">{row.displayPackSize || "N/A"}</div>
+        )}
+      </td>
+      <td>
+        {row.sourceKind === "ingredient-master" ? (
+          <input
+            className="table-input"
+            value={row.source.category}
+            disabled={row.source.is_locked}
+            onFocus={() => focusIngredientCatalogueRow(row.source.id)}
+            onChange={(event) =>
+              updateIngredientField(row.source.id, "category", event.target.value)
+            }
+            placeholder="Category"
+          />
+        ) : (
+          <div className="table-static">{row.displayCategory || "N/A"}</div>
+        )}
+      </td>
+      <td>
+        {row.sourceKind === "ingredient-master" ? (
+          <input
+            className="table-input"
+            value={row.source.supplier}
+            disabled={row.source.is_locked}
+            onFocus={() => focusIngredientCatalogueRow(row.source.id)}
+            onChange={(event) =>
+              updateIngredientField(row.source.id, "supplier", event.target.value)
+            }
+            placeholder="Supplier"
+          />
+        ) : (
+          <div className="table-static">{row.displaySupplier || "N/A"}</div>
+        )}
+      </td>
+      <td>
+        {row.sourceKind === "ingredient-master" ? (
+          <div className="table-static">{row.source.last_updated || "Auto"}</div>
+        ) : (
+          <div className="table-static">{row.displayUpdated || "N/A"}</div>
+        )}
+      </td>
+      <td>{row.displayUsed}</td>
+      <td>
+        <div className="badge-row compact">
+          {row.batchLink?.status === "not-applicable" ? <Badge tone="default">Not needed</Badge> : null}
+          {row.batchLink?.status === "ready" ? (
+            <>
+              <Badge tone="good">Linked</Badge>
+              <Badge tone="default">{row.batchLink.recipeName}</Badge>
+              <button
+                type="button"
+                className="secondary-button table-action-button"
+                onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
+              >
+                Open recipe
+              </button>
+            </>
+          ) : null}
+          {row.batchLink?.status === "needs-review" ? (
+            <>
+              <Badge tone="warn">Recipe needs review</Badge>
+              <Badge tone="default">{row.batchLink.recipeName}</Badge>
+              <button
+                type="button"
+                className="secondary-button table-action-button"
+                onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
+              >
+                Open recipe
+              </button>
+            </>
+          ) : null}
+          {row.batchLink?.status === "wrong-type" ? (
+            <>
+              <Badge tone="bad">Not a batch recipe</Badge>
+              <Badge tone="default">{row.batchLink.recipeName}</Badge>
+              <button
+                type="button"
+                className="secondary-button table-action-button"
+                onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
+              >
+                Open recipe
+              </button>
+            </>
+          ) : null}
+          {row.batchLink?.status === "missing" ? (
+            <>
+              <Badge tone="bad">Missing batch recipe</Badge>
+              {row.sourceKind === "ingredient-master" ? (
+                <button
+                  type="button"
+                  className="secondary-button table-action-button"
+                  onClick={() => createBatchRecipeFromIngredient(row.source)}
+                >
+                  Create batch recipe
+                </button>
+              ) : null}
+            </>
+          ) : null}
+          {row.batchLink?.status === "recipe-batch" ? (
+            <>
+              <Badge tone="good">Recipe-backed batch</Badge>
+              <Badge tone="default">{row.batchLink.recipeName}</Badge>
+              <button
+                type="button"
+                className="secondary-button table-action-button"
+                onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
+              >
+                Open recipe
+              </button>
+            </>
+          ) : null}
+        </div>
+      </td>
+      <td>
+        <div className="badge-row compact">
+          <Badge tone={row.validation.reviewStatus === "needs-review" ? "bad" : "good"}>
+            {row.validation.reviewStatus === "needs-review" ? "Needs review" : "Ready"}
+          </Badge>
+          {row.sourceKind === "ingredient-master" && row.source.is_locked ? (
+            <Badge tone="default">Locked</Badge>
+          ) : null}
+          {row.rowType === "batch" ? (
+            <Badge tone="default">{row.displayCode || "Batch ID missing"}</Badge>
+          ) : null}
+          {row.sourceKind === "ingredient-master" && row.source.linked_recipe_id ? (
+            <Badge tone="good">Synced to {row.source.linked_recipe_id}</Badge>
+          ) : null}
+          {row.validation.issues.map((issue) => (
+            <Badge key={`${row.id}-${getValidationIssueText(issue)}`} tone="warn">
+              {getValidationIssueText(issue)}
+            </Badge>
+          ))}
+        </div>
+      </td>
+      <td>
+        {row.sourceKind === "ingredient-master" ? (
+          <button
+            type="button"
+            className="secondary-button table-action-button"
+            disabled={row.source.is_locked}
+            onClick={() => deleteIngredientRow(row.source)}
+          >
+            Delete
+          </button>
+        ) : (
+          <div className="table-static">-</div>
+        )}
+      </td>
+    </tr>
+  );
+
   const toggleRecipeSort = (column) => {
     if (recipeSortColumn === column) {
       setRecipeSortDirection((current) => (current === "asc" ? "desc" : "asc"));
@@ -5095,6 +6092,80 @@ function App() {
         {recipeSortColumn === column ? (recipeSortDirection === "asc" ? "↑" : "↓") : "↕"}
       </span>
     </button>
+  );
+
+  const renderRecipeListRow = (recipe) => (
+    <tr
+      key={recipe.id}
+      className="clickable-row"
+      onClick={() => {
+        setSelectedRecipeId(recipe.id);
+        setRecipeEditLookup(recipe.id);
+        setBuilderMode("edit");
+        setActiveTab("builder");
+      }}
+    >
+      <td className="lock-cell" onClick={(event) => event.stopPropagation()}>
+        <label className="lock-toggle" aria-label={`Lock ${recipe.name || "recipe"}`}>
+          <input
+            type="checkbox"
+            checked={Boolean(recipe.isLocked)}
+            onChange={(event) =>
+              updateRecipeField(recipe.id, "isLocked", event.target.checked)
+            }
+          />
+        </label>
+      </td>
+      <td>{getRecipeVenueLabel(recipe)}</td>
+      <td className="strong-cell">{recipe.name}</td>
+      <td>{recipe.category}</td>
+      <td>{recipe.sellingItemCode}</td>
+      <td>
+        <div className="badge-row compact">
+          {recipe.recipeType === "batch" ? <Badge tone="default">Batch</Badge> : null}
+          <Badge
+            tone={
+              recipe.validation.reviewStatus === "needs-review"
+                ? "bad"
+                : recipe.validation.reviewStatus === "warning"
+                  ? "warn"
+                  : "good"
+            }
+          >
+            {recipe.validation.reviewStatus === "needs-review"
+              ? "Needs review"
+              : recipe.validation.reviewStatus === "warning"
+                ? "Warning"
+                : "Ready"}
+          </Badge>
+          {recipe.workflowStage === "draft" ? <Badge tone="default">Draft</Badge> : null}
+          {recipe.isLocked ? <Badge tone="default">Locked</Badge> : null}
+          {recipe.isLive && recipe.recipeType !== "batch" ? <Badge tone="good">Live</Badge> : null}
+          {restaurantLiveRecipeIds.has(recipe.id) ? <Badge tone="default">On live menu</Badge> : null}
+        </div>
+      </td>
+      <td>{money(recipe.recipeCost)}</td>
+      <td>{recipe.recipeType === "batch" ? "Batch" : money(recipe.currentSalePrice)}</td>
+      <td>
+        {recipe.recipeType === "batch" ? (
+          <Badge tone="default">{money(getBatchUnitCost(recipe))}/{getBatchYieldLabel(recipe)}</Badge>
+        ) : (
+          <Badge tone={recipe.gp >= 0.75 ? "good" : recipe.gp >= 0.6 ? "warn" : "bad"}>
+            {percent(recipe.gp)}
+          </Badge>
+        )}
+      </td>
+      <td onClick={(event) => event.stopPropagation()}>
+        <button
+          type="button"
+          className="secondary-button table-action-button"
+          disabled={recipe.isLocked}
+          onClick={() => deleteRecipe(recipe)}
+        >
+          Delete
+        </button>
+      </td>
+    </tr>
   );
 
   const clearRecipeLookup = () => {
@@ -5468,6 +6539,17 @@ function App() {
     });
   };
 
+  const openMenuSheetPreview = (menu, options = {}) => {
+    if (!menu) return;
+    setExportPreview({
+      title: `${menu.name} menu sheet`,
+      html: buildMenuPrintSheetHtml(menu),
+      csvContent: "",
+      csvFileName: "",
+      autoPrint: Boolean(options.print),
+    });
+  };
+
   const closeExportPreview = () => setExportPreview(null);
 
   const downloadExportPreviewCsv = () => {
@@ -5638,6 +6720,23 @@ function App() {
     setActiveTab("builder");
   };
 
+  const saveQuickPanelIngredientAndReturn = () => {
+    if (!quickPanelIngredient) return;
+    saveIngredientMasterChanges();
+
+    if (ingredientReturnTarget?.draftComponentId) {
+      applyIngredientMatchToDraft(ingredientReturnTarget.draftComponentId, quickPanelIngredient);
+    } else if (ingredientReturnTarget?.recipeId && ingredientReturnTarget?.componentId) {
+      applyIngredientMatch(ingredientReturnTarget.recipeId, ingredientReturnTarget.componentId, quickPanelIngredient);
+      setSelectedRecipeId(ingredientReturnTarget.recipeId);
+      setBuilderMode("edit");
+      setActiveTab("builder");
+    }
+
+    setIngredientReturnTarget(null);
+    setQuickPanel(null);
+  };
+
   const openIngredientsWorkspace = ({
     typeFilter = "all",
     batchLinkFilter = "all",
@@ -5709,10 +6808,21 @@ function App() {
   const addMenu = () => {
     if (requireEditAccess()) return;
     const next = String(menus.length + 1).padStart(3, "0");
+    const selectedService =
+      menuDashboardService !== "all"
+        ? menuDashboardService
+        : (VENUE_SERVICE_PERIODS[menuDashboardVenue]?.[0] || "lunch");
+    const dashboardVenueOption =
+      menuDashboardVenue === "all"
+        ? ""
+        : venueOptions.find((item) => item === `${menuDashboardVenue} ${selectedService}`) ||
+          venueOptions.find((item) => getBaseVenueName(item) === menuDashboardVenue) ||
+          `${menuDashboardVenue} ${selectedService}`;
     const nextVenue =
-      restaurant === "all"
+      dashboardVenueOption ||
+      (restaurant === "all"
         ? venueOptions[0] || `${recipes[0]?.restaurant || "Tasi"} lunch`
-        : `${restaurant} lunch`;
+        : `${restaurant} lunch`);
     const menu = {
       id: `LOCAL-MENU-${next}`,
       name: "New Menu",
@@ -5724,6 +6834,27 @@ function App() {
     };
     setMenus((current) => [...current, menu]);
     setSelectedMenuId(menu.id);
+  };
+
+  const focusMenuDashboardVenue = (venue) => {
+    setMenuDashboardVenue(venue);
+    setMenuDashboardService("all");
+    const scopedMenus =
+      venue === "all" ? menuCards : menuCards.filter((menu) => getBaseVenueName(menu.restaurant) === venue);
+    const targetMenu = scopedMenus.find((menu) => menu.isLiveMenu) || scopedMenus[0] || null;
+    if (targetMenu) {
+      setSelectedMenuId(targetMenu.id);
+    }
+  };
+
+  const focusMenuBuilder = (menuId) => {
+    setActiveTab("menus");
+    if (menuId) {
+      setSelectedMenuId(menuId);
+    }
+    window.requestAnimationFrame(() => {
+      menuBuilderRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   };
 
   const updateMenuField = (menuId, field, value) => {
@@ -5758,13 +6889,16 @@ function App() {
     });
   };
 
-  const addMenuLine = () => {
+  const addMenuLine = (courseLabel = "") => {
     if (!selectedMenu) return;
     const menuBaseVenue = getBaseVenueName(selectedMenu.restaurant);
     const venueRecipes = recipes.filter(
       (recipe) =>
         recipe.recipeType !== "batch" &&
-        (recipe.restaurant === menuBaseVenue || selectedMenu.restaurant === "")
+        (selectedMenu.restaurant === "" ||
+          getAvailableVenueListForRecipe(recipe, recipeAvailableVenues).some(
+            (venue) => getBaseVenueName(venue) === menuBaseVenue
+          ))
     );
     const recipe = venueRecipes[0] || recipes[0];
     const nextSort = selectedMenu.lines.length + 1;
@@ -5777,7 +6911,7 @@ function App() {
                 ...menu.lines,
                 {
                   id: `${menu.id}-${nextSort}`,
-                  courseLabel: `Course ${nextSort}`,
+                  courseLabel: courseLabel || `Course ${nextSort}`,
                   recipeId: recipe?.id || "",
                   dishName: recipe?.name || "",
                   restaurant: recipe?.restaurant || menu.restaurant,
@@ -5827,6 +6961,458 @@ function App() {
           : menu
       )
     );
+  };
+
+  const buildMenuPublishUpdate = (currentMenus, recipe, venue, courseLabel = "") => {
+    if (!recipe || !venue) return null;
+
+    const baseVenue = getBaseVenueName(venue);
+    const existingVenueMenus = currentMenus.filter((menu) => getBaseVenueName(menu.restaurant) === baseVenue);
+    const targetMenu =
+      existingVenueMenus.find((menu) => menu.isLiveMenu) ||
+      existingVenueMenus[0] ||
+      {
+        id: `LOCAL-MENU-${String(currentMenus.length + 1).padStart(3, "0")}`,
+        name: `${baseVenue} Menu`,
+        restaurant: venueOptions.find((item) => getBaseVenueName(item) === baseVenue) || `${baseVenue} lunch`,
+        guestCount: 40,
+        targetGp: 0.75,
+        isLiveMenu: false,
+        lines: [],
+      };
+
+    const alreadyIncluded = targetMenu.lines.some((line) => line.recipeId === recipe.id);
+    if (alreadyIncluded) {
+      return {
+        nextMenus: currentMenus,
+        nextMenu: targetMenu,
+        baseVenue,
+        alreadyIncluded: true,
+      };
+    }
+
+    const nextLine = {
+      id: `${targetMenu.id}-${targetMenu.lines.length + 1}`,
+      courseLabel: courseLabel || inferMenuCourseFromRecipe(recipe),
+      recipeId: recipe.id,
+      dishName: recipe.name || "",
+      restaurant: recipe.restaurant || targetMenu.restaurant,
+      lineCost: recipe.recipeCost || 0,
+      lineSalePrice: recipe.currentSalePrice || 0,
+      category: recipe.category || "",
+      recipe,
+    };
+
+    const nextMenu = {
+      ...targetMenu,
+      lines: [...targetMenu.lines, nextLine],
+    };
+
+    const nextMenus = existingVenueMenus.length
+      ? currentMenus.map((menu) => (menu.id === nextMenu.id ? nextMenu : menu))
+      : [...currentMenus, nextMenu];
+
+    return {
+      nextMenus,
+      nextMenu,
+      baseVenue,
+      alreadyIncluded: false,
+    };
+  };
+
+  const buildServiceMenuPublishUpdate = (currentMenus, recipe, menuRestaurant, courseLabel = "") => {
+    if (!recipe || !menuRestaurant) return null;
+
+    const targetMenu = currentMenus.find((menu) => menu.restaurant === menuRestaurant) || {
+      id: `LOCAL-MENU-${String(currentMenus.length + 1).padStart(3, "0")}`,
+      name: `${menuRestaurant} Menu`,
+      restaurant: menuRestaurant,
+      guestCount: 40,
+      targetGp: 0.75,
+      isLiveMenu: false,
+      lines: [],
+    };
+
+    const alreadyIncluded = targetMenu.lines.some((line) => line.recipeId === recipe.id);
+    if (alreadyIncluded) {
+      return {
+        nextMenus: currentMenus,
+        nextMenu: targetMenu,
+        alreadyIncluded: true,
+      };
+    }
+
+    const nextLine = {
+      id: `${targetMenu.id}-${targetMenu.lines.length + 1}`,
+      courseLabel: courseLabel || inferMenuCourseFromRecipe(recipe),
+      recipeId: recipe.id,
+      dishName: recipe.name || "",
+      restaurant: recipe.restaurant || targetMenu.restaurant,
+      lineCost: recipe.recipeCost || 0,
+      lineSalePrice: recipe.currentSalePrice || 0,
+      category: recipe.category || "",
+      recipe,
+    };
+
+    const nextMenu = {
+      ...targetMenu,
+      lines: [...targetMenu.lines, nextLine],
+    };
+
+    const nextMenus = currentMenus.some((menu) => menu.id === nextMenu.id)
+      ? currentMenus.map((menu) => (menu.id === nextMenu.id ? nextMenu : menu))
+      : [...currentMenus, nextMenu];
+
+    return {
+      nextMenus,
+      nextMenu,
+      alreadyIncluded: false,
+    };
+  };
+
+  const publishRecipeToVenueMenus = async (recipe, venuesToPublish, courseLabel = "") => {
+    if (!recipe || !venuesToPublish?.length) return;
+    if (requireEditAccess()) return;
+
+    let workingMenus = menus;
+    const changedMenus = [];
+    const skippedVenues = [];
+    let lastMenu = null;
+    let lastVenue = menuDashboardVenue;
+
+    venuesToPublish.forEach((venue) => {
+      const update = buildMenuPublishUpdate(workingMenus, recipe, venue, courseLabel);
+      if (!update) return;
+      workingMenus = update.nextMenus;
+      lastMenu = update.nextMenu;
+      lastVenue = update.baseVenue;
+      if (update.alreadyIncluded) {
+        skippedVenues.push(update.baseVenue);
+      } else {
+        changedMenus.push(update.nextMenu);
+      }
+    });
+
+    if (!changedMenus.length && lastMenu) {
+      setSelectedMenuId(lastMenu.id);
+      setImportError("");
+      setImportMessage(
+        skippedVenues.length > 1
+          ? `${recipe.name} is already on the selected menus.`
+          : `${recipe.name} is already on ${lastMenu.name}.`
+      );
+      return;
+    }
+
+    setMenus(workingMenus);
+    if (lastMenu) {
+      setSelectedMenuId(lastMenu.id);
+    }
+    setMenuDashboardVenue(lastVenue);
+    setImportError("");
+    setImportMessage(
+      `Added ${recipe.name} to ${changedMenus.length} menu${changedMenus.length === 1 ? "" : "s"}.${
+        skippedVenues.length ? ` Skipped ${skippedVenues.length} already-linked venue${skippedVenues.length === 1 ? "" : "s"}.` : ""
+      }`
+    );
+
+    if (supabaseEnabled && supabase && changedMenus.length) {
+      for (const menu of changedMenus) {
+        const { error } = await syncMenuToSupabase(menu);
+        if (error) {
+          setImportError(`Added locally, but could not sync ${menu.name} to Supabase: ${error.message}`);
+          return;
+        }
+      }
+      setBackendStatus("Supabase connected");
+      setImportMessage(
+        `Added ${recipe.name} to ${changedMenus.length} menu${changedMenus.length === 1 ? "" : "s"} locally and to Supabase.${
+          skippedVenues.length ? ` Skipped ${skippedVenues.length} already-linked venue${skippedVenues.length === 1 ? "" : "s"}.` : ""
+        }`
+      );
+    }
+  };
+
+  const publishRecipeToVenueMenu = async (recipe, venue, courseLabel = "") => {
+    await publishRecipeToVenueMenus(recipe, venue ? [venue] : [], courseLabel);
+  };
+
+  const publishRecipeToServiceMenu = async (recipe, menuRestaurant, courseLabel = "") => {
+    if (!recipe || !menuRestaurant) return;
+    if (requireEditAccess()) return;
+
+    const update = buildServiceMenuPublishUpdate(menus, recipe, menuRestaurant, courseLabel);
+    if (!update) return;
+
+    setMenus(update.nextMenus);
+    setSelectedMenuId(update.nextMenu.id);
+    setMenuDashboardVenue(getBaseVenueName(menuRestaurant));
+    setMenuDashboardService(getMenuServicePeriod(menuRestaurant) || "all");
+    setImportError("");
+
+    if (update.alreadyIncluded) {
+      setImportMessage(`${recipe.name} is already on ${update.nextMenu.name}.`);
+      return;
+    }
+
+    setImportMessage(`Added ${recipe.name} to ${update.nextMenu.name}.`);
+
+    await runOptionalSharedSync({
+      sync: () => syncMenuToSupabase(update.nextMenu),
+      onError: (error) =>
+        setImportError(`Added locally, but could not sync ${update.nextMenu.name} to Supabase: ${error.message}`),
+      onSuccess: () =>
+        setImportMessage(`Added ${recipe.name} to ${update.nextMenu.name} locally and to Supabase.`),
+    });
+  };
+
+  const publishRecipesToServiceMenus = async (recipesToPublish, venuesToPublish, servicePeriod = "", courseLabel = "") => {
+    if (!recipesToPublish?.length || !venuesToPublish?.length || !servicePeriod) return;
+    if (requireEditAccess()) return;
+
+    let workingMenus = menus;
+    const changedMenus = new Map();
+    let addedCount = 0;
+    let skippedCount = 0;
+
+    venuesToPublish.forEach((venue) => {
+      const menuRestaurant = `${venue} ${servicePeriod}`;
+      recipesToPublish.forEach((recipe) => {
+        if (!recipe?.availableVenues?.includes(venue)) {
+          skippedCount += 1;
+          return;
+        }
+        const update = buildServiceMenuPublishUpdate(workingMenus, recipe, menuRestaurant, courseLabel);
+        if (!update) return;
+        workingMenus = update.nextMenus;
+        changedMenus.set(update.nextMenu.id, update.nextMenu);
+        if (update.alreadyIncluded) {
+          skippedCount += 1;
+        } else {
+          addedCount += 1;
+        }
+      });
+    });
+
+    if (!changedMenus.size) {
+      setImportError("");
+      setImportMessage("No new menu lines were added from the selected dishes and venues.");
+      return;
+    }
+
+    const nextMenus = Array.from(changedMenus.values());
+    const lastMenu = nextMenus[nextMenus.length - 1];
+    setMenus(workingMenus);
+    setSelectedMenuId(lastMenu.id);
+    setMenuDashboardVenue(getBaseVenueName(lastMenu.restaurant));
+    setMenuDashboardService(getMenuServicePeriod(lastMenu.restaurant) || "all");
+    setImportError("");
+    setImportMessage(
+      `Added ${addedCount} menu line${addedCount === 1 ? "" : "s"} across ${nextMenus.length} menu${
+        nextMenus.length === 1 ? "" : "s"
+      }.${skippedCount ? ` Skipped ${skippedCount} already-on-menu or unavailable combination${skippedCount === 1 ? "" : "s"}.` : ""}`
+    );
+
+    await runOptionalSharedSync({
+      sync: async () => {
+        for (const menu of nextMenus) {
+          const { error } = await syncMenuToSupabase(menu);
+          if (error) throw error;
+        }
+      },
+      onError: (error) =>
+        setImportError(`Added locally, but could not sync one or more menus to Supabase: ${error.message}`),
+      onSuccess: () =>
+        setImportMessage(
+          `Added ${addedCount} menu line${addedCount === 1 ? "" : "s"} across ${nextMenus.length} menu${
+            nextMenus.length === 1 ? "" : "s"
+          } locally and to Supabase.${skippedCount ? ` Skipped ${skippedCount} already-on-menu or unavailable combination${skippedCount === 1 ? "" : "s"}.` : ""}`
+        ),
+    });
+  };
+
+  const removeRecipeFromVenueMenus = async (recipe, venuesToRemove) => {
+    if (!recipe || !venuesToRemove?.length) return;
+    if (requireEditAccess()) return;
+
+    let workingMenus = menus;
+    const changedMenus = [];
+    const skippedVenues = [];
+    let lastMenu = null;
+    let lastVenue = menuDashboardVenue;
+
+    venuesToRemove.forEach((venue) => {
+      const baseVenue = getBaseVenueName(venue);
+      const targetMenu = workingMenus.find(
+        (menu) => getBaseVenueName(menu.restaurant) === baseVenue && menu.lines.some((line) => line.recipeId === recipe.id)
+      );
+
+      if (!targetMenu) {
+        skippedVenues.push(baseVenue);
+        return;
+      }
+
+      const nextMenu = {
+        ...targetMenu,
+        lines: targetMenu.lines.filter((line) => line.recipeId !== recipe.id),
+      };
+
+      workingMenus = workingMenus.map((menu) => (menu.id === nextMenu.id ? nextMenu : menu));
+      changedMenus.push(nextMenu);
+      lastMenu = nextMenu;
+      lastVenue = baseVenue;
+    });
+
+    if (!changedMenus.length) {
+      setImportError("");
+      setImportMessage(
+        skippedVenues.length > 1
+          ? `${recipe.name} was not on the selected menus.`
+          : `${recipe.name} was not on the selected menu.`
+      );
+      return;
+    }
+
+    setMenus(workingMenus);
+    if (lastMenu) {
+      setSelectedMenuId(lastMenu.id);
+    }
+    setMenuDashboardVenue(lastVenue);
+    setImportError("");
+    setImportMessage(
+      `Removed ${recipe.name} from ${changedMenus.length} menu${changedMenus.length === 1 ? "" : "s"}.${
+        skippedVenues.length ? ` Skipped ${skippedVenues.length} venue${skippedVenues.length === 1 ? "" : "s"} where it was not present.` : ""
+      }`
+    );
+
+    if (supabaseEnabled && supabase) {
+      for (const menu of changedMenus) {
+        const { error } = await syncMenuToSupabase(menu);
+        if (error) {
+          setImportError(`Removed locally, but could not sync ${menu.name} to Supabase: ${error.message}`);
+          return;
+        }
+      }
+      setBackendStatus("Supabase connected");
+      setImportMessage(
+        `Removed ${recipe.name} from ${changedMenus.length} menu${changedMenus.length === 1 ? "" : "s"} locally and to Supabase.${
+          skippedVenues.length ? ` Skipped ${skippedVenues.length} venue${skippedVenues.length === 1 ? "" : "s"} where it was not present.` : ""
+        }`
+      );
+    }
+  };
+
+  const removeRecipeFromServiceMenu = async (recipe, menuRestaurant) => {
+    if (!recipe || !menuRestaurant) return;
+    if (requireEditAccess()) return;
+
+    const targetMenu = menus.find(
+      (menu) => menu.restaurant === menuRestaurant && menu.lines.some((line) => line.recipeId === recipe.id)
+    );
+
+    if (!targetMenu) {
+      setImportError("");
+      setImportMessage(`${recipe.name} was not on ${menuRestaurant}.`);
+      return;
+    }
+
+    const nextMenu = {
+      ...targetMenu,
+      lines: targetMenu.lines.filter((line) => line.recipeId !== recipe.id),
+    };
+    const nextMenus = menus.map((menu) => (menu.id === nextMenu.id ? nextMenu : menu));
+
+    setMenus(nextMenus);
+    setSelectedMenuId(nextMenu.id);
+    setMenuDashboardVenue(getBaseVenueName(menuRestaurant));
+    setMenuDashboardService(getMenuServicePeriod(menuRestaurant) || "all");
+    setImportError("");
+    setImportMessage(`Removed ${recipe.name} from ${nextMenu.name}.`);
+
+    await runOptionalSharedSync({
+      sync: () => syncMenuToSupabase(nextMenu),
+      onError: (error) =>
+        setImportError(`Removed locally, but could not sync ${nextMenu.name} to Supabase: ${error.message}`),
+      onSuccess: () =>
+        setImportMessage(`Removed ${recipe.name} from ${nextMenu.name} locally and to Supabase.`),
+    });
+  };
+
+  const removeRecipesFromServiceMenus = async (recipesToRemove, venuesToRemove, servicePeriod = "") => {
+    if (!recipesToRemove?.length || !venuesToRemove?.length || !servicePeriod) return;
+    if (requireEditAccess()) return;
+
+    let workingMenus = menus;
+    const changedMenus = new Map();
+    let removedCount = 0;
+    let skippedCount = 0;
+
+    venuesToRemove.forEach((venue) => {
+      const menuRestaurant = `${venue} ${servicePeriod}`;
+      recipesToRemove.forEach((recipe) => {
+        const targetMenu = workingMenus.find(
+          (menu) => menu.restaurant === menuRestaurant && menu.lines.some((line) => line.recipeId === recipe.id)
+        );
+        if (!targetMenu) {
+          skippedCount += 1;
+          return;
+        }
+        const nextMenu = {
+          ...targetMenu,
+          lines: targetMenu.lines.filter((line) => line.recipeId !== recipe.id),
+        };
+        workingMenus = workingMenus.map((menu) => (menu.id === nextMenu.id ? nextMenu : menu));
+        changedMenus.set(nextMenu.id, nextMenu);
+        removedCount += 1;
+      });
+    });
+
+    if (!changedMenus.size) {
+      setImportError("");
+      setImportMessage("None of the selected dishes were on the chosen service menus.");
+      return;
+    }
+
+    const nextMenus = Array.from(changedMenus.values());
+    const lastMenu = nextMenus[nextMenus.length - 1];
+    setMenus(workingMenus);
+    setSelectedMenuId(lastMenu.id);
+    setMenuDashboardVenue(getBaseVenueName(lastMenu.restaurant));
+    setMenuDashboardService(getMenuServicePeriod(lastMenu.restaurant) || "all");
+    setImportError("");
+    setImportMessage(
+      `Removed ${removedCount} menu line${removedCount === 1 ? "" : "s"} across ${nextMenus.length} menu${
+        nextMenus.length === 1 ? "" : "s"
+      }.${skippedCount ? ` Skipped ${skippedCount} combination${skippedCount === 1 ? "" : "s"} that were not present.` : ""}`
+    );
+
+    await runOptionalSharedSync({
+      sync: async () => {
+        for (const menu of nextMenus) {
+          const { error } = await syncMenuToSupabase(menu);
+          if (error) throw error;
+        }
+      },
+      onError: (error) =>
+        setImportError(`Removed locally, but could not sync one or more menus to Supabase: ${error.message}`),
+      onSuccess: () =>
+        setImportMessage(
+          `Removed ${removedCount} menu line${removedCount === 1 ? "" : "s"} across ${nextMenus.length} menu${
+            nextMenus.length === 1 ? "" : "s"
+          } locally and to Supabase.${skippedCount ? ` Skipped ${skippedCount} combination${skippedCount === 1 ? "" : "s"} that were not present.` : ""}`
+        ),
+    });
+  };
+
+  const isRecipeOnVenueMenu = (recipeId, venue) => {
+    if (!recipeId || !venue) return false;
+    const targetMenu = getMenuServicePeriod(venue)
+      ? menus.find((menu) => menu.restaurant === venue)
+      : menus.find((menu) => getBaseVenueName(menu.restaurant) === getBaseVenueName(venue) && menu.isLiveMenu) ||
+        menus.find((menu) => getBaseVenueName(menu.restaurant) === getBaseVenueName(venue)) ||
+        null;
+    if (!targetMenu) return false;
+    return targetMenu.lines.some((line) => line.recipeId === recipeId);
   };
 
   const goBackToPreviousPage = () => {
@@ -6323,2452 +7909,279 @@ function App() {
         )}
 
         {activeTab === "recipes" && (
-          <div className="tab-panel">
-            <div className="panel-actions">
-              <select
-                value={recipeListTypeFilter}
-                onChange={(event) => setRecipeListTypeFilter(event.target.value)}
-              >
-                <option value="all">All recipe types</option>
-                <option value="dish">Dish recipes</option>
-                <option value="batch">Batch recipes</option>
-              </select>
-              <button type="button" className="secondary-button" onClick={importBundledBatchWorkbook}>
-                Re-import batch workbook
-              </button>
-              <button type="button" className="secondary-button" onClick={syncBchRecipeLinks}>
-                Link BCH components
-              </button>
-              <button type="button" className="primary-button" onClick={addRecipe}>
-                <Icon name="plus" />
-                Add recipe
-              </button>
-            </div>
-            {importMessage ? <p className="support-text success-text">{importMessage}</p> : null}
-            {importError ? <p className="support-text error-text">{importError}</p> : null}
-
-            <div className="panel-stack">
-              <Card>
-                <div className="card-header">
-                  <div>
-                    <div className="eyebrow">Recipes</div>
-                    <h2>Recipe list</h2>
-                  </div>
-                </div>
-                <div className="table-wrap">
-                  <table className="recipe-list-table">
-                    <thead>
-                      <tr>
-                        <th>{renderRecipeSortHeader("Lock", "lock")}</th>
-                        <th>{renderRecipeSortHeader("Venue", "venue")}</th>
-                        <th>{renderRecipeSortHeader("Dish", "dish")}</th>
-                        <th>{renderRecipeSortHeader("Category", "category")}</th>
-                        <th>{renderRecipeSortHeader("Code", "code")}</th>
-                        <th>{renderRecipeSortHeader("Status", "status")}</th>
-                        <th>{renderRecipeSortHeader("Recipe cost", "recipe-cost")}</th>
-                        <th>{renderRecipeSortHeader("Sale price", "sale-price")}</th>
-                        <th>{renderRecipeSortHeader("GP", "gp")}</th>
-                        <th>Delete</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recipeListRows.map((recipe) => (
-                      <tr
-                        key={recipe.id}
-                        className="clickable-row"
-                        onClick={() => {
-                            setSelectedRecipeId(recipe.id);
-                            setRecipeEditLookup(recipe.id);
-                            setBuilderMode("edit");
-                            setActiveTab("builder");
-                          }}
-                        >
-                          <td className="lock-cell" onClick={(event) => event.stopPropagation()}>
-                            <label className="lock-toggle" aria-label={`Lock ${recipe.name || "recipe"}`}>
-                              <input
-                                type="checkbox"
-                                checked={Boolean(recipe.isLocked)}
-                                onChange={(event) =>
-                                  updateRecipeField(recipe.id, "isLocked", event.target.checked)
-                                }
-                              />
-                            </label>
-                          </td>
-                          <td>{getRecipeVenueLabel(recipe)}</td>
-                          <td className="strong-cell">{recipe.name}</td>
-                          <td>{recipe.category}</td>
-                          <td>{recipe.sellingItemCode}</td>
-                          <td>
-                            <div className="badge-row compact">
-                              {recipe.recipeType === "batch" ? <Badge tone="default">Batch</Badge> : null}
-                              <Badge
-                                tone={
-                                  recipe.validation.reviewStatus === "needs-review"
-                                    ? "bad"
-                                    : recipe.validation.reviewStatus === "warning"
-                                      ? "warn"
-                                      : "good"
-                                }
-                              >
-                              {recipe.validation.reviewStatus === "needs-review"
-                                  ? "Needs review"
-                                  : recipe.validation.reviewStatus === "warning"
-                                    ? "Warning"
-                                    : "Ready"}
-                              </Badge>
-                              {recipe.workflowStage === "draft" ? <Badge tone="default">Draft</Badge> : null}
-                              {recipe.isLocked ? <Badge tone="default">Locked</Badge> : null}
-                              {recipe.isLive && recipe.recipeType !== "batch" ? <Badge tone="good">Live</Badge> : null}
-                              {restaurantLiveRecipeIds.has(recipe.id) ? <Badge tone="default">On live menu</Badge> : null}
-                            </div>
-                          </td>
-                          <td>{money(recipe.recipeCost)}</td>
-                          <td>{recipe.recipeType === "batch" ? "Batch" : money(recipe.currentSalePrice)}</td>
-                          <td>
-                            {recipe.recipeType === "batch" ? (
-                              <Badge tone="default">{money(getBatchUnitCost(recipe))}/{getBatchYieldLabel(recipe)}</Badge>
-                            ) : (
-                              <Badge tone={recipe.gp >= 0.75 ? "good" : recipe.gp >= 0.6 ? "warn" : "bad"}>
-                                {percent(recipe.gp)}
-                              </Badge>
-                            )}
-                          </td>
-                          <td onClick={(event) => event.stopPropagation()}>
-                            <button
-                              type="button"
-                              className="secondary-button table-action-button"
-                              disabled={recipe.isLocked}
-                              onClick={() => deleteRecipe(recipe)}
-                            >
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            </div>
-          </div>
+          <RecipesTab
+            Card={Card}
+            Badge={Badge}
+            Icon={Icon}
+            recipeListTypeFilter={recipeListTypeFilter}
+            setRecipeListTypeFilter={setRecipeListTypeFilter}
+            importBundledBatchWorkbook={importBundledBatchWorkbook}
+            syncBchRecipeLinks={syncBchRecipeLinks}
+            addRecipe={addRecipe}
+            liveRecipeVenueSummary={liveRecipeVenueSummary}
+            reviewFilter={reviewFilter}
+            restaurant={restaurant}
+            setReviewFilter={setReviewFilter}
+            setRestaurant={setRestaurant}
+            setSearch={setSearch}
+            reviewCounts={reviewCounts}
+            importMessage={importMessage}
+            importError={importError}
+            renderRecipeSortHeader={renderRecipeSortHeader}
+            recipeListRows={recipeListRows}
+            renderRecipeListRow={renderRecipeListRow}
+          />
         )}
 
         {activeTab === "builder" && (
-          <div className="tab-panel">
-            <div className="builder-mode-bar">
-              <button
-                type="button"
-                className={`tab-button ${builderMode === "edit" ? "active" : ""}`}
-                onClick={() => setBuilderMode("edit")}
-              >
-                Edit existing
-              </button>
-              <button
-                type="button"
-                className={`tab-button ${builderMode === "create" ? "active" : ""}`}
-                onClick={() => {
-                  setBuilderMode("create");
-                  resetNewRecipeDraft(newRecipeDraft.recipeType || "dish");
-                }}
-              >
-                Create new
-              </button>
-            </div>
+          <BuilderTab
+            builderMode={builderMode}
+            setBuilderMode={setBuilderMode}
+            resetNewRecipeDraft={resetNewRecipeDraft}
+            newRecipeDraft={newRecipeDraft}
+          >
             {builderMode === "create" ? (
-              <div className="panel-stack">
-                <Card>
-                  <div className="card-header">
-                    <div>
-                      <div className="eyebrow">New recipe builder</div>
-                      <h2>Create dish or batch</h2>
-                    </div>
-                    <div className="badge-row compact">
-                      <Badge tone="default">
-                        {newRecipeDraft.recipeType === "batch" ? "Batch recipe" : "Dish recipe"}
-                      </Badge>
-                      {newRecipeDraft.recipeType === "batch" ? (
-                        <Badge tone="good">{newRecipeDraft.sellingItemCode?.trim() || getNextBatchCode()}</Badge>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => setBuilderMode("edit")}
-                      >
-                        Find recipe to edit
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="builder-summary-banner">
-                    <div>
-                      <div className="mini-heading">Draft cost</div>
-                      <strong>{money(newRecipeDraftCost)}</strong>
-                    </div>
-                    {newRecipeDraft.recipeType !== "batch" ? (
-                      <div>
-                        <div className="mini-heading">Auto roundup target</div>
-                        <strong>{money(newRecipeDraftRoundupTarget)}</strong>
-                      </div>
-                    ) : null}
-                    <div>
-                      <div className="mini-heading">
-                        {newRecipeDraft.recipeType === "batch" ? "Generated code" : "Selected venue"}
-                      </div>
-                      <strong>
-                        {newRecipeDraft.recipeType === "batch"
-                          ? newRecipeDraft.sellingItemCode || getNextBatchCode()
-                          : newRecipeDraft.restaurant || "Missing"}
-                      </strong>
-                    </div>
-                    <div>
-                      <div className="mini-heading">Components</div>
-                      <strong>{newRecipeDraft.components.length}</strong>
-                    </div>
-                  </div>
-
-                  <div className="form-grid">
-                    <label>
-                      <span>Recipe type</span>
-                      <select
-                        value={newRecipeDraft.recipeType}
-                        onChange={(event) => updateNewRecipeField("recipeType", event.target.value)}
-                      >
-                        <option value="dish">Dish recipe</option>
-                        <option value="batch">Batch recipe</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>Name</span>
-                      <input
-                        value={newRecipeDraft.name}
-                        onChange={(event) => updateNewRecipeField("name", event.target.value)}
-                        placeholder={newRecipeDraft.recipeType === "batch" ? "Tzatziki batch" : "Greek salad"}
-                      />
-                    </label>
-                    <label>
-                      <span>Category</span>
-                      <input
-                        value={newRecipeDraft.category}
-                        onChange={(event) => updateNewRecipeField("category", event.target.value)}
-                        placeholder={newRecipeDraft.recipeType === "batch" ? "Batch" : "Starters"}
-                      />
-                    </label>
-                    <label>
-                      <span>{newRecipeDraft.recipeType === "batch" ? "Batch code" : "Item code"}</span>
-                      <input
-                        value={newRecipeDraft.sellingItemCode}
-                        onChange={(event) => updateNewRecipeField("sellingItemCode", event.target.value)}
-                        placeholder={newRecipeDraft.recipeType === "batch" ? `${getNextBatchCode()} if blank` : "Item code"}
-                      />
-                    </label>
-                    {newRecipeDraft.recipeType !== "batch" ? (
-                      <>
-                        <label>
-                          <span>Venue</span>
-                          <select
-                            value={newRecipeDraft.restaurant}
-                            onChange={(event) => updateNewRecipeField("restaurant", event.target.value)}
-                          >
-                            {venues.map((venue) => (
-                              <option key={venue} value={venue}>
-                                {venue}
-                              </option>
-                            ))}
-                            <option value="">Blank</option>
-                          </select>
-                        </label>
-                        <label>
-                          <span>Sale price</span>
-                          <DecimalInput
-                            value={newRecipeDraft.currentSalePrice}
-                            onCommit={(value) => updateNewRecipeField("currentSalePrice", value)}
-                          />
-                        </label>
-                        <label>
-                          <span>Portions made</span>
-                          <input
-                            value={newRecipeDraft.portionCount}
-                            onChange={(event) => updateNewRecipeField("portionCount", numberValue(event.target.value))}
-                          />
-                        </label>
-                      </>
-                    ) : (
-                      <>
-                        <label>
-                          <span>Batch yield</span>
-                          <input
-                            value={newRecipeDraft.batchYield}
-                            onChange={(event) => updateNewRecipeField("batchYield", numberValue(event.target.value))}
-                          />
-                        </label>
-                        <label>
-                          <span>Yield type</span>
-                          <select
-                            value={newRecipeDraft.batchYieldType}
-                            onChange={(event) => updateNewRecipeField("batchYieldType", event.target.value)}
-                          >
-                            <option value="g">g</option>
-                            <option value="kg">kg</option>
-                            <option value="ml">ml</option>
-                            <option value="l">l</option>
-                            <option value="portion">portion</option>
-                            <option value="tray">tray</option>
-                            <option value="bottle">bottle</option>
-                            <option value="jar">jar</option>
-                          </select>
-                        </label>
-                      </>
-                    )}
-                    <label>
-                      <span>Roundup target</span>
-                      <input
-                        value={
-                          newRecipeDraft.recipeType === "batch"
-                            ? "Batch recipes do not use roundup"
-                            : money(newRecipeDraftRoundupTarget)
-                        }
-                        readOnly
-                      />
-                    </label>
-                  </div>
-
-                  <div className="section-row">
-                    <div>
-                      <div className="eyebrow">Components</div>
-                      <h3>Build the recipe structure</h3>
-                      <p className="support-text">
-                        Type free text, or choose from ingredient and batch suggestions to link a source.
-                      </p>
-                    </div>
-                    <button type="button" className="secondary-button" onClick={addNewDraftComponent}>
-                      <Icon name="plus" />
-                      Add component
-                    </button>
-                  </div>
-
-                  <div className="component-stack">
-                    {newRecipeDraft.components.map((component) => {
-                      const componentReadOnly = isParentLinkedComponent(component);
-                      return (
-                        <div key={component.id} className="component-card">
-                          <div className="component-meta">
-                            <div className="badge-row compact">
-                              <Badge tone="default">#{component.sort}</Badge>
-                              {component.sourceType === "batch" ? <Badge tone="good">Linked batch</Badge> : null}
-                              {component.sourceType === "ingredient-master" ? <Badge tone="default">Linked ingredient</Badge> : null}
-                              {componentReadOnly ? <Badge tone="default">Managed by parent batch</Badge> : null}
-                            </div>
-                            <button
-                              type="button"
-                              className="icon-button"
-                              disabled={componentReadOnly}
-                              onClick={() => removeNewDraftComponent(component.id)}
-                              aria-label="Remove component"
-                            >
-                              <Icon name="trash" />
-                            </button>
-                          </div>
-                          <label>
-                            <span>Ingredient</span>
-                            <input
-                              disabled={componentReadOnly}
-                              value={component.ingredient}
-                              onChange={(event) => updateNewComponentField(component.id, "ingredient", event.target.value)}
-                              onFocus={() => !componentReadOnly && setActiveDraftLookupId(component.id)}
-                              onBlur={() => {
-                                window.setTimeout(() => {
-                                  setActiveDraftLookupId((current) => (current === component.id ? null : current));
-                                }, 120);
-                              }}
-                              placeholder="Ingredient"
-                            />
-                            {activeDraftLookupId === component.id && !componentReadOnly && draftIngredientSuggestions.length ? (
-                              <div className="lookup-panel">
-                                {draftIngredientSuggestions.map((ingredient) => (
-                                  <button
-                                    key={ingredient.id}
-                                    type="button"
-                                    className="lookup-option"
-                                    onMouseDown={(event) => {
-                                      event.preventDefault();
-                                      applyIngredientMatchToDraft(component.id, ingredient);
-                                    }}
-                                  >
-                                    <div className="lookup-main">
-                                      <strong>{ingredient.ingredient_name}</strong>
-                                      <span>{ingredient.ingredient_item_code}</span>
-                                    </div>
-                                    <div className="lookup-meta">
-                                      <span>{money(ingredient.unit_cost)}</span>
-                                      <span>
-                                        {ingredient.sourceType === "batch"
-                                          ? `${ingredient.category} · ${ingredient.pack_size || "Batch"}`
-                                          : ingredient.supplier || ingredient.category || "Ingredient master"}
-                                      </span>
-                                    </div>
-                                  </button>
-                                ))}
-                              </div>
-                            ) : null}
-                          </label>
-                          <label>
-                            <span>Code</span>
-                            <input
-                              disabled={componentReadOnly}
-                              value={component.code}
-                              onChange={(event) => updateNewComponentField(component.id, "code", event.target.value)}
-                              placeholder="Code"
-                            />
-                          </label>
-                          <label>
-                            <span>Qty</span>
-                            <input
-                              disabled={componentReadOnly}
-                              value={component.qty}
-                              onChange={(event) => updateNewComponentField(component.id, "qty", event.target.value)}
-                              placeholder={component.sourceType === "batch" ? `Qty (${component.sourceYieldType || "yield units"})` : "Qty"}
-                            />
-                            {shouldAutoCostComponent(component) ? (
-                              <small className="field-help field-help-info">
-                                Auto-costing from {component.sourceType === "batch" ? "batch" : "ingredient"} at {money(component.sourceUnitCost)}/{component.sourceYieldType}
-                              </small>
-                            ) : null}
-                          </label>
-                          <label>
-                            <span>Cost</span>
-                            <DecimalInput
-                              disabled={componentReadOnly}
-                              value={component.cost}
-                              onCommit={(value) => updateNewComponentField(component.id, "cost", value)}
-                              placeholder="Cost"
-                            />
-                            {componentReadOnly ? (
-                              <small className="field-help">
-                                Edit the linked batch recipe instead of changing this component here.
-                              </small>
-                            ) : shouldAutoCostComponent(component) ? (
-                              <small className="field-help field-help-info">
-                                Editing cost manually will disconnect this row from auto-costing.
-                              </small>
-                            ) : null}
-                          </label>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <div className="editor-block">
-                    <div className="editor-label">
-                      <span>Method steps</span>
-                      <div className="method-step-stack">
-                        {(newRecipeDraft.methodSteps || []).length ? (
-                          newRecipeDraft.methodSteps.map((step, index) => (
-                            <div key={`draft-step-${index}`} className="method-step-row">
-                              <div className="method-step-number">{index + 1}</div>
-                              <textarea
-                                value={step}
-                                onChange={(event) => updateNewMethodStep(index, event.target.value)}
-                                placeholder={`Step ${index + 1}`}
-                                rows={3}
-                              />
-                              <button
-                                type="button"
-                                className="icon-button"
-                                onClick={() => removeNewMethodStep(index)}
-                                aria-label="Remove method step"
-                              >
-                                <Icon name="trash" />
-                              </button>
-                            </div>
-                          ))
-                        ) : (
-                          <div className="presentation-placeholder">No method steps yet. Add the first step below.</div>
-                        )}
-                      </div>
-                      <button type="button" className="secondary-button" onClick={addNewMethodStep}>
-                        <Icon name="plus" />
-                        Add method step
-                      </button>
-                    </div>
-                    <label className="editor-label">
-                      <span>Presentation notes</span>
-                      <textarea
-                        value={newRecipeDraft.presentationNotes}
-                        onChange={(event) => updateNewRecipeField("presentationNotes", event.target.value)}
-                        rows={5}
-                        placeholder="Add plating, garnish, or service notes"
-                      />
-                    </label>
-                  </div>
-
-                  <div className="upload-actions">
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => resetNewRecipeDraft(newRecipeDraft.recipeType)}
-                    >
-                      Reset draft
-                    </button>
-                    <button type="button" className="primary-button" onClick={saveNewRecipeDraft}>
-                      Save new {newRecipeDraft.recipeType === "batch" ? "batch" : "recipe"}
-                    </button>
-                  </div>
-                </Card>
-              </div>
+              <NewRecipeBuilder
+                Card={Card}
+                Badge={Badge}
+                Icon={Icon}
+                DecimalInput={DecimalInput}
+                newRecipeDraft={newRecipeDraft}
+                getNextBatchCode={getNextBatchCode}
+                setBuilderMode={setBuilderMode}
+                money={money}
+                newRecipeDraftCost={newRecipeDraftCost}
+                newRecipeDraftRoundupTarget={newRecipeDraftRoundupTarget}
+                updateNewRecipeField={updateNewRecipeField}
+                venues={venues}
+                numberValue={numberValue}
+                addNewDraftComponent={addNewDraftComponent}
+                isParentLinkedComponent={isParentLinkedComponent}
+                removeNewDraftComponent={removeNewDraftComponent}
+                setActiveDraftLookupId={setActiveDraftLookupId}
+                activeDraftLookupId={activeDraftLookupId}
+                draftIngredientSuggestions={draftIngredientSuggestions}
+                applyIngredientMatchToDraft={applyIngredientMatchToDraft}
+                ingredientExistsByNameOrCode={ingredientExistsByNameOrCode}
+                createIngredientFromRecipeBuilder={createIngredientFromRecipeBuilder}
+                toTitleCaseWords={toTitleCaseWords}
+                shouldAutoCostComponent={shouldAutoCostComponent}
+                updateNewComponentField={updateNewComponentField}
+                addNewMethodStep={addNewMethodStep}
+                updateNewMethodStep={updateNewMethodStep}
+                removeNewMethodStep={removeNewMethodStep}
+                resetNewRecipeDraft={resetNewRecipeDraft}
+                saveNewRecipeDraft={saveNewRecipeDraft}
+              />
             ) : selectedRecipe ? (
-            <div className="panel-stack">
-              <Card>
-                <div className="card-header">
-                  <div>
-                    <div className="eyebrow">Existing recipe builder</div>
-                    <h2>Edit dish or batch</h2>
-                  </div>
-                  <div className="badge-row compact">
-                    <Badge tone="default">
-                      {selectedRecipe.recipeType === "batch" ? "Batch recipe" : "Dish recipe"}
-                    </Badge>
-                    <Badge tone="default">{selectedRecipe.id}</Badge>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => {
-                        setBuilderMode("create");
-                        setRecipeEditLookup("");
-                        resetNewRecipeDraft("dish");
-                      }}
-                    >
-                      Start new recipe
-                    </button>
-                  </div>
-                </div>
-                {importMessage ? <p className="support-text success-text">{importMessage}</p> : null}
-                {importError ? <p className="support-text error-text">{importError}</p> : null}
-
-                <div className="recipe-context">
-                  <details className="recipe-picker" open={false}>
-                    <summary className="recipe-picker-header">
-                      <div>
-                        <div className="mini-heading">Find recipe to edit</div>
-                        <p className="support-text">
-                          Open this lookup when you want to jump to another existing recipe.
-                        </p>
-                      </div>
-                    </summary>
-                    <div className="recipe-picker-controls">
-                      <select
-                        value={builderRecipeFilter}
-                        onChange={(event) => setBuilderRecipeFilter(event.target.value)}
-                      >
-                        <option value="all">All recipe types</option>
-                        <option value="dish">Dish recipes</option>
-                        <option value="batch">Batch recipes</option>
-                      </select>
-                      <label className="toggle-row">
-                        <input
-                          type="checkbox"
-                          checked={builderBringBatchesForward}
-                          onChange={(event) => setBuilderBringBatchesForward(event.target.checked)}
-                        />
-                        <span>Bring batch recipes forward</span>
-                      </label>
-                    </div>
-                    <label className="form-field recipe-lookup-field recipe-search-field">
-                      <span>Recipe lookup</span>
-                      <div className="search-input-row">
-                        <input
-                          value={recipeLookupQuery}
-                          onChange={(event) => setRecipeLookupQuery(event.target.value)}
-                          placeholder="Start typing a recipe name, code, category or venue"
-                        />
-                        {recipeLookupQuery ? (
-                          <button
-                            type="button"
-                            className="secondary-button table-action-button"
-                            onClick={clearRecipeLookup}
-                          >
-                            Clear
-                          </button>
-                        ) : null}
-                      </div>
-                    </label>
-                    <div className="lookup-panel recipe-search-panel">
-                      {filteredRecipeEditOptions.length ? (
-                        filteredRecipeEditOptions.map((option) => (
-                          <button
-                            key={option.id}
-                            type="button"
-                            className={`lookup-option ${(recipeEditLookup || selectedRecipe.id) === option.id ? "lookup-option-active" : ""}`}
-                            onClick={() => {
-                              setRecipeEditLookup(option.id);
-                              setSelectedRecipeId(option.id);
-                            }}
-                          >
-                            <div className="lookup-main">
-                              <strong>{option.label}</strong>
-                            </div>
-                          </button>
-                        ))
-                      ) : (
-                        <div className="presentation-placeholder">No matching recipes found.</div>
-                      )}
-                    </div>
-                  </details>
-
-                  <div className="builder-summary-banner">
-                    <div>
-                      <div className="mini-heading">Recipe cost</div>
-                      <strong>{money(selectedRecipe.recipeCost)}</strong>
-                    </div>
-                    <div>
-                      <div className="mini-heading">
-                        {selectedRecipe.recipeType === "batch" ? "Batch yield" : "Sale price"}
-                      </div>
-                      <strong>
-                        {selectedRecipe.recipeType === "batch"
-                          ? `${numberValue(selectedRecipe.batchYield)} ${getBatchYieldLabel(selectedRecipe)}`
-                          : money(selectedRecipe.currentSalePrice)}
-                      </strong>
-                    </div>
-                    <div>
-                      <div className="mini-heading">
-                        {selectedRecipe.recipeType === "batch" ? "Cost per yield unit" : "Roundup target"}
-                      </div>
-                      <strong>
-                        {selectedRecipe.recipeType === "batch"
-                          ? `${money(getBatchUnitCost(selectedRecipe))}/${getBatchYieldLabel(selectedRecipe)}`
-                          : money(selectedRecipe.roundup)}
-                      </strong>
-                    </div>
-                    <div>
-                      <div className="mini-heading">Components</div>
-                      <strong>{selectedRecipeComponentCount}</strong>
-                    </div>
-                    <div>
-                      <div className="mini-heading">Venue</div>
-                      <strong>{getRecipeVenueLabel(selectedRecipe)}</strong>
-                    </div>
-                    <div>
-                      <div className="mini-heading">Item code</div>
-                      <strong>{selectedRecipe.sellingItemCode || "Missing"}</strong>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="card-header">
-                  <div>
-                    <div className="eyebrow">Recipe detail</div>
-                    <h2>Recipe editor</h2>
-                  </div>
-                  <div className="badge-row compact">
-                    <button
-                      type="button"
-                      className="primary-button"
-                      onClick={saveCurrentRecipeChanges}
-                    >
-                      Save {selectedRecipe.recipeType === "batch" ? "batch" : "recipe"}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => openRecipeCostSheetForRecipe(selectedRecipe)}
-                    >
-                      Open cost sheet
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => openRecipeCostSheetForRecipe(selectedRecipe, { print: true })}
-                    >
-                      Print cost sheet
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => openChefSheetPreviewForRecipe(selectedRecipe)}
-                    >
-                      Open chef sheet
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => openChefSheetPreviewForRecipe(selectedRecipe, { print: true })}
-                    >
-                      Print chef sheet
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={selectedRecipe.isLocked}
-                      onClick={() => deleteRecipe(selectedRecipe)}
-                    >
-                      Delete recipe
-                    </button>
-                  </div>
-                </div>
-
-                <div className="review-panel">
-                  <div className="review-panel-header">
-                    <div>
-                      <div className="mini-heading">Validation</div>
-                      <strong>
-                        {selectedRecipe.validation.reviewStatus === "needs-review"
-                          ? "Needs review"
-                          : selectedRecipe.validation.reviewStatus === "warning"
-                            ? "Warnings"
-                            : "Ready"}
-                      </strong>
-                    </div>
-                    <label className="toggle-row">
-                      <input
-                        type="checkbox"
-                        checked={selectedRecipe.isLive}
-                        disabled={selectedRecipe.recipeType === "batch" || selectedRecipeLocked}
-                        onChange={(event) =>
-                          updateRecipeField(selectedRecipe.id, "isLive", event.target.checked)
-                        }
-                      />
-                      <span>{selectedRecipe.recipeType === "batch" ? "Batch recipes are not live dishes" : "Recipe live"}</span>
-                    </label>
-                    <label className="toggle-row">
-                      <input
-                        type="checkbox"
-                        checked={selectedRecipeLocked}
-                        onChange={(event) =>
-                          updateRecipeField(selectedRecipe.id, "isLocked", event.target.checked)
-                        }
-                      />
-                      <span>{selectedRecipeLocked ? "Recipe locked" : "Lock recipe"}</span>
-                    </label>
-                  </div>
-                  <div className="badge-row compact">
-                    {selectedRecipe.validation.issues.length ? (
-                      selectedRecipe.validation.issues.map((issue, index) => (
-                        <Badge key={`${issue.text}-${index}`} tone={issue.level === "error" ? "bad" : "warn"}>
-                          {issue.text}
-                        </Badge>
-                      ))
-                    ) : (
-                      <Badge tone="good">Confirmed complete</Badge>
-                    )}
-                    {selectedRecipe.workflowStage === "draft" ? <Badge tone="default">Draft workflow stage</Badge> : null}
-                    {selectedRecipeResolved ? <Badge tone="good">Ready to go live</Badge> : null}
-                    {selectedRecipeLocked ? <Badge tone="default">Editing disabled until unlocked</Badge> : null}
-                    {restaurantLiveRecipeIds.has(selectedRecipe.id) ? (
-                      <Badge tone="default">Included on a live menu</Badge>
-                    ) : null}
-                  </div>
-                </div>
-
-                {selectedRecipe.recipeType === "batch" && batchImpact.severity !== "none" ? (
-                  <div
-                    className={`impact-panel ${
-                      batchImpact.severity === "high"
-                        ? "impact-panel-high"
-                        : batchImpact.severity === "medium"
-                          ? "impact-panel-medium"
-                          : "impact-panel-low"
-                    }`}
-                  >
-                    <div className="impact-panel-header">
-                      <div>
-                        <div className="mini-heading">Batch impact warning</div>
-                        <strong>
-                          {batchImpact.severity === "high"
-                            ? "This batch is affecting live service right now"
-                            : batchImpact.severity === "medium"
-                              ? "This batch feeds live dishes"
-                              : "This batch is reused in other recipes"}
-                        </strong>
-                      </div>
-                      <div className="badge-row compact">
-                        <Badge tone={batchImpact.severity === "high" ? "bad" : batchImpact.severity === "medium" ? "warn" : "default"}>
-                          {batchImpact.linkedRecipeCount} linked recipe{batchImpact.linkedRecipeCount === 1 ? "" : "s"}
-                        </Badge>
-                        {batchImpact.liveRecipeCount ? (
-                          <Badge tone="warn">
-                            {batchImpact.liveRecipeCount} live dish{batchImpact.liveRecipeCount === 1 ? "" : "es"}
-                          </Badge>
-                        ) : null}
-                        {batchImpact.liveMenuCount ? (
-                          <Badge tone="bad">
-                            {batchImpact.liveMenuCount} live menu{batchImpact.liveMenuCount === 1 ? "" : "s"}
-                          </Badge>
-                        ) : null}
-                      </div>
-                    </div>
-                    <p className="support-text">
-                      Changes to this batch can cascade into every linked dish. Review the dependency list before
-                      updating quantities, costs, or yield settings.
-                    </p>
-                  </div>
-                ) : null}
-
-                <div className="form-grid">
-                  <label className={getFieldIssues(selectedRecipe.validation, "name").length ? "field-error" : ""}>
-                    <span>Dish name</span>
-                    <input
-                      disabled={selectedRecipeLocked}
-                      value={selectedRecipe.name}
-                      onChange={(event) => updateRecipeField(selectedRecipe.id, "name", event.target.value)}
-                    />
-                    {getFieldIssues(selectedRecipe.validation, "name").map((issue) => (
-                      <small key={issue.text} className="field-help field-help-error">{issue.text}</small>
-                    ))}
-                  </label>
-                  <label className={getFieldIssues(selectedRecipe.validation, "restaurant").length ? "field-error" : ""}>
-                    <span>Venue</span>
-                    <select
-                      disabled={selectedRecipeLocked}
-                      value={selectedRecipe.restaurant}
-                      onChange={(event) =>
-                        updateRecipeField(selectedRecipe.id, "restaurant", event.target.value)
-                      }
-                    >
-                      <option value="">Blank</option>
-                      {venues.map((venue) => (
-                        <option key={venue} value={venue}>
-                          {venue}
-                        </option>
-                      ))}
-                    </select>
-                    {getFieldIssues(selectedRecipe.validation, "restaurant").map((issue) => (
-                      <small key={issue.text} className="field-help field-help-error">{issue.text}</small>
-                    ))}
-                  </label>
-                  <label className={getFieldIssues(selectedRecipe.validation, "category").length ? "field-error" : ""}>
-                    <span>Category</span>
-                    <input
-                      disabled={selectedRecipeLocked}
-                      value={selectedRecipe.category}
-                      onChange={(event) => updateRecipeField(selectedRecipe.id, "category", event.target.value)}
-                    />
-                    {getFieldIssues(selectedRecipe.validation, "category").map((issue) => (
-                      <small key={issue.text} className="field-help field-help-warn">{issue.text}</small>
-                    ))}
-                  </label>
-                  <label>
-                    <span>Recipe type</span>
-                    <select
-                      disabled={selectedRecipeLocked}
-                      value={selectedRecipe.recipeType}
-                      onChange={(event) => updateRecipeField(selectedRecipe.id, "recipeType", event.target.value)}
-                    >
-                      <option value="dish">Dish recipe</option>
-                      <option value="batch">Batch recipe</option>
-                    </select>
-                  </label>
-                  <label className={getFieldIssues(selectedRecipe.validation, "sellingItemCode").length ? "field-error" : ""}>
-                    <span>Item code</span>
-                    <input
-                      disabled={selectedRecipeLocked}
-                      value={selectedRecipe.sellingItemCode}
-                      onChange={(event) =>
-                        updateRecipeField(selectedRecipe.id, "sellingItemCode", event.target.value)
-                      }
-                    />
-                    {getFieldIssues(selectedRecipe.validation, "sellingItemCode").map((issue) => (
-                      <small key={issue.text} className="field-help field-help-error">{issue.text}</small>
-                    ))}
-                  </label>
-                  <label className={getFieldIssues(selectedRecipe.validation, "currentSalePrice").length ? "field-error" : ""}>
-                    <span>Sale price</span>
-                    <DecimalInput
-                      disabled={selectedRecipeLocked}
-                      value={selectedRecipe.currentSalePrice}
-                      onCommit={(value) => updateRecipeField(selectedRecipe.id, "currentSalePrice", value)}
-                      className=""
-                    />
-                    {getFieldIssues(selectedRecipe.validation, "currentSalePrice").map((issue) => (
-                      <small key={issue.text} className="field-help field-help-error">{issue.text}</small>
-                    ))}
-                  </label>
-                  {selectedRecipe.recipeType !== "batch" ? (
-                    <label>
-                      <span>Portions made</span>
-                      <input
-                        disabled={selectedRecipeLocked}
-                        value={selectedRecipe.portionCount}
-                        onChange={(event) =>
-                          updateRecipeField(selectedRecipe.id, "portionCount", numberValue(event.target.value))
-                        }
-                      />
-                    </label>
-                  ) : null}
-                  {selectedRecipe.recipeType === "batch" ? (
-                    <label className={getFieldIssues(selectedRecipe.validation, "batchYield").length ? "field-error" : ""}>
-                      <span>Batch yield</span>
-                      <input
-                        disabled={selectedRecipeLocked}
-                        value={selectedRecipe.batchYield}
-                        onChange={(event) =>
-                          updateRecipeField(selectedRecipe.id, "batchYield", numberValue(event.target.value))
-                        }
-                      />
-                      {getFieldIssues(selectedRecipe.validation, "batchYield").map((issue) => (
-                        <small key={issue.text} className="field-help field-help-error">{issue.text}</small>
-                      ))}
-                    </label>
-                  ) : null}
-                  {selectedRecipe.recipeType === "batch" ? (
-                    <label className={getFieldIssues(selectedRecipe.validation, "batchYieldType").length ? "field-error" : ""}>
-                      <span>Yield type</span>
-                      <select
-                        disabled={selectedRecipeLocked}
-                        value={selectedRecipe.batchYieldType}
-                        onChange={(event) => updateRecipeField(selectedRecipe.id, "batchYieldType", event.target.value)}
-                      >
-                        <option value="portion">portion</option>
-                        <option value="g">g</option>
-                        <option value="kg">kg</option>
-                        <option value="ml">ml</option>
-                        <option value="l">l</option>
-                        <option value="tray">tray</option>
-                        <option value="bottle">bottle</option>
-                        <option value="jar">jar</option>
-                      </select>
-                      {getFieldIssues(selectedRecipe.validation, "batchYieldType").map((issue) => (
-                        <small key={issue.text} className="field-help field-help-warn">{issue.text}</small>
-                      ))}
-                    </label>
-                  ) : null}
-                  <label>
-                    <span>Roundup target</span>
-                    {selectedRecipe.recipeType === "batch" ? (
-                      <DecimalInput
-                        disabled={selectedRecipeLocked}
-                        value={selectedRecipe.roundup}
-                        onCommit={(value) => updateRecipeField(selectedRecipe.id, "roundup", value)}
-                      />
-                    ) : (
-                      <input
-                        value={money(selectedRecipe.roundup)}
-                        readOnly
-                      />
-                    )}
-                  </label>
-                  <label className={getMetaIssues(selectedRecipe.validation, "recipeComplete").length ? "field-error" : ""}>
-                    <span>Recipe complete</span>
-                    <select
-                      disabled={selectedRecipeLocked}
-                      value={String(selectedRecipe.recipeComplete ?? "0")}
-                      onChange={(event) => updateRecipeField(selectedRecipe.id, "recipeComplete", event.target.value)}
-                    >
-                      <option value="0">Incomplete</option>
-                      <option value="1">Complete</option>
-                    </select>
-                    {getMetaIssues(selectedRecipe.validation, "recipeComplete").map((issue) => (
-                      <small key={issue.text} className="field-help field-help-warn">{issue.text}</small>
-                    ))}
-                  </label>
-                  {selectedRecipe.recipeType !== "batch" ? (
-                    <label className={getMetaIssues(selectedRecipe.validation, "pricingComplete").length ? "field-error" : ""}>
-                      <span>Pricing complete</span>
-                      <select
-                        disabled={selectedRecipeLocked}
-                        value={String(selectedRecipe.pricingComplete ?? "0")}
-                        onChange={(event) => updateRecipeField(selectedRecipe.id, "pricingComplete", event.target.value)}
-                      >
-                        <option value="0">Incomplete</option>
-                        <option value="1">Complete</option>
-                      </select>
-                      {getMetaIssues(selectedRecipe.validation, "pricingComplete").map((issue) => (
-                        <small key={issue.text} className="field-help field-help-warn">{issue.text}</small>
-                      ))}
-                    </label>
-                  ) : null}
-                </div>
-
-                <div className="editor-block">
-                  <div className="editor-label">
-                    <span>Method steps</span>
-                    <div className="method-step-stack">
-                      {getMethodSteps(selectedRecipe).length ? (
-                        getMethodSteps(selectedRecipe).map((step, index) => (
-                          <div key={`${selectedRecipe.id}-step-${index}`} className="method-step-row">
-                            <div className="method-step-number">{index + 1}</div>
-                            <textarea
-                              disabled={selectedRecipeLocked}
-                              value={step}
-                              onChange={(event) =>
-                                updateMethodStep(selectedRecipe.id, index, event.target.value)
-                              }
-                              placeholder={`Step ${index + 1}`}
-                              rows={3}
-                            />
-                            <button
-                              type="button"
-                              className="icon-button"
-                              disabled={selectedRecipeLocked}
-                              onClick={() => removeMethodStep(selectedRecipe.id, index)}
-                              aria-label="Remove method step"
-                            >
-                              <Icon name="trash" />
-                            </button>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="presentation-placeholder">No method steps yet. Add the first step below.</div>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={selectedRecipeLocked}
-                      onClick={() => addMethodStep(selectedRecipe.id)}
-                    >
-                      <Icon name="plus" />
-                      Add method step
-                    </button>
-                    {getChefPortionNote(selectedRecipe) ? (
-                      <p className="support-text">
-                        Chef note: {getChefPortionNote(selectedRecipe)}
-                      </p>
-                    ) : null}
-                  </div>
-                  <label className="editor-label">
-                    <span>Presentation notes</span>
-                    <textarea
-                      disabled={selectedRecipeLocked}
-                      value={selectedRecipe.presentationNotes}
-                      onChange={(event) =>
-                        updateRecipeField(selectedRecipe.id, "presentationNotes", event.target.value)
-                      }
-                      placeholder="Add plating, garnish, and pass notes"
-                      rows={5}
-                    />
-                  </label>
-                  <div className="image-upload-card">
-                    <div>
-                      <div className="mini-heading">Completed dish image</div>
-                      <p className="support-text">
-                        Add a final plated image so it appears on the chef print sheet.
-                      </p>
-                    </div>
-                    <label className="secondary-button file-button">
-                      <input
-                        type="file"
-                        accept="image/*"
-                        disabled={selectedRecipeLocked}
-                        onChange={(event) => handlePresentationImageUpload(selectedRecipe.id, event)}
-                      />
-                      Upload image
-                    </label>
-                    {selectedRecipe.presentationImage ? (
-                      <div className="presentation-preview">
-                        <img src={selectedRecipe.presentationImage} alt={`${selectedRecipe.name} presentation`} />
-                      </div>
-                    ) : (
-                      <div className="presentation-placeholder">No completed dish image uploaded yet.</div>
-                    )}
-                  </div>
-                </div>
-
-                {getMetaIssues(selectedRecipe.validation, "gp").length ? (
-                  <div className="field-summary">
-                    {getMetaIssues(selectedRecipe.validation, "gp").map((issue) => (
-                      <p key={issue.text} className="field-help field-help-error">{issue.text}</p>
-                    ))}
-                  </div>
-                ) : null}
-
-                <div className="section-row">
-                  <div>
-                    <div className="eyebrow">Components</div>
-                    <h3>Linked recipe components</h3>
-                    <p className="support-text">
-                      Change costs at the source: ingredients in `Ingredients`, BCH items in the parent batch recipe.
-                    </p>
-                  </div>
-                  <button type="button" className="secondary-button" onClick={addComponent} disabled={selectedRecipeLocked}>
-                    <Icon name="plus" />
-                    Add component
-                  </button>
-                </div>
-
-                <div className="component-stack">
-                  {selectedRecipe.components.map((component) => {
-                    const componentIssues = getComponentIssues(selectedRecipe.validation, component.id);
-                    const componentReadOnly = selectedRecipeLocked || isParentLinkedComponent(component);
-                    const matchedBatchSource = findBatchRecipeMatch(component);
-                    const hasOpenableBatchSource = Boolean(matchedBatchSource);
-                    return (
-                    <div
-                      key={component.id}
-                      className={`component-card ${componentIssues.length ? "component-card-error" : ""}`}
-                    >
-                      <div className="component-meta">
-                        <div className="badge-row compact">
-                          <Badge tone="default">#{component.sort}</Badge>
-                          {component.sourceType === "batch" ? <Badge tone="good">Linked batch</Badge> : null}
-                          {component.sourceType === "ingredient-master" ? <Badge tone="default">Linked ingredient</Badge> : null}
-                          {isParentLinkedComponent(component) ? <Badge tone="default">Managed by parent batch</Badge> : null}
-                          {normalizeCodeKey(component.code).startsWith("BCH") && !hasOpenableBatchSource ? (
-                            <Badge tone="warn">Batch recipe not linked yet</Badge>
-                          ) : null}
-                        </div>
-                        <div className="component-actions">
-                          {hasOpenableBatchSource ? (
-                            <button
-                              type="button"
-                              className="secondary-button table-action-button"
-                              onPointerDown={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                jumpToLinkedBatchRecipe(component);
-                              }}
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                jumpToLinkedBatchRecipe(component);
-                              }}
-                            >
-                              Edit batch source
-                            </button>
-                          ) : null}
-                          {!isParentLinkedComponent(component) ? (
-                            <button
-                              type="button"
-                              className="secondary-button table-action-button"
-                              onPointerDown={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                jumpToIngredientRecord(component);
-                              }}
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                jumpToIngredientRecord(component);
-                              }}
-                            >
-                              Edit ingredient source
-                            </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            className="icon-button"
-                            disabled={componentReadOnly}
-                            onClick={() => removeComponent(selectedRecipe.id, component.id)}
-                            aria-label="Remove component"
-                          >
-                            <Icon name="trash" />
-                          </button>
-                        </div>
-                      </div>
-                      <label>
-                          <span>Ingredient</span>
-                          <input
-                            disabled={componentReadOnly}
-                            value={component.ingredient}
-                            className={
-                              getComponentFieldIssues(selectedRecipe.validation, component.id, "ingredient").length
-                                ? "input-error"
-                                : ""
-                            }
-                            onChange={(event) =>
-                              updateComponentField(selectedRecipe.id, component.id, "ingredient", event.target.value)
-                            }
-                          onFocus={() =>
-                            !componentReadOnly &&
-                            setActiveLookup({
-                              recipeId: selectedRecipe.id,
-                              componentId: component.id,
-                            })
-                          }
-                          onBlur={() => {
-                            window.setTimeout(() => {
-                              setActiveLookup((current) => {
-                                if (
-                                  current?.recipeId === selectedRecipe.id &&
-                                  current?.componentId === component.id
-                                ) {
-                                  return null;
-                                }
-                                return current;
-                              });
-                            }, 120);
-                          }}
-                          placeholder="Ingredient"
-                          />
-                          {getComponentFieldIssues(selectedRecipe.validation, component.id, "ingredient").map((issue) => (
-                            <small key={issue.text} className="field-help field-help-error">{issue.text}</small>
-                          ))}
-                        {activeLookup?.recipeId === selectedRecipe.id &&
-                        activeLookup?.componentId === component.id &&
-                        !componentReadOnly &&
-                        ingredientSuggestions.length ? (
-                          <div className="lookup-panel">
-                            {ingredientSuggestions.map((ingredient) => (
-                              <button
-                                key={ingredient.id}
-                                type="button"
-                                className="lookup-option"
-                                onMouseDown={(event) => {
-                                  event.preventDefault();
-                                  applyIngredientMatch(selectedRecipe.id, component.id, ingredient);
-                                }}
-                              >
-                                <div className="lookup-main">
-                                  <strong>{ingredient.ingredient_name}</strong>
-                                  <span>{ingredient.ingredient_item_code}</span>
-                                </div>
-                                <div className="lookup-meta">
-                                  <span>{money(ingredient.unit_cost)}</span>
-                                  <span>
-                                    {ingredient.sourceType === "batch"
-                                      ? `${ingredient.category} · ${ingredient.pack_size || "Batch"}`
-                                      : ingredient.supplier || ingredient.category || "Ingredient master"}
-                                  </span>
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </label>
-                      <label>
-                        <span>Code</span>
-                        <input
-                          disabled={componentReadOnly}
-                          value={component.code}
-                          className={
-                            getComponentFieldIssues(selectedRecipe.validation, component.id, "code").length
-                              ? "input-warn"
-                              : ""
-                          }
-                          onChange={(event) =>
-                            updateComponentField(selectedRecipe.id, component.id, "code", event.target.value)
-                          }
-                          placeholder="Code"
-                        />
-                        {getComponentFieldIssues(selectedRecipe.validation, component.id, "code").map((issue) => (
-                          <small key={issue.text} className="field-help field-help-warn">{issue.text}</small>
-                        ))}
-                      </label>
-                      <label>
-                        <span>Qty (g)</span>
-                        <input
-                          disabled={componentReadOnly}
-                          value={component.qty}
-                          className={
-                            getComponentFieldIssues(selectedRecipe.validation, component.id, "qty").length
-                              ? "input-warn"
-                              : ""
-                          }
-                          onChange={(event) =>
-                            updateComponentField(selectedRecipe.id, component.id, "qty", event.target.value)
-                          }
-                          placeholder={
-                            component.sourceType === "batch"
-                              ? `Qty (${component.sourceYieldType || "yield units"})`
-                              : "Qty (g)"
-                          }
-                        />
-                        {getComponentFieldIssues(selectedRecipe.validation, component.id, "qty").map((issue) => (
-                          <small key={issue.text} className="field-help field-help-warn">{issue.text}</small>
-                        ))}
-                        {shouldAutoCostComponent(component) ? (
-                          <small className="field-help field-help-info">
-                            Auto-costing from {component.sourceType === "batch" ? "batch" : "ingredient"} at {money(component.sourceUnitCost)}/{component.sourceYieldType}
-                          </small>
-                        ) : null}
-                      </label>
-                      <label>
-                        <span>Cost</span>
-                        <DecimalInput
-                          disabled={componentReadOnly}
-                          value={component.cost}
-                          className={
-                            getComponentFieldIssues(selectedRecipe.validation, component.id, "cost").length
-                              ? "input-error"
-                              : ""
-                          }
-                          onCommit={(value) =>
-                            updateComponentField(selectedRecipe.id, component.id, "cost", value)
-                          }
-                          placeholder="Cost"
-                        />
-                        {getComponentFieldIssues(selectedRecipe.validation, component.id, "cost").map((issue) => (
-                          <small key={issue.text} className="field-help field-help-error">{issue.text}</small>
-                        ))}
-                        <small className="field-help field-help-info">
-                          {getComponentSourceRouteLabel(component)}
-                        </small>
-                        {shouldAutoCostComponent(component) ? (
-                          <small className="field-help field-help-info">
-                            {isParentLinkedComponent(component)
-                              ? "This row is managed by the linked batch recipe."
-                              : "Editing cost manually will disconnect this row from auto-costing."}
-                          </small>
-                        ) : null}
-                        {isParentLinkedComponent(component) ? (
-                          <small className="field-help field-help-info">
-                            Use `Open batch recipe` to change the parent batch and let this row update from the source.
-                          </small>
-                        ) : null}
-                        {normalizeCodeKey(component.code).startsWith("BCH") && !hasOpenableBatchSource ? (
-                          <small className="field-help field-help-warn">
-                            This BCH code does not currently resolve to a batch recipe. Link or import the batch recipe first.
-                          </small>
-                        ) : null}
-                      </label>
-                    </div>
-                  )})}
-                </div>
-              </Card>
-
-              <Card>
-                <div className="card-header">
-                  <div>
-                    <div className="eyebrow">Workbook alignment</div>
-                    <h2>Source fields</h2>
-                  </div>
-                </div>
-                <div className="key-value-list">
-                  <div><span>Recipe ID</span><strong>{selectedRecipe.id}</strong></div>
-                  <div><span>Source row</span><strong>{selectedRecipe.sourceRow || "N/A"}</strong></div>
-                  <div><span>Source cost</span><strong>{money(selectedRecipe.sourceCost)}</strong></div>
-                  <div><span>Source net price</span><strong>{money(selectedRecipe.netPriceSource)}</strong></div>
-                  <div><span>Source gross price</span><strong>{money(selectedRecipe.grossPriceSource)}</strong></div>
-                  <div><span>POS YTD</span><strong>{selectedRecipe.posYtd}</strong></div>
-                  <div><span>Recipe complete</span><strong>{selectedRecipe.recipeComplete === "1" ? "Complete" : "Incomplete"}</strong></div>
-                  <div><span>Pricing complete</span><strong>{selectedRecipe.pricingComplete === "1" ? "Complete" : "Incomplete"}</strong></div>
-                  <div><span>Recipe type</span><strong>{selectedRecipe.recipeType}</strong></div>
-                  <div><span>Batch yield</span><strong>{numberValue(selectedRecipe.batchYield) || "N/A"}</strong></div>
-                  <div><span>Yield type</span><strong>{selectedRecipe.recipeType === "batch" ? getBatchYieldLabel(selectedRecipe) : "N/A"}</strong></div>
-                </div>
-              </Card>
-
-              {selectedRecipe.recipeType === "batch" ? (
-                <Card>
-                  <div className="card-header">
-                    <div>
-                      <div className="eyebrow">Batch traceability</div>
-                      <h2>Used in recipes</h2>
-                    </div>
-                    <Badge tone={batchUsage.length ? "good" : "default"}>
-                      {batchUsage.length} linked
-                    </Badge>
-                  </div>
-                  {batchUsage.length ? (
-                    <div className="usage-stack">
-                      {batchUsage.map((usage) => (
-                        <div key={usage.recipeId} className="usage-card">
-                          <div className="usage-top">
-                            <div>
-                              <strong>{usage.recipeName}</strong>
-                              <p>{usage.restaurant}</p>
-                            </div>
-                            <div className="badge-row compact">
-                              {usage.isLive ? <Badge tone="good">Recipe live</Badge> : null}
-                              {usage.liveMenusUsingRecipe.length ? (
-                                <Badge tone="default">
-                                  On {usage.liveMenusUsingRecipe.length} live menu{usage.liveMenusUsingRecipe.length > 1 ? "s" : ""}
-                                </Badge>
-                              ) : null}
-                            </div>
-                          </div>
-                          <div className="badge-row compact">
-                            {usage.matchedComponents.map((component) => (
-                              <Badge key={component.id} tone="default">
-                                {component.ingredient} · {numberValue(component.qty)} {component.sourceYieldType || "unit"}
-                              </Badge>
-                            ))}
-                          </div>
-                          {usage.liveMenusUsingRecipe.length ? (
-                            <div className="badge-row compact">
-                              {usage.liveMenusUsingRecipe.map((menu) => (
-                                <Badge key={menu.id} tone="good">
-                                  {menu.name}
-                                </Badge>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="support-text">
-                      This batch is not currently used in any other recipe.
-                    </p>
-                  )}
-                </Card>
-              ) : null}
-
-              <Card className="hint-card">
-                <div className="card-header">
-                  <div>
-                    <div className="eyebrow">Ingredient master</div>
-                    <h2>Upload and lookup</h2>
-                  </div>
-                  <Icon name="spark" />
-                </div>
-                <div className="upload-format-card">
-                  <div className="mini-heading">Required columns</div>
-                  <div className="badge-row compact">
-                    {REQUIRED_INGREDIENT_COLUMNS.map((column) => (
-                      <Badge key={column} tone="good">
-                        {column}
-                      </Badge>
-                    ))}
-                  </div>
-                  <div className="mini-heading">Optional columns</div>
-                  <div className="badge-row compact">
-                    {OPTIONAL_INGREDIENT_COLUMNS.map((column) => (
-                      <Badge key={column} tone="default">
-                        {column}
-                      </Badge>
-                    ))}
-                  </div>
-                  <div className="mini-heading">Also accepted directly</div>
-                  <div className="badge-row compact">
-                    {["Ingredient name", "PLU Code", "Description", "Grams. / Mililitre", "Cost per kilo"].map(
-                      (column) => (
-                        <Badge key={column} tone="default">
-                          {column}
-                        </Badge>
-                      )
-                    )}
-                  </div>
-                </div>
-                <div className="upload-actions">
-                  <label className="secondary-button file-button">
-                    <input type="file" accept=".csv,text/csv" onChange={handleIngredientUpload} />
-                    Upload ingredient master
-                  </label>
-                  <button type="button" className="secondary-button" onClick={downloadIngredientTemplate}>
-                    Download template
-                  </button>
-                </div>
-                <div className="support-stack">
-                  <p className="support-text">
-                    Upload a CSV and the builder will suggest matches as chefs type ingredient names like
-                    “chicken breast”, then fill the ingredient code and current cost into the row.
-                  </p>
-                  <p className="support-text">
-                    You can upload either the app-ready ingredient master format or the raw pricing sheet format
-                    with `Ingredient name`, `PLU Code`, `Grams. / Mililitre`, and `Cost per kilo`.
-                  </p>
-                  <p className="support-text">Ingredients loaded: {ingredientMaster.length}</p>
-                  {ingredientUploadMessage ? (
-                    <p className="support-text success-text">{ingredientUploadMessage}</p>
-                  ) : null}
-                  {ingredientUploadError ? (
-                    <p className="support-text error-text">{ingredientUploadError}</p>
-                  ) : null}
-                </div>
-              </Card>
-            </div>
+              <ExistingRecipeEditor
+                Card={Card}
+                Badge={Badge}
+                Icon={Icon}
+                DecimalInput={DecimalInput}
+                selectedRecipe={selectedRecipe}
+                importMessage={importMessage}
+                importError={importError}
+                setBuilderMode={setBuilderMode}
+                setRecipeEditLookup={setRecipeEditLookup}
+                resetNewRecipeDraft={resetNewRecipeDraft}
+                builderRecipeFilter={builderRecipeFilter}
+                setBuilderRecipeFilter={setBuilderRecipeFilter}
+                builderBringBatchesForward={builderBringBatchesForward}
+                setBuilderBringBatchesForward={setBuilderBringBatchesForward}
+                recipeLookupQuery={recipeLookupQuery}
+                setRecipeLookupQuery={setRecipeLookupQuery}
+                clearRecipeLookup={clearRecipeLookup}
+                filteredRecipeEditOptions={filteredRecipeEditOptions}
+                recipeEditLookup={recipeEditLookup}
+                setSelectedRecipeId={setSelectedRecipeId}
+                money={money}
+                numberValue={numberValue}
+                getBatchYieldLabel={getBatchYieldLabel}
+                getBatchUnitCost={getBatchUnitCost}
+                selectedRecipeComponentCount={selectedRecipeComponentCount}
+                getRecipeVenueLabel={getRecipeVenueLabel}
+                saveCurrentRecipeChanges={saveCurrentRecipeChanges}
+                openRecipeCostSheetForRecipe={openRecipeCostSheetForRecipe}
+                openChefSheetPreviewForRecipe={openChefSheetPreviewForRecipe}
+                deleteRecipe={deleteRecipe}
+                selectedRecipeLocked={selectedRecipeLocked}
+                updateRecipeField={updateRecipeField}
+                selectedRecipeResolved={selectedRecipeResolved}
+                restaurantLiveRecipeIds={restaurantLiveRecipeIds}
+                batchImpact={batchImpact}
+                getFieldIssues={getFieldIssues}
+                getMetaIssues={getMetaIssues}
+                venues={venues}
+                getMethodSteps={getMethodSteps}
+                updateMethodStep={updateMethodStep}
+                removeMethodStep={removeMethodStep}
+                addMethodStep={addMethodStep}
+                getChefPortionNote={getChefPortionNote}
+                handlePresentationImageUpload={handlePresentationImageUpload}
+                addComponent={addComponent}
+                getComponentIssues={getComponentIssues}
+                isParentLinkedComponent={isParentLinkedComponent}
+                findBatchRecipeMatch={findBatchRecipeMatch}
+                normalizeCodeKey={normalizeCodeKey}
+                jumpToLinkedBatchRecipe={jumpToLinkedBatchRecipe}
+                jumpToIngredientRecord={jumpToIngredientRecord}
+                removeComponent={removeComponent}
+                activeLookup={activeLookup}
+                setActiveLookup={setActiveLookup}
+                getComponentFieldIssues={getComponentFieldIssues}
+                updateComponentField={updateComponentField}
+                ingredientSuggestions={ingredientSuggestions}
+                applyIngredientMatch={applyIngredientMatch}
+                ingredientExistsByNameOrCode={ingredientExistsByNameOrCode}
+                createIngredientFromRecipeBuilder={createIngredientFromRecipeBuilder}
+                toTitleCaseWords={toTitleCaseWords}
+                shouldAutoCostComponent={shouldAutoCostComponent}
+                getComponentSourceRouteLabel={getComponentSourceRouteLabel}
+                batchUsage={batchUsage}
+              />
             ) : (
               <Card>
                 <p className="support-text">Select a recipe to edit, or switch to `Create new` to build one from scratch.</p>
               </Card>
             )}
-          </div>
+          </BuilderTab>
+        )}
+
+        {activeTab === "venue-menus" && (
+          <MenusTab
+            Card={Card}
+            StatCard={StatCard}
+            Badge={Badge}
+            availabilitySearch={availabilitySearch}
+            setAvailabilitySearch={setAvailabilitySearch}
+            recipes={recipes}
+            availabilityVenueFilter={availabilityVenueFilter}
+            setAvailabilityVenueFilter={setAvailabilityVenueFilter}
+            availabilityVenueSummary={availabilityVenueSummary}
+            availabilityRows={availabilityRows}
+            venueOptions={venueOptions}
+            toggleRecipeAvailableVenue={toggleRecipeAvailableVenue}
+            publishRecipeToVenueMenu={publishRecipeToVenueMenu}
+            publishRecipeToVenueMenus={publishRecipeToVenueMenus}
+            removeRecipeFromVenueMenus={removeRecipeFromVenueMenus}
+            isRecipeOnVenueMenu={isRecipeOnVenueMenu}
+            menuCoursePresets={MENU_COURSE_PRESETS}
+            inferMenuCourseFromRecipe={inferMenuCourseFromRecipe}
+            activeVenueMenus={activeVenueMenus}
+            activeVenueMenuDishCount={activeVenueMenuDishCount}
+            menuLiveVenueFilter={menuLiveVenueFilter}
+            setMenuLiveVenueFilter={setMenuLiveVenueFilter}
+            activeVenueMenuSummary={activeVenueMenuSummary}
+            filteredActiveVenueMenus={filteredActiveVenueMenus}
+            openMenuSheetPreview={openMenuSheetPreview}
+            money={money}
+            percent={percent}
+            getMenuCourseGroups={getMenuCourseGroups}
+            menuDashboardSummary={menuDashboardSummary}
+            menuDashboardVenue={menuDashboardVenue}
+            menuDashboardService={menuDashboardService}
+            setMenuDashboardService={setMenuDashboardService}
+            dashboardServiceSummary={dashboardServiceSummary}
+            focusMenuDashboardVenue={focusMenuDashboardVenue}
+            dashboardInventoryRecipes={dashboardInventoryRecipes}
+            dashboardMenu={dashboardMenu}
+            publishRecipeToServiceMenu={publishRecipeToServiceMenu}
+            publishRecipesToServiceMenus={publishRecipesToServiceMenus}
+            removeRecipeFromServiceMenu={removeRecipeFromServiceMenu}
+            removeRecipesFromServiceMenus={removeRecipesFromServiceMenus}
+            getMenuServicePeriod={getMenuServicePeriod}
+            focusMenuBuilder={focusMenuBuilder}
+            updateMenuLine={updateMenuLine}
+            importMessage={importMessage}
+            importError={importError}
+          />
         )}
 
         {activeTab === "menus" && (
-          <div className="tab-panel">
-            <div className="split-layout">
-              <Card>
-                <div className="card-header">
-                  <div>
-                    <div className="eyebrow">Menu builder</div>
-                    <h2>Create and edit menus</h2>
-                  </div>
-                  <button type="button" className="primary-button" onClick={addMenu}>
-                    <Icon name="plus" />
-                    Add menu
-                  </button>
-                </div>
-
-                {selectedMenu ? (
-                  <div className="support-stack">
-                    <div className="upload-actions">
-                      <button type="button" className="primary-button" onClick={saveMenuChanges}>
-                        Save menu changes
-                      </button>
-                    </div>
-                    <label className="form-field">
-                      <span>Selected menu</span>
-                      <select
-                        value={selectedMenu.id}
-                        onChange={(event) => setSelectedMenuId(event.target.value)}
-                      >
-                        {menuCards.map((menu) => (
-                          <option key={menu.id} value={menu.id}>
-                            {menu.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <div className="form-grid">
-                      <label>
-                        <span>Menu name</span>
-                        <input
-                          value={selectedMenu.name}
-                          onChange={(event) =>
-                            updateMenuField(selectedMenu.id, "name", event.target.value)
-                          }
-                        />
-                      </label>
-                      <label>
-                        <span>Venue</span>
-                        <select
-                          value={selectedMenu.restaurant}
-                          onChange={(event) =>
-                            updateMenuField(selectedMenu.id, "restaurant", event.target.value)
-                          }
-                        >
-                          {venueOptions.map((item) => (
-                            <option key={item} value={item}>
-                              {item}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        <span>Guest count</span>
-                        <input
-                          value={selectedMenu.guestCount}
-                          onChange={(event) =>
-                            updateMenuField(selectedMenu.id, "guestCount", numberValue(event.target.value))
-                          }
-                        />
-                      </label>
-                      <label>
-                        <span>Target GP</span>
-                        <input
-                          value={selectedMenu.targetGp}
-                          onChange={(event) =>
-                            updateMenuField(selectedMenu.id, "targetGp", numberValue(event.target.value))
-                          }
-                        />
-                      </label>
-                    </div>
-
-                    <div className="review-panel">
-                      <div className="review-panel-header">
-                        <div>
-                          <div className="mini-heading">Live service state</div>
-                          <strong>{selectedMenu.isLiveMenu ? "This is the live menu" : "Draft menu"}</strong>
-                        </div>
-                        <label className="toggle-row">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(selectedMenu.isLiveMenu)}
-                            onChange={(event) =>
-                              updateMenuField(selectedMenu.id, "isLiveMenu", event.target.checked)
-                            }
-                          />
-                          <span>Set as live menu</span>
-                        </label>
-                      </div>
-                      <div className="badge-row compact">
-                        <Badge tone={selectedMenu.isLiveMenu ? "good" : "default"}>
-                          {selectedMenu.isLiveMenu
-                            ? `Live for ${selectedMenu.restaurant}`
-                            : `Not live for ${selectedMenu.restaurant}`}
-                        </Badge>
-                        <Badge tone="default">
-                          Only one live menu per venue can be active at a time
-                        </Badge>
-                      </div>
-                    </div>
-
-                    <div className="section-row">
-                      <div>
-                        <div className="eyebrow">Menu lines</div>
-                        <h3>{selectedMenu.lines.length} selected dishes</h3>
-                      </div>
-                      <button type="button" className="secondary-button" onClick={addMenuLine}>
-                        <Icon name="plus" />
-                        Add dish
-                      </button>
-                    </div>
-
-                    <div className="component-stack">
-                      {selectedMenu.lines.map((line, index) => (
-                        <div key={line.id} className="component-card menu-line-card">
-                          <div className="component-meta">
-                            <Badge tone="default">#{index + 1}</Badge>
-                            <button
-                              type="button"
-                              className="icon-button"
-                              onClick={() => removeMenuLine(selectedMenu.id, line.id)}
-                              aria-label="Remove menu line"
-                            >
-                              <Icon name="trash" />
-                            </button>
-                          </div>
-                          <label>
-                            <span>Course</span>
-                            <input
-                              value={line.courseLabel}
-                              onChange={(event) =>
-                                updateMenuLine(selectedMenu.id, line.id, "courseLabel", event.target.value)
-                              }
-                            />
-                          </label>
-                          <label>
-                            <span>Recipe</span>
-                            <select
-                              value={line.recipeId}
-                              onChange={(event) =>
-                                updateMenuLine(selectedMenu.id, line.id, "recipeId", event.target.value)
-                              }
-                            >
-                              {recipes
-                                .filter(
-                                  (recipe) =>
-                                    recipe.recipeType !== "batch" &&
-                                    recipe.restaurant === getBaseVenueName(selectedMenu.restaurant)
-                                )
-                                .map((recipe) => (
-                                  <option key={recipe.id} value={recipe.id}>
-                                    {recipe.name}
-                                  </option>
-                                ))}
-                            </select>
-                          </label>
-                          <label>
-                            <span>Dish</span>
-                            <input value={line.dishName} readOnly />
-                          </label>
-                          <label>
-                            <span>Cost</span>
-                            <input value={money(line.lineCost)} readOnly />
-                          </label>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <p className="support-text">Create a menu to start building summaries.</p>
-                )}
-              </Card>
-
-              <div className="builder-side">
-                {selectedMenu ? (
-                  <Card>
-                  <div className="card-header">
-                    <div>
-                      <div className="eyebrow">Live menu summary</div>
-                      <h2>{selectedMenu.name}</h2>
-                    </div>
-                    <div className="badge-row compact">
-                      <Badge tone={selectedMenu.menuGp >= selectedMenu.targetGp ? "good" : "warn"}>
-                        Target {percent(selectedMenu.targetGp)}
-                      </Badge>
-                      {selectedMenu.isLiveMenu ? <Badge tone="good">Live menu</Badge> : null}
-                    </div>
-                  </div>
-                    <div className="stats-grid two-up">
-                      <StatCard label="Per guest cost" value={money(selectedMenu.perGuestCost)} />
-                      <StatCard label="Per guest sell" value={money(selectedMenu.perGuestSell)} />
-                      <StatCard label="Total food cost" value={money(selectedMenu.totalFoodCost)} />
-                      <StatCard label="Menu GP" value={percent(selectedMenu.menuGp)} />
-                    </div>
-                  </Card>
-                ) : null}
-
-                <div className="card-grid">
-              {menuCards.map((menu) => (
-                <Card key={menu.id}>
-                  <div className="card-header">
-                    <div>
-                      <div className="eyebrow">Menu summary</div>
-                      <h2>{menu.name}</h2>
-                      <p>{menu.restaurant} · {menu.guestCount} guests</p>
-                    </div>
-                    <div className="badge-row compact">
-                      <Badge tone={menu.menuGp >= menu.targetGp ? "good" : "warn"}>
-                        Target {percent(menu.targetGp)}
-                      </Badge>
-                      {menu.isLiveMenu ? <Badge tone="good">Live menu</Badge> : null}
-                    </div>
-                  </div>
-
-                  <div className="menu-stats">
-                    <div><span>Per guest cost</span><strong>{money(menu.perGuestCost)}</strong></div>
-                    <div><span>Per guest sell</span><strong>{money(menu.perGuestSell)}</strong></div>
-                    <div><span>Target sell per guest</span><strong>{money(menu.targetSellPerGuest)}</strong></div>
-                    <div><span>Menu GP</span><strong>{percent(menu.menuGp)}</strong></div>
-                    <div><span>Total food cost</span><strong>{money(menu.totalFoodCost)}</strong></div>
-                    <div><span>Target revenue</span><strong>{money(menu.targetRevenue)}</strong></div>
-                  </div>
-
-                  <div className="badge-row">
-                    {menu.menuRecipes.map((recipe) => (
-                      <span key={recipe.id} className="badge">
-                        {recipe.name}
-                      </span>
-                    ))}
-                  </div>
-
-                  <div className="table-wrap compact-table">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Course</th>
-                          <th>Dish</th>
-                          <th>Cost</th>
-                          <th>Sale</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {menu.lines.map((line) => (
-                          <tr key={line.id}>
-                            <td>{line.courseLabel}</td>
-                            <td>{line.dishName}</td>
-                            <td>{money(line.lineCost)}</td>
-                            <td>{money(line.lineSalePrice)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </Card>
-              ))}
-                </div>
-              </div>
-            </div>
-          </div>
+          <SetMenusTab
+            Card={Card}
+            StatCard={StatCard}
+            Badge={Badge}
+            Icon={Icon}
+            menuBuilderRef={menuBuilderRef}
+            addMenu={addMenu}
+            selectedMenu={selectedMenu}
+            saveMenuChanges={saveMenuChanges}
+            openMenuSheetPreview={openMenuSheetPreview}
+            setSelectedMenuId={setSelectedMenuId}
+            menuDashboardVenue={menuDashboardVenue}
+            menuCards={menuCards}
+            dashboardVenueMenus={dashboardVenueMenus}
+            updateMenuField={updateMenuField}
+            venueOptions={venueOptions}
+            numberValue={numberValue}
+            MENU_COURSE_PRESETS={MENU_COURSE_PRESETS}
+            addMenuLine={addMenuLine}
+            removeMenuLine={removeMenuLine}
+            updateMenuLine={updateMenuLine}
+            recipes={recipes}
+            getAvailableVenueListForRecipe={getAvailableVenueListForRecipe}
+            recipeAvailableVenues={recipeAvailableVenues}
+            getBaseVenueName={getBaseVenueName}
+            money={money}
+            percent={percent}
+            getMenuCourseGroups={getMenuCourseGroups}
+          />
         )}
 
         {activeTab === "ingredients" && (
           <TabErrorBoundary resetKey={`${activeTab}-${ingredientTypeFilter}-${ingredientBatchLinkFilter}-${ingredientColumnFilter}-${search}`}>
-          <div className="tab-panel">
-            <div className="stats-grid">
-              <StatCard
-                label="Catalogue rows"
-                value={ingredientCatalogueSummary.total}
-                onClick={() => {
-                  setActiveTab("ingredients");
-                  setIngredientTypeFilter("all");
-                  setIngredientBatchLinkFilter("all");
-                  setIngredientColumnFilter("all-columns");
-                  setSearch("");
-                }}
-              />
-              <StatCard
-                label="Need review"
-                value={ingredientCatalogueSummary.needsReview}
-                tone={ingredientCatalogueSummary.needsReview ? "negative" : ""}
-                onClick={() => {
-                  setActiveTab("ingredients");
-                  setIngredientTypeFilter("all");
-                  setIngredientBatchLinkFilter("needs-review");
-                  setIngredientColumnFilter("all-columns");
-                  setSearch("");
-                }}
-              />
-              <StatCard
-                label="Reviewed"
-                value={ingredientCatalogueSummary.ready}
-                onClick={() => {
-                  setActiveTab("ingredients");
-                  setIngredientTypeFilter("all");
-                  setIngredientBatchLinkFilter("ready");
-                  setIngredientColumnFilter("all-columns");
-                  setSearch("");
-                }}
-              />
-              <StatCard
-                label="Batch links to resolve"
-                value={ingredientCatalogueSummary.unlinkedBatchRows}
-                tone={ingredientCatalogueSummary.unlinkedBatchRows ? "negative" : ""}
-                onClick={() => {
-                  setActiveTab("ingredients");
-                  setIngredientTypeFilter("batch");
-                  setIngredientBatchLinkFilter("unlinked");
-                  setIngredientColumnFilter("all-columns");
-                  setSearch("");
-                }}
-              />
-            </div>
-
-            <div className="ingredients-layout">
-              <Card>
-                <div className="card-header">
-                  <div>
-                    <div className="eyebrow">Ingredient builder</div>
-                    <h2>New ingredient first, edit by lookup</h2>
-                  </div>
-                  <div className="badge-row compact">
-                    <button type="button" className="secondary-button" onClick={addIngredientRow}>
-                      <Icon name="plus" />
-                      Add ingredient
-                    </button>
-                    <Badge tone="default">
-                      {combinedIngredientCatalog.filter((row) => isIngredientBuilderRow(row)).length} unlocked
-                    </Badge>
-                  </div>
-                </div>
-                {activeIngredientDraft ? (
-                  <div className="ingredient-builder-card">
-                    <div className="ingredient-builder-top">
-                      <label className="form-field recipe-search-field">
-                        <span>Find ingredient to edit</span>
-                        <div className="search-input-row">
-                          <input
-                            value={ingredientEditLookupQuery}
-                            onFocus={() => setIngredientEditLookupOpen(true)}
-                            onBlur={() => {
-                              window.setTimeout(() => {
-                                setIngredientEditLookupOpen(false);
-                              }, 120);
-                            }}
-                            onChange={(event) => {
-                              setIngredientEditLookupQuery(event.target.value);
-                              setIngredientEditLookup("");
-                              setIngredientEditLookupOpen(true);
-                            }}
-                            placeholder="Start typing an ingredient name or code"
-                          />
-                          {ingredientEditLookupQuery ? (
-                            <button
-                              type="button"
-                              className="secondary-button table-action-button"
-                              onClick={() => {
-                                setIngredientEditLookupQuery("");
-                                setIngredientEditLookup("");
-                                setIngredientEditLookupOpen(false);
-                                const existingBlankRow = ingredientMaster.find((ingredient) =>
-                                  isEmptyIngredientDraftRow(ingredient)
-                                );
-                                if (existingBlankRow) {
-                                  focusIngredientDraft(existingBlankRow.id);
-                                } else {
-                                  addIngredientRow();
-                                }
-                              }}
-                            >
-                              Clear
-                            </button>
-                          ) : null}
-                        </div>
-                        {ingredientEditLookupOpen && filteredIngredientEditOptions.length ? (
-                          <div className="lookup-panel recipe-search-panel">
-                            {filteredIngredientEditOptions.map((option) => (
-                              <button
-                                key={option.id}
-                                type="button"
-                                className={`lookup-option ${
-                                  ingredientEditLookup === option.id ? "lookup-option-active" : ""
-                                }`}
-                                onMouseDown={(event) => {
-                                  event.preventDefault();
-                                  focusIngredientDraft(option.id, option.label);
-                                }}
-                              >
-                                <div className="lookup-main">
-                                  <strong>{option.label}</strong>
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        ) : ingredientEditLookupOpen && ingredientEditLookupQuery ? (
-                          <div className="lookup-panel recipe-search-panel">
-                            <div className="presentation-placeholder">No matching ingredients found.</div>
-                          </div>
-                        ) : null}
-                      </label>
-                      <label className="toggle-row">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(activeIngredientDraft.source.is_locked)}
-                          onChange={(event) =>
-                            updateIngredientField(
-                              activeIngredientDraft.source.id,
-                              "is_locked",
-                              event.target.checked
-                            )
-                          }
-                        />
-                        <span>Lock ingredient when complete</span>
-                      </label>
-                    </div>
-                    <div className="ingredient-builder-grid">
-                      <label className="form-field">
-                        <span>Type</span>
-                        <select
-                          value={activeIngredientDraft.source.entry_type || "ingredient"}
-                          onChange={(event) =>
-                            updateIngredientField(
-                              activeIngredientDraft.source.id,
-                              "entry_type",
-                              event.target.value
-                            )
-                          }
-                        >
-                          <option value="ingredient">Ingredient</option>
-                          <option value="batch">Batch</option>
-                        </select>
-                      </label>
-                      <label className="form-field">
-                        <span>Ingredient name</span>
-                        <input
-                          value={activeIngredientDraft.source.ingredient_name}
-                          disabled={activeIngredientDraft.source.is_locked}
-                          onChange={(event) =>
-                            updateIngredientField(
-                              activeIngredientDraft.source.id,
-                              "ingredient_name",
-                              event.target.value
-                            )
-                          }
-                          placeholder="Ingredient name"
-                        />
-                      </label>
-                      <label className="form-field">
-                        <span>Item code</span>
-                        <input
-                          value={activeIngredientDraft.source.ingredient_item_code}
-                          disabled={activeIngredientDraft.source.is_locked}
-                          onChange={(event) =>
-                            updateIngredientField(
-                              activeIngredientDraft.source.id,
-                              "ingredient_item_code",
-                              event.target.value
-                            )
-                          }
-                          placeholder="Item code"
-                        />
-                      </label>
-                      <label className="form-field">
-                        <span>Unit price</span>
-                        <input
-                          inputMode="decimal"
-                          value={activeIngredientDraft.source.unit_cost}
-                          disabled={activeIngredientDraft.source.is_locked}
-                          onChange={(event) =>
-                            updateIngredientField(activeIngredientDraft.source.id, "unit_cost", event.target.value)
-                          }
-                          placeholder="0.00"
-                        />
-                      </label>
-                      <label className="form-field">
-                        <span>Pack size</span>
-                        <div className="pack-size-cell">
-                          <input
-                            inputMode="decimal"
-                            className="table-input numeric-input pack-size-value"
-                            value={parsePackSizeParts(activeIngredientDraft.source.pack_size).value}
-                            disabled={activeIngredientDraft.source.is_locked}
-                            onChange={(event) =>
-                              updateIngredientPackSize(
-                                activeIngredientDraft.source.id,
-                                "value",
-                                event.target.value
-                              )
-                            }
-                            placeholder="500"
-                          />
-                          <select
-                            className="table-input pack-size-unit"
-                            value={parsePackSizeParts(activeIngredientDraft.source.pack_size).unit}
-                            disabled={activeIngredientDraft.source.is_locked}
-                            onChange={(event) =>
-                              updateIngredientPackSize(
-                                activeIngredientDraft.source.id,
-                                "unit",
-                                event.target.value
-                              )
-                            }
-                          >
-                            <option value="g">g</option>
-                            <option value="kg">kg</option>
-                          </select>
-                        </div>
-                      </label>
-                      <label className="form-field">
-                        <span>Category</span>
-                        <input
-                          value={activeIngredientDraft.source.category}
-                          disabled={activeIngredientDraft.source.is_locked}
-                          onChange={(event) =>
-                            updateIngredientField(activeIngredientDraft.source.id, "category", event.target.value)
-                          }
-                          placeholder="Category"
-                        />
-                      </label>
-                      <label className="form-field">
-                        <span>Supplier</span>
-                        <input
-                          value={activeIngredientDraft.source.supplier}
-                          disabled={activeIngredientDraft.source.is_locked}
-                          onChange={(event) =>
-                            updateIngredientField(activeIngredientDraft.source.id, "supplier", event.target.value)
-                          }
-                          placeholder="Supplier"
-                        />
-                      </label>
-                    </div>
-                    <div className="badge-row compact">
-                      <Badge tone="default">
-                        {activeIngredientDraft.source.ingredient_name?.trim() ? "Editing ingredient" : "New ingredient"}
-                      </Badge>
-                      <Badge
-                        tone={
-                          activeIngredientDraft.validation.reviewStatus === "needs-review" ? "bad" : "good"
-                        }
-                      >
-                        {activeIngredientDraft.validation.reviewStatus === "needs-review"
-                          ? "Needs review"
-                          : "Ready to lock"}
-                      </Badge>
-                      {activeIngredientDraft.validation.issues.map((issue) => (
-                        <Badge
-                          key={`${activeIngredientDraft.id}-${getValidationIssueText(issue)}`}
-                          tone="warn"
-                        >
-                          {getValidationIssueText(issue)}
-                        </Badge>
-                        ))}
-                    </div>
-                    <div className="upload-actions">
-                      {ingredientReturnTarget?.recipeId ? (
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={returnToIngredientSourceRecipe}
-                        >
-                          Back to recipe{ingredientReturnTarget.recipeName ? `: ${ingredientReturnTarget.recipeName}` : ""}
-                        </button>
-                      ) : null}
-                      <label className="secondary-button file-button">
-                        <input type="file" accept=".csv,text/csv" onChange={handleIngredientUpload} />
-                        Upload ingredient master
-                      </label>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={saveIngredientMasterChanges}
-                        disabled={!ingredientMaster.length}
-                      >
-                        Save ingredient changes
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={syncBatchIngredientsWithRecipes}
-                        disabled={!recipes.some((recipe) => recipe.recipeType === "batch")}
-                      >
-                        Link batch recipes
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => exportIngredientMaster(ingredientMaster)}
-                        disabled={!ingredientMaster.length}
-                      >
-                        Export reviewed CSV
-                      </button>
-                      <button type="button" className="secondary-button" onClick={downloadIngredientTemplate}>
-                        Download template
-                      </button>
-                    </div>
-                    <p className="support-text">
-                      Upload, review, save, and export ingredient pricing here. Use `Link batch recipes` after batch imports to refresh BCH-linked ingredient rows.
-                    </p>
-                    {ingredientUploadMessage ? (
-                      <p className="support-text success-text">{ingredientUploadMessage}</p>
-                    ) : null}
-                    {ingredientUploadError ? (
-                      <p className="support-text error-text">{ingredientUploadError}</p>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div className="support-stack">
-                    <p className="support-text">
-                      Add a new ingredient to start building, or use the lookup above to pull an existing ingredient
-                      into the editor.
-                    </p>
-                  </div>
-                )}
-              </Card>
-
-              <Card className="ingredients-table-card">
-                <div className="card-header">
-                  <div>
-                    <div className="eyebrow">Catalogue</div>
-                    <h2>Ingredients and batch recipes</h2>
-                  </div>
-                  <div className="table-filter-row">
-                    <label className="filter-control">
-                      <span className="filter-label">Type</span>
-                      <select
-                        value={ingredientTypeFilter}
-                        onChange={(event) => setIngredientTypeFilter(event.target.value)}
-                      >
-                        <option value="all">All rows</option>
-                        <option value="ingredient">Ingredients only</option>
-                        <option value="batch">Batches only</option>
-                      </select>
-                    </label>
-                    <label className="filter-control">
-                      <span className="filter-label">Filter</span>
-                      <select
-                        value={ingredientBatchLinkFilter}
-                        onChange={(event) => setIngredientBatchLinkFilter(event.target.value)}
-                      >
-                        <option value="all">All rows</option>
-                        <option value="needs-review">Needs review</option>
-                        <option value="ready">Ready</option>
-                        <option value="ingredient-master">Batch ingredient rows</option>
-                        <option value="recipe-batch">Recipe-backed batches</option>
-                        <option value="linked">Linked batch rows</option>
-                        <option value="unlinked">Unlinked batch rows</option>
-                      </select>
-                    </label>
-                    <label className="filter-control">
-                      <span className="filter-label">Search in</span>
-                      <select
-                        value={ingredientColumnFilter}
-                        onChange={(event) => setIngredientColumnFilter(event.target.value)}
-                      >
-                        <option value="all-columns">All columns</option>
-                        <option value="type">Type</option>
-                        <option value="ingredient">Ingredient</option>
-                        <option value="code">Code</option>
-                        <option value="price">Price</option>
-                        <option value="pack-size">Pack size</option>
-                        <option value="category">Category</option>
-                        <option value="supplier">Supplier</option>
-                        <option value="updated">Updated</option>
-                        <option value="used">Used</option>
-                        <option value="recipe-entity">Recipe entity</option>
-                        <option value="status">Status</option>
-                      </select>
-                    </label>
-                  </div>
-                </div>
-                {combinedIngredientCatalog.length ? (
-                  <div className="table-wrap ingredient-table-wrap">
-                    <table className="ingredient-table">
-                      <colgroup>
-                        <col className="ingredient-col-lock" />
-                        <col className="ingredient-col-type" />
-                        <col className="ingredient-col-name" />
-                        <col className="ingredient-col-code" />
-                        <col className="ingredient-col-price" />
-                        <col className="ingredient-col-pack" />
-                        <col className="ingredient-col-category" />
-                        <col className="ingredient-col-supplier" />
-                      <col className="ingredient-col-updated" />
-                      <col className="ingredient-col-used" />
-                      <col className="ingredient-col-link" />
-                      <col className="ingredient-col-status" />
-                      <col className="ingredient-col-delete" />
-                    </colgroup>
-                      <thead>
-                        <tr>
-                          <th>Lock</th>
-                          <th>{renderIngredientSortHeader("Type", "type")}</th>
-                          <th>{renderIngredientSortHeader("Ingredient", "ingredient")}</th>
-                          <th>{renderIngredientSortHeader("Code", "code")}</th>
-                          <th>{renderIngredientSortHeader("Price", "price")}</th>
-                          <th>{renderIngredientSortHeader("Pack size", "pack-size")}</th>
-                          <th>{renderIngredientSortHeader("Category", "category")}</th>
-                          <th>{renderIngredientSortHeader("Supplier", "supplier")}</th>
-                          <th>{renderIngredientSortHeader("Updated", "updated")}</th>
-                          <th>{renderIngredientSortHeader("Used", "used")}</th>
-                          <th>{renderIngredientSortHeader("Recipe link", "recipe-entity")}</th>
-                          <th>{renderIngredientSortHeader("Status", "status")}</th>
-                          <th>Delete</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredIngredientCatalog.map((row) => (
-                            <tr
-                              key={row.id}
-                              className={`${row.validation.reviewStatus === "needs-review" ? "review-row" : ""} ${
-                                row.sourceKind === "ingredient-master" && row.source.is_locked ? "locked-row" : ""
-                              }`.trim()}
-                            >
-                              <td className="lock-cell">
-                                {row.sourceKind === "ingredient-master" ? (
-                                  <label className="lock-toggle" aria-label={`Lock ${row.displayName || "ingredient"}`}>
-                                    <input
-                                      type="checkbox"
-                                      checked={Boolean(row.source.is_locked)}
-                                      onFocus={() => focusIngredientCatalogueRow(row.source.id)}
-                                      onChange={(event) =>
-                                        updateIngredientField(row.source.id, "is_locked", event.target.checked)
-                                      }
-                                    />
-                                  </label>
-                                ) : (
-                                  <div className="table-static">-</div>
-                                )}
-                              </td>
-                              <td>
-                                {row.sourceKind === "ingredient-master" ? (
-                                  <select
-                                    className="table-input"
-                                    value={row.rowType}
-                                    disabled={row.source.is_locked}
-                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
-                                    onChange={(event) =>
-                                      updateIngredientField(row.source.id, "entry_type", event.target.value)
-                                    }
-                                  >
-                                    <option value="ingredient">Ingredient</option>
-                                    <option value="batch">Batch</option>
-                                  </select>
-                                ) : (
-                                  <div className="badge-row compact">
-                                    <Badge tone="default">Batch recipe</Badge>
-                                  </div>
-                                )}
-                              </td>
-                              <td>
-                                {row.sourceKind === "ingredient-master" ? (
-                                  <input
-                                    className={`table-input ${
-                                      row.validation.issues.includes("Missing ingredient name") ? "input-error" : ""
-                                    }`}
-                                    value={row.source.ingredient_name}
-                                    disabled={row.source.is_locked}
-                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
-                                    onChange={(event) =>
-                                      updateIngredientField(row.source.id, "ingredient_name", event.target.value)
-                                    }
-                                    placeholder="Ingredient name"
-                                  />
-                                ) : (
-                                  <div className="table-static strong-cell">{row.displayName || "Missing"}</div>
-                                )}
-                              </td>
-                              <td>
-                                {row.sourceKind === "ingredient-master" ? (
-                                  <input
-                                    className={`table-input ${
-                                      row.validation.issues.some((issue) => issue.includes("item code")) ? "input-error" : ""
-                                    }`}
-                                    value={row.source.ingredient_item_code}
-                                    disabled={row.source.is_locked}
-                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
-                                    onChange={(event) =>
-                                      updateIngredientField(row.source.id, "ingredient_item_code", event.target.value)
-                                    }
-                                    placeholder="Item code"
-                                  />
-                                ) : (
-                                  <div className="table-static">{row.displayCode || "Missing"}</div>
-                                )}
-                              </td>
-                              <td>
-                                {row.sourceKind === "ingredient-master" ? (
-                                  <input
-                                    inputMode="decimal"
-                                    className={`table-input numeric-input ${
-                                      row.validation.issues.some((issue) => issue.includes("price")) ? "input-error" : ""
-                                    }`}
-                                    value={row.source.unit_cost}
-                                    disabled={row.source.is_locked}
-                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
-                                    onChange={(event) =>
-                                      updateIngredientField(row.source.id, "unit_cost", event.target.value)
-                                    }
-                                    placeholder="0.00"
-                                  />
-                                ) : (
-                                  <div className="table-static">{money(row.displayPrice)}</div>
-                                )}
-                              </td>
-                              <td>
-                                {row.sourceKind === "ingredient-master" ? (
-                                  <div className="pack-size-cell">
-                                    <input
-                                      inputMode="decimal"
-                                      className="table-input numeric-input pack-size-value"
-                                      value={parsePackSizeParts(row.source.pack_size).value}
-                                      disabled={row.source.is_locked}
-                                      onFocus={() => focusIngredientCatalogueRow(row.source.id)}
-                                      onChange={(event) =>
-                                        updateIngredientPackSize(row.source.id, "value", event.target.value)
-                                      }
-                                      placeholder="500"
-                                      aria-label="Pack size value"
-                                    />
-                                    <select
-                                      className="table-input pack-size-unit"
-                                      value={parsePackSizeParts(row.source.pack_size).unit}
-                                      disabled={row.source.is_locked}
-                                      onFocus={() => focusIngredientCatalogueRow(row.source.id)}
-                                      onChange={(event) =>
-                                        updateIngredientPackSize(row.source.id, "unit", event.target.value)
-                                      }
-                                      aria-label="Pack size unit"
-                                    >
-                                      <option value="g">g</option>
-                                      <option value="kg">kg</option>
-                                    </select>
-                                  </div>
-                                ) : (
-                                  <div className="table-static">{row.displayPackSize || "N/A"}</div>
-                                )}
-                              </td>
-                              <td>
-                                {row.sourceKind === "ingredient-master" ? (
-                                  <input
-                                    className="table-input"
-                                    value={row.source.category}
-                                    disabled={row.source.is_locked}
-                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
-                                    onChange={(event) =>
-                                      updateIngredientField(row.source.id, "category", event.target.value)
-                                    }
-                                    placeholder="Category"
-                                  />
-                                ) : (
-                                  <div className="table-static">{row.displayCategory || "N/A"}</div>
-                                )}
-                              </td>
-                              <td>
-                                {row.sourceKind === "ingredient-master" ? (
-                                  <input
-                                    className="table-input"
-                                    value={row.source.supplier}
-                                    disabled={row.source.is_locked}
-                                    onFocus={() => focusIngredientCatalogueRow(row.source.id)}
-                                    onChange={(event) =>
-                                      updateIngredientField(row.source.id, "supplier", event.target.value)
-                                    }
-                                    placeholder="Supplier"
-                                  />
-                                ) : (
-                                  <div className="table-static">{row.displaySupplier || "N/A"}</div>
-                                )}
-                              </td>
-                              <td>
-                                {row.sourceKind === "ingredient-master" ? (
-                                  <div className="table-static">{row.source.last_updated || "Auto"}</div>
-                                ) : (
-                                  <div className="table-static">{row.displayUpdated || "N/A"}</div>
-                                )}
-                              </td>
-                              <td>{row.displayUsed}</td>
-                              <td>
-                                <div className="badge-row compact">
-                                  {row.batchLink?.status === "not-applicable" ? (
-                                    <Badge tone="default">Not needed</Badge>
-                                  ) : null}
-                                  {row.batchLink?.status === "ready" ? (
-                                    <>
-                                      <Badge tone="good">Linked</Badge>
-                                      <Badge tone="default">{row.batchLink.recipeName}</Badge>
-                                      <button
-                                        type="button"
-                                        className="secondary-button table-action-button"
-                                        onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
-                                      >
-                                        Open recipe
-                                      </button>
-                                    </>
-                                  ) : null}
-                                  {row.batchLink?.status === "needs-review" ? (
-                                    <>
-                                      <Badge tone="warn">Recipe needs review</Badge>
-                                      <Badge tone="default">{row.batchLink.recipeName}</Badge>
-                                      <button
-                                        type="button"
-                                        className="secondary-button table-action-button"
-                                        onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
-                                      >
-                                        Open recipe
-                                      </button>
-                                    </>
-                                  ) : null}
-                                  {row.batchLink?.status === "wrong-type" ? (
-                                    <>
-                                      <Badge tone="bad">Not a batch recipe</Badge>
-                                      <Badge tone="default">{row.batchLink.recipeName}</Badge>
-                                      <button
-                                        type="button"
-                                        className="secondary-button table-action-button"
-                                        onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
-                                      >
-                                        Open recipe
-                                      </button>
-                                    </>
-                                  ) : null}
-                                  {row.batchLink?.status === "missing" ? (
-                                    <>
-                                      <Badge tone="bad">Missing batch recipe</Badge>
-                                      {row.sourceKind === "ingredient-master" ? (
-                                        <button
-                                          type="button"
-                                          className="secondary-button table-action-button"
-                                          onClick={() => createBatchRecipeFromIngredient(row.source)}
-                                        >
-                                          Create batch recipe
-                                        </button>
-                                      ) : null}
-                                    </>
-                                  ) : null}
-                                  {row.batchLink?.status === "recipe-batch" ? (
-                                    <>
-                                      <Badge tone="good">Recipe-backed batch</Badge>
-                                      <Badge tone="default">{row.batchLink.recipeName}</Badge>
-                                      <button
-                                        type="button"
-                                        className="secondary-button table-action-button"
-                                        onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
-                                      >
-                                        Open recipe
-                                      </button>
-                                    </>
-                                  ) : null}
-                                </div>
-                              </td>
-                              <td>
-                                <div className="badge-row compact">
-                                  <Badge tone={row.validation.reviewStatus === "needs-review" ? "bad" : "good"}>
-                                    {row.validation.reviewStatus === "needs-review" ? "Needs review" : "Ready"}
-                                  </Badge>
-                                  {row.sourceKind === "ingredient-master" && row.source.is_locked ? (
-                                    <Badge tone="default">Locked</Badge>
-                                  ) : null}
-                                  {row.rowType === "batch" ? <Badge tone="default">{row.displayCode || "Batch ID missing"}</Badge> : null}
-                                  {row.sourceKind === "ingredient-master" && row.source.linked_recipe_id ? (
-                                    <Badge tone="good">Synced to {row.source.linked_recipe_id}</Badge>
-                                  ) : null}
-                                  {row.validation.issues.map((issue) => (
-                                    <Badge key={`${row.id}-${getValidationIssueText(issue)}`} tone="warn">
-                                      {getValidationIssueText(issue)}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              </td>
-                              <td>
-                                {row.sourceKind === "ingredient-master" ? (
-                                  <button
-                                    type="button"
-                                    className="secondary-button table-action-button"
-                                    disabled={row.source.is_locked}
-                                    onClick={() => deleteIngredientRow(row.source)}
-                                  >
-                                    Delete
-                                  </button>
-                                ) : (
-                                  <div className="table-static">-</div>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <p className="support-text">
-                    Upload an ingredient master to review prices and codes in one place.
-                  </p>
-                )}
-              </Card>
-            </div>
-          </div>
+            <IngredientsTab
+              Card={Card}
+              StatCard={StatCard}
+              Badge={Badge}
+              Icon={Icon}
+              ingredientCatalogueSummary={ingredientCatalogueSummary}
+              setActiveTab={setActiveTab}
+              setIngredientTypeFilter={setIngredientTypeFilter}
+              setIngredientBatchLinkFilter={setIngredientBatchLinkFilter}
+              setIngredientColumnFilter={setIngredientColumnFilter}
+              setSearch={setSearch}
+              addIngredientRow={addIngredientRow}
+              combinedIngredientCatalog={combinedIngredientCatalog}
+              unlockedIngredientCount={
+                combinedIngredientCatalog.filter((row) => isIngredientBuilderRow(row)).length
+              }
+              ingredientEditLookupQuery={ingredientEditLookupQuery}
+              setIngredientEditLookupQuery={setIngredientEditLookupQuery}
+              setIngredientEditLookup={setIngredientEditLookup}
+              setIngredientEditLookupOpen={setIngredientEditLookupOpen}
+              ingredientEditLookupOpen={ingredientEditLookupOpen}
+              filteredIngredientEditOptions={filteredIngredientEditOptions}
+              focusIngredientDraft={focusIngredientDraft}
+              ingredientCatalog={ingredientCatalog}
+              openIngredientQuickPanel={openIngredientQuickPanel}
+              activeIngredientDraft={activeIngredientDraft}
+              money={money}
+              getValidationIssueText={getValidationIssueText}
+              ingredientUploadMessage={ingredientUploadMessage}
+              ingredientUploadError={ingredientUploadError}
+              duplicateIngredientGroups={duplicateIngredientGroups}
+              mergeDuplicateIngredientGroup={mergeDuplicateIngredientGroup}
+              ingredientReturnTarget={ingredientReturnTarget}
+              returnToIngredientSourceRecipe={returnToIngredientSourceRecipe}
+              handleIngredientUpload={handleIngredientUpload}
+              saveIngredientMasterChanges={saveIngredientMasterChanges}
+              ingredientMaster={ingredientMaster}
+              normalizeExistingNames={normalizeExistingNames}
+              recipes={recipes}
+              createMissingIngredientRowsFromRecipes={createMissingIngredientRowsFromRecipes}
+              syncBatchIngredientsWithRecipes={syncBatchIngredientsWithRecipes}
+              exportIngredientMaster={exportIngredientMaster}
+              downloadIngredientTemplate={downloadIngredientTemplate}
+              ingredientTypeFilter={ingredientTypeFilter}
+              ingredientBatchLinkFilter={ingredientBatchLinkFilter}
+              ingredientColumnFilter={ingredientColumnFilter}
+              renderIngredientSortHeader={renderIngredientSortHeader}
+              filteredIngredientCatalog={filteredIngredientCatalog}
+              renderIngredientCatalogRow={renderIngredientCatalogRow}
+            />
           </TabErrorBoundary>
         )}
 
@@ -9626,18 +9039,6 @@ function App() {
                     </h2>
                   </div>
                   <div className="badge-row compact">
-                    {quickPanelIngredient ? (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => {
-                          openIngredientInCatalogue(quickPanelIngredient);
-                          setQuickPanel(null);
-                        }}
-                      >
-                        Open full ingredient
-                      </button>
-                    ) : null}
                     {quickPanelBatch ? (
                       <button
                         type="button"
@@ -9658,6 +9059,16 @@ function App() {
 
                 {quickPanelIngredient ? (
                   <div className="support-stack">
+                    <div className="panel-actions">
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={saveQuickPanelIngredientAndReturn}
+                      >
+                        <Icon name="save" />
+                        Save ingredient changes
+                      </button>
+                    </div>
                     <div className="ingredient-builder-grid">
                       <label className="form-field">
                         <span>Type</span>
@@ -9707,7 +9118,7 @@ function App() {
                           }
                         />
                       </label>
-                      <label className="form-field">
+                      <label className="form-field ingredient-pack-size-field">
                         <span>Pack size</span>
                         <div className="pack-size-cell">
                           <input

@@ -263,6 +263,10 @@ textarea {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.ingredient-pack-size-field {
+  grid-column: span 2;
+}
+
 .split-layout {
   display: grid;
   gap: 16px;
@@ -286,6 +290,22 @@ textarea {
 .panel-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+.live-recipes-toggle-card {
+  margin-bottom: 18px;
+}
+
+.live-venue-toggle-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.toggle-button-active {
+  border-color: #0f172a;
+  background: #f8fafc;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
 }
 
 .builder-mode-bar {
@@ -466,6 +486,22 @@ textarea {
   flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
+  align-items: stretch;
+}
+
+.recipe-picker-filter {
+  min-width: 190px;
+}
+
+.recipe-picker-filter select {
+  min-width: 0;
+  min-height: auto;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
 }
 
 .recipe-lookup-field {
@@ -558,7 +594,7 @@ textarea {
 }
 
 .ingredient-table {
-  min-width: 1640px;
+  min-width: 1710px;
 }
 
 .ingredient-col-lock {
@@ -582,11 +618,11 @@ textarea {
 }
 
 .ingredient-col-pack {
-  width: 220px;
+  width: 250px;
 }
 
 .ingredient-col-category {
-  width: 150px;
+  width: 220px;
 }
 
 .ingredient-col-supplier {
@@ -732,6 +768,26 @@ th {
   width: 260px;
 }
 
+.menus-availability-table th:nth-child(1),
+.menus-availability-table td:nth-child(1) {
+  width: 180px;
+}
+
+.menus-availability-table th:nth-child(2),
+.menus-availability-table td:nth-child(2) {
+  width: 130px;
+}
+
+.menus-availability-table th:nth-child(3),
+.menus-availability-table td:nth-child(3) {
+  width: 120px;
+}
+
+.menus-availability-table th:nth-child(4),
+.menus-availability-table td:nth-child(4) {
+  width: 130px;
+}
+
 .recipe-list-table {
   table-layout: fixed;
 }
@@ -816,21 +872,25 @@ th {
 
 .table-filter-row select {
   min-width: 160px;
-}
-
-.locked-row {
-  background: #f8fafc;
-}
-
-.locked-row .table-input:disabled {
-  color: #52606d;
-  background: #eef2f6;
-  cursor: not-allowed;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
 }
 
 .filter-control {
   display: grid;
   gap: 6px;
+  min-width: 180px;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 14px;
+  background: #fff;
+  box-sizing: border-box;
 }
 
 .filter-label {
@@ -839,12 +899,14 @@ th {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #52606d;
+  line-height: 1;
 }
 
 .pack-size-cell {
   display: grid;
   grid-template-columns: minmax(96px, 1fr) 64px;
   gap: 8px;
+  padding-right: 16px;
 }
 
 .pack-size-value {
@@ -1354,6 +1416,181 @@ th {
   height: 16px;
 }
 
+.availability-checkboxes {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.availability-checkbox {
+  min-height: 40px;
+}
+
+.menus-publish-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.menus-publish-actions-compact {
+  grid-template-columns: repeat(4, auto);
+  align-items: center;
+}
+
+.menus-publish-targets {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.menus-publish-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.2;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.menus-publish-status.on-menu {
+  border-color: #86efac;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.menus-publish-status.off-menu {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.menus-publish-actions select {
+  min-width: 130px;
+}
+
+.menus-bulk-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: #f8fafc;
+  padding: 12px 14px;
+}
+
+.menus-bulk-summary {
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.menu-service-picker {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.menu-service-tab {
+  border: 1px solid #cbd5e1;
+  border-radius: 18px;
+  background: #fff;
+  color: #0f172a;
+  padding: 14px 16px;
+  text-align: left;
+  cursor: pointer;
+  display: grid;
+  gap: 6px;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+}
+
+.menu-service-tab:hover {
+  border-color: #94a3b8;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+}
+
+.menu-service-tab.active {
+  border-color: #0f766e;
+  background: #ecfeff;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+}
+
+.menu-service-tab-label {
+  font-size: 15px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.menu-service-tab-meta {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.menu-service-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 14px;
+  color: #475569;
+  font-size: 14px;
+}
+
+.menus-master-bulk {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  background: #f8fafc;
+  display: grid;
+  gap: 14px;
+}
+
+.menus-master-bulk-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  color: #475569;
+  font-size: 14px;
+}
+
+.menus-master-bulk-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.compact-checkbox {
+  justify-content: center;
+}
+
+.compact-checkbox input {
+  margin: 0;
+}
+
+.menus-venue-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.menus-venue-manage {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 8px 10px;
+}
+
+.menus-venue-manage-summary {
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.availability-checkboxes.compact {
+  margin-top: 8px;
+  gap: 6px;
+}
+
 .form-field.compact {
   min-width: 180px;
 }
@@ -1404,6 +1641,11 @@ th {
   background: #eff6ff;
 }
 
+.lookup-option-create {
+  border: 1px dashed #93c5fd;
+  background: #f8fafc;
+}
+
 .lookup-main,
 .lookup-meta {
   display: flex;
@@ -1437,6 +1679,10 @@ th {
   .card-grid,
   .stats-grid {
     grid-template-columns: 1fr;
+  }
+
+  .ingredient-pack-size-field {
+    grid-column: auto;
   }
 
   .ingredients-sidebar {
