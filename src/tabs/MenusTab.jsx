@@ -113,6 +113,8 @@ export default function MenusTab({
     menuDashboardVenue !== "all" && menuDashboardService !== "all"
       ? dashboardMenu?.restaurant || `${menuDashboardVenue} ${menuDashboardService}`
       : "";
+  const selectedServiceLabel =
+    menuDashboardService !== "all" ? menuDashboardService : "Choose a service";
 
   return (
     <div className="tab-panel">
@@ -186,6 +188,9 @@ export default function MenusTab({
                 <Badge tone={dashboardMenu?.isLiveMenu ? "good" : "default"}>
                   {dashboardMenu ? `${getMenuServicePeriod(dashboardMenu.restaurant) || "Service"} selected` : "No menu selected"}
                 </Badge>
+                {selectedMenuRestaurant ? (
+                  <Badge tone="default">Current target: {selectedMenuRestaurant}</Badge>
+                ) : null}
                 <span>
                   {dashboardInventoryRecipes.length} available dish{dashboardInventoryRecipes.length === 1 ? "" : "es"}
                 </span>
@@ -334,10 +339,13 @@ export default function MenusTab({
           </label>
         </div>
         {isVenueWorkspace ? (
-          <p className="support-text">
-            Use this dish list to add dishes into the selected venue and service menu. Review and amend courses in the
-            current menu card above.
-          </p>
+          <div className="menus-target-banner">
+            <strong>Current target:</strong>{" "}
+            {selectedMenuRestaurant || `${availabilityVenueFilter} · ${selectedServiceLabel}`}
+            <span>
+              Add dishes here first, then review course placement in the menu card above.
+            </span>
+          </div>
         ) : null}
         <div className="table-wrap">
           <table className="dish-index-table menus-availability-table">
@@ -376,7 +384,7 @@ export default function MenusTab({
                                 })
                               }
                             >
-                              Create draft + add
+                              Create draft and add
                             </button>
                           </>
                         ) : (
@@ -416,7 +424,7 @@ export default function MenusTab({
                                 )
                               }
                             >
-                              Add to menu
+                              Add
                             </button>
                             <button
                               type="button"

@@ -408,6 +408,11 @@ function getAvailableVenueListForRecipe(recipe, availableVenueMap = {}) {
   return primaryVenue ? [primaryVenue] : [];
 }
 
+function getSecondaryVenueListForRecipe(recipe, availableVenueMap = {}) {
+  const primaryVenue = String(recipe?.restaurant || "").trim();
+  return getAvailableVenueListForRecipe(recipe, availableVenueMap).filter((venue) => venue !== primaryVenue);
+}
+
 function tokenizeMatchText(value) {
   return normalizeMatchKey(value)
     .split(" ")
@@ -594,6 +599,7 @@ function mergeImportedDishIndexRows(currentRows, importedRows) {
 function createRecipeDraft(defaultRestaurant = "Tasi") {
   return {
     restaurant: defaultRestaurant,
+    secondaryVenues: [],
     name: "",
     category: "",
     sellingItemCode: "",
@@ -4769,15 +4775,20 @@ function App() {
     setNewRecipeDraft((current) => {
       const normalizedValue = field === "name" ? toTitleCaseWords(value) : value;
       const nextDraft = { ...current, [field]: normalizedValue };
+      if (field === "restaurant") {
+        nextDraft.secondaryVenues = (current.secondaryVenues || []).filter((venue) => venue !== value);
+      }
       if (field === "recipeType") {
         if (value === "batch") {
           nextDraft.restaurant = "";
+          nextDraft.secondaryVenues = [];
           nextDraft.currentSalePrice = 0;
           nextDraft.batchYieldType = current.batchYieldType === "portion" ? "g" : current.batchYieldType;
         } else {
           nextDraft.restaurant =
             current.restaurant ||
             (restaurant === "all" || restaurant === "Batch" ? recipes[0]?.restaurant || "Tasi" : restaurant);
+          nextDraft.secondaryVenues = current.secondaryVenues || [];
           nextDraft.batchYieldType = "portion";
         }
       }
@@ -4804,6 +4815,21 @@ function App() {
         });
       }
       return nextDraft;
+    });
+  };
+
+  const toggleNewRecipeSecondaryVenue = (venue, checked) => {
+    setNewRecipeDraft((current) => {
+      const existing = Array.isArray(current.secondaryVenues) ? current.secondaryVenues : [];
+      const nextSecondaryVenues = checked
+        ? Array.from(new Set([...existing, venue]))
+        : existing.filter((item) => item !== venue);
+      return {
+        ...current,
+        secondaryVenues: nextSecondaryVenues
+          .filter((item) => item !== current.restaurant)
+          .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })),
+      };
     });
   };
 
@@ -4982,6 +5008,25 @@ function App() {
     });
 
     setRecipes((current) => linkBatchReferences([savedRecipe, ...current.filter((recipe) => recipe.id !== savedRecipe.id)]));
+    if (savedRecipe.recipeType !== "batch") {
+      const primaryVenue = String(savedRecipe.restaurant || "").trim();
+      const nextAvailableVenues = Array.from(
+        new Set([primaryVenue, ...(newRecipeDraft.secondaryVenues || [])].filter(Boolean))
+      );
+      setRecipeAvailableVenues((current) => {
+        if (nextAvailableVenues.length <= 1 && nextAvailableVenues[0] === primaryVenue) {
+          const nextMap = { ...current };
+          delete nextMap[savedRecipe.id];
+          return nextMap;
+        }
+        return {
+          ...current,
+          [savedRecipe.id]: nextAvailableVenues.sort((left, right) =>
+            left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
+          ),
+        };
+      });
+    }
     setActiveDraftLookupId(null);
     if (savedRecipe.recipeType === "batch") {
       setIngredientMaster((current) => {
@@ -5336,6 +5381,24 @@ function App() {
         [recipeId]: nextVenues.sort((left, right) =>
           left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
         ),
+      };
+    });
+  };
+
+  const setRecipeSecondaryVenues = (recipeId, primaryVenue, secondaryVenues) => {
+    const nextAvailableVenues = Array.from(
+      new Set([String(primaryVenue || "").trim(), ...(secondaryVenues || [])].filter(Boolean))
+    ).sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }));
+
+    setRecipeAvailableVenues((current) => {
+      if (nextAvailableVenues.length <= 1 && nextAvailableVenues[0] === String(primaryVenue || "").trim()) {
+        const nextMap = { ...current };
+        delete nextMap[recipeId];
+        return nextMap;
+      }
+      return {
+        ...current,
+        [recipeId]: nextAvailableVenues,
       };
     });
   };
@@ -8102,6 +8165,7 @@ function App() {
                 newRecipeDraftRoundupTarget={newRecipeDraftRoundupTarget}
                 updateNewRecipeField={updateNewRecipeField}
                 venues={venues}
+                toggleNewRecipeSecondaryVenue={toggleNewRecipeSecondaryVenue}
                 numberValue={numberValue}
                 addNewDraftComponent={addNewDraftComponent}
                 isParentLinkedComponent={isParentLinkedComponent}
@@ -8161,6 +8225,8 @@ function App() {
                 getFieldIssues={getFieldIssues}
                 getMetaIssues={getMetaIssues}
                 venues={venues}
+                selectedRecipeSecondaryVenues={getSecondaryVenueListForRecipe(selectedRecipe, recipeAvailableVenues)}
+                setRecipeSecondaryVenues={setRecipeSecondaryVenues}
                 getMethodSteps={getMethodSteps}
                 updateMethodStep={updateMethodStep}
                 removeMethodStep={removeMethodStep}

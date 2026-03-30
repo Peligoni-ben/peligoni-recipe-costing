@@ -40,6 +40,8 @@ export default function ExistingRecipeEditor({
   getFieldIssues,
   getMetaIssues,
   venues,
+  selectedRecipeSecondaryVenues,
+  setRecipeSecondaryVenues,
   getMethodSteps,
   updateMethodStep,
   removeMethodStep,
@@ -390,6 +392,32 @@ export default function ExistingRecipeEditor({
               <small key={issue.text} className="field-help field-help-error">{issue.text}</small>
             ))}
           </label>
+          {selectedRecipe.recipeType !== "batch" ? (
+            <label className="form-field span-2">
+              <span>Also available in</span>
+              <div className="availability-checkboxes compact">
+                {venues
+                  .filter((venue) => venue !== selectedRecipe.restaurant)
+                  .map((venue) => (
+                    <label key={`${selectedRecipe.id}-secondary-${venue}`} className="checkbox-field availability-checkbox">
+                      <input
+                        type="checkbox"
+                        disabled={selectedRecipeLocked}
+                        checked={selectedRecipeSecondaryVenues.includes(venue)}
+                        onChange={(event) => {
+                          const existing = selectedRecipeSecondaryVenues || [];
+                          const nextSecondary = event.target.checked
+                            ? [...new Set([...existing, venue])]
+                            : existing.filter((item) => item !== venue);
+                          setRecipeSecondaryVenues(selectedRecipe.id, selectedRecipe.restaurant, nextSecondary);
+                        }}
+                      />
+                      <span>{venue}</span>
+                    </label>
+                  ))}
+              </div>
+            </label>
+          ) : null}
           <label className={getFieldIssues(selectedRecipe.validation, "category").length ? "field-error" : ""}>
             <span>Category</span>
             <input

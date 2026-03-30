@@ -1545,6 +1545,22 @@ th {
   font-size: 14px;
 }
 
+.menus-target-banner {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid #dbeafe;
+  border-radius: 16px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-size: 14px;
+}
+
+.menus-target-banner strong {
+  color: #0f172a;
+}
+
 .menus-master-bulk {
   margin-bottom: 16px;
   padding: 16px;

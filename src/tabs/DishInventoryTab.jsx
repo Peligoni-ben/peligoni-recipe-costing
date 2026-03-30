@@ -89,13 +89,22 @@ export default function DishInventoryTab({
                           </button>
                         </>
                       ) : (
-                        <button
-                          type="button"
-                          className="secondary-button small"
-                          onClick={() => createRecipeFromDishIndex(row)}
-                        >
-                          Create recipe
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            className="secondary-button small"
+                            onClick={() => createRecipeFromDishIndex(row)}
+                          >
+                            Create recipe
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button small"
+                            onClick={() => openMenusForDishInventoryRow(row)}
+                          >
+                            Open in menus
+                          </button>
+                        </>
                       )}
                     </div>
                   </td>

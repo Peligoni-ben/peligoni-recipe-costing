@@ -14,6 +14,7 @@ export default function NewRecipeBuilder({
   newRecipeDraftRoundupTarget,
   updateNewRecipeField,
   venues,
+  toggleNewRecipeSecondaryVenue,
   numberValue,
   addNewDraftComponent,
   isParentLinkedComponent,
@@ -142,6 +143,23 @@ export default function NewRecipeBuilder({
                   value={newRecipeDraft.currentSalePrice}
                   onCommit={(value) => updateNewRecipeField("currentSalePrice", value)}
                 />
+              </label>
+              <label className="form-field span-2">
+                <span>Also available in</span>
+                <div className="availability-checkboxes compact">
+                  {venues
+                    .filter((venue) => venue !== newRecipeDraft.restaurant)
+                    .map((venue) => (
+                      <label key={`draft-secondary-${venue}`} className="checkbox-field availability-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={(newRecipeDraft.secondaryVenues || []).includes(venue)}
+                          onChange={(event) => toggleNewRecipeSecondaryVenue(venue, event.target.checked)}
+                        />
+                        <span>{venue}</span>
+                      </label>
+                    ))}
+                </div>
               </label>
               <label>
                 <span>Portions made</span>
