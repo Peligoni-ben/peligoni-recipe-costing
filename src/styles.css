@@ -770,22 +770,32 @@ th {
 
 .menus-availability-table th:nth-child(1),
 .menus-availability-table td:nth-child(1) {
-  width: 180px;
+  width: 160px;
 }
 
 .menus-availability-table th:nth-child(2),
 .menus-availability-table td:nth-child(2) {
-  width: 130px;
+  width: 110px;
 }
 
 .menus-availability-table th:nth-child(3),
 .menus-availability-table td:nth-child(3) {
-  width: 120px;
+  width: 100px;
 }
 
 .menus-availability-table th:nth-child(4),
 .menus-availability-table td:nth-child(4) {
-  width: 130px;
+  width: 100px;
+}
+
+.menus-availability-table th:nth-child(5),
+.menus-availability-table td:nth-child(5) {
+  width: 180px;
+}
+
+.menus-availability-table th:nth-child(6),
+.menus-availability-table td:nth-child(6) {
+  width: 180px;
 }
 
 .recipe-list-table {
