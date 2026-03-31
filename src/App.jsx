@@ -1006,8 +1006,27 @@ const tabs = [
   { id: "users", label: "Users", icon: "spark" },
 ];
 
-const FOOD_APP_URL = "http://localhost:5174/";
-const DRINKS_APP_URL = "http://localhost:5173/";
+const LIVE_FOOD_APP_URL = "https://peligoni-recipe-costing.vercel.app/";
+const LIVE_DRINKS_APP_URL = "https://drinks-recipe-app.vercel.app/";
+const LOCAL_FOOD_APP_URL = "http://localhost:5174/";
+const LOCAL_DRINKS_APP_URL = "http://localhost:5173/";
+
+const getAppSwitcherLinks = () => {
+  if (typeof window === "undefined") {
+    return {
+      food: LIVE_FOOD_APP_URL,
+      drinks: LIVE_DRINKS_APP_URL,
+    };
+  }
+
+  const hostname = window.location.hostname;
+  const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
+
+  return {
+    food: isLocalHost ? LOCAL_FOOD_APP_URL : LIVE_FOOD_APP_URL,
+    drinks: isLocalHost ? LOCAL_DRINKS_APP_URL : LIVE_DRINKS_APP_URL,
+  };
+};
 
 function Icon({ name }) {
   const paths = {
@@ -8637,6 +8656,8 @@ function App() {
     );
   }
 
+  const appSwitcherLinks = getAppSwitcherLinks();
+
   return (
     <div className="app-page">
       <div className="app-shell">
@@ -8663,8 +8684,8 @@ function App() {
           <div className="page-header-actions">
             {supabaseEnabled && authUser ? (
               <>
-                <a href={FOOD_APP_URL} className="secondary-button">Food app</a>
-                <a href={DRINKS_APP_URL} className="secondary-button">Drinks app</a>
+                <a href={appSwitcherLinks.food} className="secondary-button">Food app</a>
+                <a href={appSwitcherLinks.drinks} className="secondary-button">Drinks app</a>
               </>
             ) : null}
             {supabaseEnabled && authUser ? (
