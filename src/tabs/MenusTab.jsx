@@ -221,7 +221,7 @@ export default function MenusTab({
                       <p>{dashboardMenu.restaurant}</p>
                     </div>
                     <div className="badge-row compact">
-                      <button type="button" className="primary-button" onClick={saveMenuChanges}>
+                      <button type="button" className="primary-button" onClick={() => saveMenuChanges(dashboardMenu)}>
                         Save menu
                       </button>
                       <button type="button" className="secondary-button" onClick={() => openMenuSheetPreview(dashboardMenu)}>

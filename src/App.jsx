@@ -6339,26 +6339,28 @@ function App() {
     return { error: null };
   };
 
-  const saveMenuChanges = async () => {
+  const saveMenuChanges = async (menuToSave = null) => {
     if (requireEditAccess()) return;
+    const targetMenu = menuToSave || selectedMenu;
+    if (!targetMenu) return;
     if (!supabaseEnabled) {
       saveStoredCollection(MENUS_STORAGE_KEY, menus);
     }
     setImportError("");
     setImportMessage(
-      `Saved ${selectedMenu?.name || "menu"}${selectedMenu?.restaurant ? ` for ${selectedMenu.restaurant}` : ""}.`
+      `Saved ${targetMenu.name || "menu"}${targetMenu.restaurant ? ` for ${targetMenu.restaurant}` : ""}.`
     );
 
     await runOptionalSharedSync({
-      enabled: Boolean(selectedMenu),
-      sync: () => syncMenuToSupabase(selectedMenu),
+      enabled: Boolean(targetMenu),
+      sync: () => syncMenuToSupabase(targetMenu),
       onError: (error) =>
         setImportError(
-          `Saved locally, but could not sync menu ${selectedMenu.name || selectedMenu.id} to Supabase: ${error.message}`
+          `Saved locally, but could not sync menu ${targetMenu.name || targetMenu.id} to Supabase: ${error.message}`
         ),
       onSuccess: () =>
         setImportMessage(
-          `Saved ${selectedMenu.name || "menu"}${selectedMenu.restaurant ? ` for ${selectedMenu.restaurant}` : ""} locally and to Supabase.`
+          `Saved ${targetMenu.name || "menu"}${targetMenu.restaurant ? ` for ${targetMenu.restaurant}` : ""} locally and to Supabase.`
         ),
     });
   };
