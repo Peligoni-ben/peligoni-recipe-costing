@@ -2722,16 +2722,18 @@ function buildRecipeCostSheetCsv(recipe, componentRows) {
     return text;
   };
 
+  const csvMoney = (value) => numberValue(value).toFixed(2);
+
   const rows = [
     ["Recipe code", recipe.id || "", "Descr.", recipe.name || "", "Item code", recipe.sellingItemCode || ""],
-    ["Ingr. Code", "Descr Code", "Unit of meas.", "Price per kilo", "Quantity used in the recipe", "Cost"],
+    ["Ingr. Code", "Descr Code", "Unit of meas.", "Unit price (EUR)", "Quantity used in the recipe", "Cost (EUR)"],
     ...componentRows.map((row) => [
       row.ingredientCode || "",
       row.description || "",
       row.unitOfMeasure || "",
-      row.unitPrice || "",
+      csvMoney(row.unitPrice),
       row.quantityUsed || "",
-      row.cost || "",
+      csvMoney(row.cost),
     ]),
     [
       "Total",
@@ -2739,7 +2741,7 @@ function buildRecipeCostSheetCsv(recipe, componentRows) {
       "",
       "",
       formatQuantityCell(componentRows.reduce((sum, row) => sum + numberValue(row.rawQty), 0)),
-      money(recipe.recipeCost),
+      csvMoney(recipe.recipeCost),
     ],
   ];
 
