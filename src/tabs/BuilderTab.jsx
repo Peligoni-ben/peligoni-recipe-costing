@@ -48,7 +48,10 @@ export default function BuilderTab({
         <button
           type="button"
           className={`tab-button ${showRecipePasteTool ? "active" : ""}`}
-          onClick={() => setShowRecipePasteTool((current) => !current)}
+          onClick={() => {
+            setShowRecipePasteTool((current) => !current);
+            setBuilderMode("create");
+          }}
         >
           Insert dish
         </button>
