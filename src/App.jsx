@@ -1,4 +1,4 @@
-import { Component, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Component, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import workbook from "./data/workbook-data.json";
 import { googleDriveConfigLocation } from "./imports/googleDriveConfig";
@@ -426,6 +426,14 @@ function getRecipeVenueKey(recipe) {
 
 function getAvailableVenueListForRecipe(recipe, availableVenueMap = {}) {
   if (!recipe || recipe.recipeType === "batch") return [];
+  const recipeVenues = Array.isArray(recipe.availableVenues)
+    ? recipe.availableVenues.map((venue) => String(venue || "").trim()).filter(Boolean)
+    : [];
+  if (recipeVenues.length) {
+    return Array.from(new Set(recipeVenues)).sort((left, right) =>
+      left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
+    );
+  }
   const storedVenues = Array.isArray(availableVenueMap?.[recipe.id])
     ? availableVenueMap[recipe.id].map((venue) => String(venue || "").trim()).filter(Boolean)
     : [];
@@ -2042,6 +2050,7 @@ function mapRecipeRowToSupabase(recipe) {
   return {
     id: recipe.id,
     restaurant: recipe.restaurant || "",
+    available_venues: recipe.recipeType === "batch" ? [] : getAvailableVenueListForRecipe(recipe),
     name: recipe.name || "",
     category: recipe.category || "",
     selling_item_code: recipe.sellingItemCode || "",
@@ -2089,6 +2098,9 @@ function mapSupabaseRecipeRow(row, components = []) {
     id: row.id,
     sourceRow: "",
     restaurant: row.restaurant || "",
+    availableVenues: Array.isArray(row.available_venues)
+      ? row.available_venues.map((venue) => String(venue || "").trim()).filter(Boolean)
+      : [],
     name: row.name || "",
     category: row.category || "",
     sellingItemCode: row.selling_item_code || "",
@@ -3527,115 +3539,143 @@ function App() {
     };
   }, [authSession, authUser]);
 
-  useEffect(() => {
-    let isCancelled = false;
+  const refreshSharedData = useCallback(async () => {
+    if (!supabaseEnabled || !supabase) return;
+    if (authLoading || !authUser) return;
 
-    async function hydrateSharedData() {
-      if (!supabaseEnabled || !supabase) return;
-      if (authLoading || !authUser) return;
+    try {
+      const [
+        { data: venueRows, error: venueError },
+        { data: ingredientRows, error: ingredientError },
+        { data: recipeRows, error: recipeError },
+        { data: componentRows, error: componentError },
+        { data: menuRows, error: menuError },
+        { data: menuLineRows, error: menuLineError },
+        { data: dishIndexRowsShared, error: dishIndexError },
+        { data: bchAuditRowsShared, error: bchAuditError },
+      ] =
+        await Promise.all([
+          supabase.from("venues").select("name").order("name"),
+          supabase.from("ingredients").select("*").order("ingredient_name"),
+          supabase.from("recipes").select("*").order("name"),
+          supabase.from("recipe_components").select("*").order("component_order"),
+          supabase.from("menus").select("*").order("name"),
+          supabase.from("menu_lines").select("*").order("line_order"),
+          supabase.from("dish_index").select("*").order("dish_name"),
+          supabase.from("bch_audit").select("*").order("code"),
+        ]);
 
-      try {
-        const [
-          { data: venueRows, error: venueError },
-          { data: ingredientRows, error: ingredientError },
-          { data: recipeRows, error: recipeError },
-          { data: componentRows, error: componentError },
-          { data: menuRows, error: menuError },
-          { data: menuLineRows, error: menuLineError },
-          { data: dishIndexRowsShared, error: dishIndexError },
-          { data: bchAuditRowsShared, error: bchAuditError },
-        ] =
-          await Promise.all([
-            supabase.from("venues").select("name").order("name"),
-            supabase.from("ingredients").select("*").order("ingredient_name"),
-            supabase.from("recipes").select("*").order("name"),
-            supabase.from("recipe_components").select("*").order("component_order"),
-            supabase.from("menus").select("*").order("name"),
-            supabase.from("menu_lines").select("*").order("line_order"),
-            supabase.from("dish_index").select("*").order("dish_name"),
-            supabase.from("bch_audit").select("*").order("code"),
-          ]);
+      if (venueError) throw venueError;
+      if (ingredientError) throw ingredientError;
+      if (recipeError) throw recipeError;
+      if (componentError) throw componentError;
+      if (menuError) throw menuError;
+      if (menuLineError) throw menuLineError;
+      if (dishIndexError) throw dishIndexError;
+      if (bchAuditError) throw bchAuditError;
 
-        if (venueError) throw venueError;
-        if (ingredientError) throw ingredientError;
-        if (recipeError) throw recipeError;
-        if (componentError) throw componentError;
-        if (menuError) throw menuError;
-        if (menuLineError) throw menuLineError;
-        if (dishIndexError) throw dishIndexError;
-        if (bchAuditError) throw bchAuditError;
-        if (isCancelled) return;
+      if (Array.isArray(venueRows) && venueRows.length) {
+        setVenues(Array.from(new Set([...DEFAULT_VENUES, ...venueRows.map((row) => String(row.name || "").trim()).filter(Boolean)])));
+      }
 
-        if (Array.isArray(venueRows) && venueRows.length) {
-          setVenues(Array.from(new Set([...DEFAULT_VENUES, ...venueRows.map((row) => String(row.name || "").trim()).filter(Boolean)])));
-        }
+      const mappedIngredients = Array.isArray(ingredientRows) && ingredientRows.length
+        ? sanitizeIngredientMasterRows(ingredientRows.map(mapSupabaseIngredientRow))
+        : null;
+      const baselineRecipes = getBaselineRecipes();
+      const baselineMenus = getBaselineMenus(baselineRecipes);
 
-        const mappedIngredients = Array.isArray(ingredientRows) && ingredientRows.length
-          ? sanitizeIngredientMasterRows(ingredientRows.map(mapSupabaseIngredientRow))
-          : null;
-        const baselineRecipes = getBaselineRecipes();
-        const baselineMenus = getBaselineMenus(baselineRecipes);
+      if (Array.isArray(ingredientRows) && ingredientRows.length) {
+        setIngredientMaster(mappedIngredients);
+        setRecipes((current) => syncIngredientReferences(current, mappedIngredients));
+      }
 
-        if (Array.isArray(ingredientRows) && ingredientRows.length) {
-          setIngredientMaster(mappedIngredients);
-          setRecipes((current) => syncIngredientReferences(current, mappedIngredients));
-        }
-
-        if (Array.isArray(recipeRows) && recipeRows.length) {
-          const sharedRecipes = hydrateSupabaseRecipes(
-            recipeRows,
-            componentRows || [],
-            mappedIngredients || ingredientMaster
-          );
-          const nextRecipes = mergeSupabaseRecipesIntoCurrent(
-            baselineRecipes,
-            sharedRecipes,
-            mappedIngredients || ingredientMaster
-          );
-          setRecipes(nextRecipes);
-          setSelectedRecipeId((current) => current || nextRecipes[0]?.id || null);
-          if (Array.isArray(menuRows) && menuRows.length) {
-            const sharedMenus = hydrateSupabaseMenus(menuRows, menuLineRows || [], nextRecipes);
-            const nextMenus = mergeSupabaseMenusIntoCurrent(baselineMenus, sharedMenus, nextRecipes);
-            setMenus(nextMenus);
-            setSelectedMenuId((current) => current || nextMenus[0]?.id || null);
-          }
-        } else if (Array.isArray(menuRows) && menuRows.length) {
-          const sharedMenus = hydrateSupabaseMenus(menuRows, menuLineRows || [], baselineRecipes);
-          const nextMenus = mergeSupabaseMenusIntoCurrent(baselineMenus, sharedMenus, baselineRecipes);
+      if (Array.isArray(recipeRows) && recipeRows.length) {
+        const sharedRecipes = hydrateSupabaseRecipes(
+          recipeRows,
+          componentRows || [],
+          mappedIngredients || ingredientMaster
+        );
+        const nextRecipes = mergeSupabaseRecipesIntoCurrent(
+          baselineRecipes,
+          sharedRecipes,
+          mappedIngredients || ingredientMaster
+        );
+        setRecipes(nextRecipes);
+        setSelectedRecipeId((current) => current || nextRecipes[0]?.id || null);
+        if (Array.isArray(menuRows) && menuRows.length) {
+          const sharedMenus = hydrateSupabaseMenus(menuRows, menuLineRows || [], nextRecipes);
+          const nextMenus = mergeSupabaseMenusIntoCurrent(baselineMenus, sharedMenus, nextRecipes);
           setMenus(nextMenus);
           setSelectedMenuId((current) => current || nextMenus[0]?.id || null);
         }
-
-        if (Array.isArray(dishIndexRowsShared) && dishIndexRowsShared.length) {
-          const nextDishIndexRows = mergeSupabaseDishIndexRowsIntoCurrent(
-            dishIndexRows,
-            dishIndexRowsShared.map(mapSupabaseDishIndexRow)
-          );
-          setDishIndexRows(nextDishIndexRows);
-        }
-
-        if (Array.isArray(bchAuditRowsShared) && bchAuditRowsShared.length) {
-          const nextBchAuditDecisions = mergeSupabaseBchAuditIntoCurrent(
-            bchAuditDecisions,
-            bchAuditRowsShared.map(mapSupabaseBchAuditDecision)
-          );
-          setBchAuditDecisions(nextBchAuditDecisions);
-        }
-
-        setBackendStatus("Supabase connected");
-      } catch (error) {
-        if (isCancelled) return;
-        setBackendStatus("Supabase connected, but shared data could not be loaded yet");
+      } else if (Array.isArray(menuRows) && menuRows.length) {
+        const sharedMenus = hydrateSupabaseMenus(menuRows, menuLineRows || [], baselineRecipes);
+        const nextMenus = mergeSupabaseMenusIntoCurrent(baselineMenus, sharedMenus, baselineRecipes);
+        setMenus(nextMenus);
+        setSelectedMenuId((current) => current || nextMenus[0]?.id || null);
       }
-    }
 
-    hydrateSharedData();
+      if (Array.isArray(dishIndexRowsShared) && dishIndexRowsShared.length) {
+        const nextDishIndexRows = mergeSupabaseDishIndexRowsIntoCurrent(
+          dishIndexRows,
+          dishIndexRowsShared.map(mapSupabaseDishIndexRow)
+        );
+        setDishIndexRows(nextDishIndexRows);
+      }
+
+      if (Array.isArray(bchAuditRowsShared) && bchAuditRowsShared.length) {
+        const nextBchAuditDecisions = mergeSupabaseBchAuditIntoCurrent(
+          bchAuditDecisions,
+          bchAuditRowsShared.map(mapSupabaseBchAuditDecision)
+        );
+        setBchAuditDecisions(nextBchAuditDecisions);
+      }
+
+      setBackendStatus("Supabase connected");
+    } catch (error) {
+      setBackendStatus("Supabase connected, but shared data could not be loaded yet");
+    }
+  }, [authLoading, authUser, bchAuditDecisions, dishIndexRows, ingredientMaster]);
+
+  useEffect(() => {
+    refreshSharedData();
+  }, [refreshSharedData]);
+
+  useEffect(() => {
+    if (!supabaseEnabled || !supabase || authLoading || !authUser) return undefined;
+
+    let refreshTimeout = null;
+
+    const scheduleRefresh = () => {
+      if (refreshTimeout) {
+        window.clearTimeout(refreshTimeout);
+      }
+      refreshTimeout = window.setTimeout(() => {
+        refreshSharedData();
+      }, 200);
+    };
+
+    const handleFocus = () => {
+      scheduleRefresh();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        scheduleRefresh();
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      isCancelled = true;
+      if (refreshTimeout) {
+        window.clearTimeout(refreshTimeout);
+      }
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [authLoading, authUser]);
+  }, [authLoading, authUser, refreshSharedData]);
 
   useEffect(() => {
     if (!supabaseEnabled || !supabase || !authUser || currentUserRole !== "manager") {
@@ -4895,12 +4935,42 @@ function App() {
   };
 
   const updateRecipeField = (recipeId, field, value) => {
+    if (field === "restaurant") {
+      setRecipeAvailableVenues((current) => {
+        const existing = Array.isArray(current?.[recipeId]) ? current[recipeId] : [];
+        if (!existing.length) return current;
+
+        const previousPrimary = String(recipes.find((recipe) => recipe.id === recipeId)?.restaurant || "").trim();
+        const nextPrimary = String(value || "").trim();
+        const nextVenues = Array.from(
+          new Set([nextPrimary, ...existing.filter((venue) => venue !== previousPrimary && venue !== nextPrimary)].filter(Boolean))
+        ).sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }));
+
+        if (nextVenues.length <= 1 && nextVenues[0] === nextPrimary) {
+          const nextMap = { ...current };
+          delete nextMap[recipeId];
+          return nextMap;
+        }
+
+        return {
+          ...current,
+          [recipeId]: nextVenues,
+        };
+      });
+    }
+
     setRecipes((current) =>
       current.map((recipe) => {
         if (recipe.id !== recipeId) return recipe;
         if (recipe.isLocked && field !== "isLocked") return recipe;
         const normalizedValue = field === "name" ? toTitleCaseWords(value) : value;
         const nextRecipe = { ...recipe, [field]: normalizedValue };
+        if (field === "restaurant" && recipe.recipeType !== "batch") {
+          const existingAvailableVenues = getAvailableVenueListForRecipe(recipe, recipeAvailableVenues);
+          nextRecipe.availableVenues = Array.from(
+            new Set([String(normalizedValue || "").trim(), ...existingAvailableVenues.filter((venue) => venue !== recipe.restaurant && venue !== normalizedValue)].filter(Boolean))
+          ).sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }));
+        }
         if (field === "recipeType" && value === "batch") {
           nextRecipe.isLive = false;
         }
@@ -5577,6 +5647,12 @@ function App() {
       id: recipeId,
       sourceRow: "",
       restaurant: newRecipeDraft.recipeType === "batch" ? "" : newRecipeDraft.restaurant,
+      availableVenues:
+        newRecipeDraft.recipeType === "batch"
+          ? []
+          : Array.from(
+              new Set([String(newRecipeDraft.restaurant || "").trim(), ...(newRecipeDraft.secondaryVenues || [])].filter(Boolean))
+            ).sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })),
       name: newRecipeDraft.name || (newRecipeDraft.recipeType === "batch" ? "New Batch" : "New Dish"),
       category: newRecipeDraft.category || (newRecipeDraft.recipeType === "batch" ? "Batch" : "Uncategorised"),
       sellingItemCode: generatedBatchCode,
@@ -6012,6 +6088,17 @@ function App() {
     const nextAvailableVenues = Array.from(
       new Set([String(primaryVenue || "").trim(), ...(secondaryVenues || [])].filter(Boolean))
     ).sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }));
+
+    setRecipes((current) =>
+      current.map((recipe) =>
+        recipe.id !== recipeId
+          ? recipe
+          : {
+              ...recipe,
+              availableVenues: nextAvailableVenues,
+            }
+      )
+    );
 
     setRecipeAvailableVenues((current) => {
       if (nextAvailableVenues.length <= 1 && nextAvailableVenues[0] === String(primaryVenue || "").trim()) {
@@ -8290,35 +8377,6 @@ function App() {
     });
   };
 
-  const resetAppToSeedData = () => {
-    if (typeof window !== "undefined") {
-      [
-        INGREDIENT_MASTER_STORAGE_KEY,
-        DELETED_INGREDIENT_SIGNATURES_STORAGE_KEY,
-        RECIPES_STORAGE_KEY,
-        MENUS_STORAGE_KEY,
-        VENUES_STORAGE_KEY,
-        DISH_INDEX_STORAGE_KEY,
-        BCH_AUDIT_STORAGE_KEY,
-      ].forEach((storageKey) => window.localStorage.removeItem(storageKey));
-    }
-
-    const seededRecipes = createRecipes().map((recipe) => enrichRecipeMetrics(recipe));
-    const seededMenus = createMenus(seededRecipes);
-    setDeletedIngredientSignatures([]);
-    setIngredientMaster([]);
-    setRecipes(seededRecipes);
-    setMenus(seededMenus);
-    setVenues([...DEFAULT_VENUES]);
-    setDishIndexRows([]);
-    setBchAuditDecisions([]);
-    setSelectedRecipeId(seededRecipes[0]?.id || null);
-    setSelectedMenuId(seededMenus[0]?.id || null);
-    setActiveTab("queue");
-    setImportError("");
-    setImportMessage("Reset browser-stored test data and restored the workbook-backed seed state.");
-  };
-
   if (supabaseEnabled && authLoading) {
     return (
       <div className="app-page">
@@ -8416,13 +8474,6 @@ function App() {
                 Sign out
               </button>
             ) : null}
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={resetAppToSeedData}
-            >
-              Reset test data
-            </button>
             <button
               type="button"
               className="secondary-button"

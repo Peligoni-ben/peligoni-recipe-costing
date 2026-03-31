@@ -15,7 +15,7 @@ export default function RecipeIngredientLookupField({
   onCreateIngredient,
 }) {
   return (
-    <label>
+    <label className="recipe-ingredient-lookup-field">
       <span>Ingredient</span>
       <input
         disabled={disabled}
