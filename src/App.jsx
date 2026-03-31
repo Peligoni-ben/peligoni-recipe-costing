@@ -1272,6 +1272,7 @@ function calculateMenuCard(menu, recipes) {
 
 function getMenuCourseGroups(menu) {
   const grouped = new Map();
+  const preferredOrder = ["starter", "main", "side", "dessert", "unassigned"];
 
   (menu?.lines || []).forEach((line) => {
     const courseLabel = String(line.courseLabel || "Unassigned").trim() || "Unassigned";
@@ -1280,10 +1281,30 @@ function getMenuCourseGroups(menu) {
     grouped.set(courseLabel, currentGroup);
   });
 
-  return Array.from(grouped.entries()).map(([courseLabel, lines]) => ({
-    courseLabel,
-    lines,
-  }));
+  return Array.from(grouped.entries())
+    .map(([courseLabel, lines]) => ({
+      courseLabel,
+      lines,
+    }))
+    .sort((left, right) => {
+      const leftIndex = preferredOrder.indexOf(String(left.courseLabel || "").trim().toLowerCase());
+      const rightIndex = preferredOrder.indexOf(String(right.courseLabel || "").trim().toLowerCase());
+      const normalizedLeftIndex = leftIndex === -1 ? preferredOrder.length - 2 : leftIndex;
+      const normalizedRightIndex = rightIndex === -1 ? preferredOrder.length - 2 : rightIndex;
+
+      if (normalizedLeftIndex !== normalizedRightIndex) {
+        return normalizedLeftIndex - normalizedRightIndex;
+      }
+
+      if (leftIndex === -1 && rightIndex === -1) {
+        return String(left.courseLabel || "").localeCompare(String(right.courseLabel || ""), undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+      }
+
+      return 0;
+    });
 }
 
 function buildMenuPrintSheetHtml(menu) {
@@ -5691,7 +5712,7 @@ function App() {
     return `BCH${String(maxExisting + 1).padStart(3, "0")}`;
   };
 
-  const saveNewRecipeDraft = () => {
+  const saveNewRecipeDraft = async () => {
     if (requireEditAccess()) return;
     const next = String(recipes.length + 1).padStart(3, "0");
     const generatedBatchCode =
@@ -5794,12 +5815,27 @@ function App() {
     }
     setSelectedRecipeId(savedRecipe.id);
     setBuilderMode("edit");
+    setImportError("");
     setImportMessage(
       savedRecipe.recipeType === "batch"
         ? `Created batch recipe ${savedRecipe.name} and generated batch ingredient ${savedRecipe.sellingItemCode}.`
         : `Created recipe ${savedRecipe.name} with an automatic roundup target of ${money(newRecipeDraftRoundupTarget)}.`
     );
     resetNewRecipeDraft("dish");
+
+    await runOptionalSharedSync({
+      sync: () => syncRecipeToSupabase(savedRecipe),
+      onError: (error) =>
+        setImportError(
+          `Created locally, but could not sync ${savedRecipe.recipeType === "batch" ? "batch" : "recipe"} to Supabase: ${error.message}`
+        ),
+      onSuccess: () =>
+        setImportMessage(
+          savedRecipe.recipeType === "batch"
+            ? `Created batch recipe ${savedRecipe.name} locally and in Supabase.`
+            : `Created recipe ${savedRecipe.name} locally and in Supabase.`
+        ),
+    });
   };
 
   const addComponent = () => {

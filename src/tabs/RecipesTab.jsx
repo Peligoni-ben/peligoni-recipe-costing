@@ -80,10 +80,11 @@ export default function RecipesTab({
             ))}
             <button
               type="button"
-              className="secondary-button"
+              className={`secondary-button ${reviewFilter === "all" && restaurant === "all" ? "toggle-button-active" : ""}`.trim()}
               onClick={() => {
                 setReviewFilter("all");
                 setRestaurant("all");
+                setSearch("");
               }}
             >
               Clear live filter
