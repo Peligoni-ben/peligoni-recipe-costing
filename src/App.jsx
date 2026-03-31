@@ -3713,61 +3713,6 @@ function App() {
   }, [authLoading, authUser, refreshSharedData]);
 
   useEffect(() => {
-    if (!supabaseEnabled || !supabase || !authUser || !currentEditTarget) {
-      setActiveEditSessions([]);
-      return undefined;
-    }
-
-    let isCancelled = false;
-    const sessionId = `${currentEditTarget.entityType}:${currentEditTarget.entityId}:${authUser.id}`;
-
-    const loadSessions = async () => {
-      const cutoffIso = new Date(Date.now() - EDIT_SESSION_STALE_MS).toISOString();
-      const { data, error } = await supabase
-        .from("edit_sessions")
-        .select("*")
-        .eq("entity_type", currentEditTarget.entityType)
-        .eq("entity_id", currentEditTarget.entityId)
-        .gt("last_seen_at", cutoffIso)
-        .order("last_seen_at", { ascending: false });
-
-      if (isCancelled || error) return;
-      setActiveEditSessions(Array.isArray(data) ? data : []);
-    };
-
-    const heartbeat = async () => {
-      const { error } = await supabase.from("edit_sessions").upsert(
-        {
-          id: sessionId,
-          entity_type: currentEditTarget.entityType,
-          entity_id: currentEditTarget.entityId,
-          user_id: authUser.id,
-          user_email: authUser.email || "",
-          user_name: authProfile?.full_name || authUser.email || "",
-          last_seen_at: new Date().toISOString(),
-        },
-        { onConflict: "id" }
-      );
-
-      if (isCancelled || error) return;
-      await loadSessions();
-    };
-
-    heartbeat();
-    const intervalId = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
-        heartbeat();
-      }
-    }, 15000);
-
-    return () => {
-      isCancelled = true;
-      window.clearInterval(intervalId);
-      supabase.from("edit_sessions").delete().eq("id", sessionId);
-    };
-  }, [authProfile?.full_name, authUser, currentEditTarget]);
-
-  useEffect(() => {
     if (!supabaseEnabled || !supabase || !authUser || currentUserRole !== "manager") {
       if (currentUserRole !== "manager") {
         setUserProfiles([]);
@@ -4427,6 +4372,60 @@ function App() {
     }
     return `${names.join(", ")} are also editing this ${entityLabel}. Save carefully to avoid overwriting their changes.`;
   }, [activeEditSessions, authUser, currentEditTarget]);
+  useEffect(() => {
+    if (!supabaseEnabled || !supabase || !authUser || !currentEditTarget) {
+      setActiveEditSessions([]);
+      return undefined;
+    }
+
+    let isCancelled = false;
+    const sessionId = `${currentEditTarget.entityType}:${currentEditTarget.entityId}:${authUser.id}`;
+
+    const loadSessions = async () => {
+      const cutoffIso = new Date(Date.now() - EDIT_SESSION_STALE_MS).toISOString();
+      const { data, error } = await supabase
+        .from("edit_sessions")
+        .select("*")
+        .eq("entity_type", currentEditTarget.entityType)
+        .eq("entity_id", currentEditTarget.entityId)
+        .gt("last_seen_at", cutoffIso)
+        .order("last_seen_at", { ascending: false });
+
+      if (isCancelled || error) return;
+      setActiveEditSessions(Array.isArray(data) ? data : []);
+    };
+
+    const heartbeat = async () => {
+      const { error } = await supabase.from("edit_sessions").upsert(
+        {
+          id: sessionId,
+          entity_type: currentEditTarget.entityType,
+          entity_id: currentEditTarget.entityId,
+          user_id: authUser.id,
+          user_email: authUser.email || "",
+          user_name: authProfile?.full_name || authUser.email || "",
+          last_seen_at: new Date().toISOString(),
+        },
+        { onConflict: "id" }
+      );
+
+      if (isCancelled || error) return;
+      await loadSessions();
+    };
+
+    heartbeat();
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        heartbeat();
+      }
+    }, 15000);
+
+    return () => {
+      isCancelled = true;
+      window.clearInterval(intervalId);
+      supabase.from("edit_sessions").delete().eq("id", sessionId);
+    };
+  }, [authProfile?.full_name, authUser, currentEditTarget]);
   const dashboardInventoryRecipes = useMemo(() => {
     if (menuDashboardVenue === "all") return [];
     return recipes.filter(
