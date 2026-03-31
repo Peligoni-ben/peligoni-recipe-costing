@@ -263,6 +263,7 @@ export default function MenusTab({
                                   updateMenuLine(dashboardMenu.id, line.id, "courseLabel", event.target.value)
                                 }
                               >
+                                <option value="">Unassigned</option>
                                 {menuCoursePresets.map((course) => (
                                   <option key={`${line.id}-${course}`} value={course}>
                                     {course}
@@ -410,6 +411,7 @@ export default function MenusTab({
                                 setPublishCourses((current) => ({ ...current, [recipe.id]: event.target.value }))
                               }
                             >
+                              <option value="">Unassigned</option>
                               {menuCoursePresets.map((course) => (
                                 <option key={course} value={course}>
                                   {course}

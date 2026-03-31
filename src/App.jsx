@@ -2177,6 +2177,12 @@ function mapMenuLineRowToSupabase(menuId, line, index) {
     menu_id: menuId,
     recipe_id: line.recipeId || null,
     line_order: index + 1,
+    course_label: String(line.courseLabel || "").trim(),
+    dish_name: String(line.dishName || "").trim(),
+    restaurant: String(line.restaurant || "").trim(),
+    line_cost: numberValue(line.lineCost),
+    line_sale_price: numberValue(line.lineSalePrice),
+    category: String(line.category || "").trim(),
   };
 }
 
@@ -2197,13 +2203,13 @@ function hydrateSupabaseMenus(menuRows, menuLineRows, recipes) {
         const recipe = recipes.find((item) => item.id === line.recipe_id) || null;
         return {
           id: line.id || `${menuRow.id}-${index + 1}`,
-          courseLabel: "",
+          courseLabel: String(line.course_label || "").trim(),
           recipeId: line.recipe_id || "",
-          dishName: recipe?.name || "",
-          restaurant: recipe?.restaurant || menuRow.venue || "",
-          lineCost: recipe ? recipe.recipeCost : 0,
-          lineSalePrice: recipe ? recipe.currentSalePrice : 0,
-          category: recipe?.category || "",
+          dishName: recipe?.name || line.dish_name || "",
+          restaurant: recipe?.restaurant || line.restaurant || menuRow.venue || "",
+          lineCost: recipe ? recipe.recipeCost : numberValue(line.line_cost),
+          lineSalePrice: recipe ? recipe.currentSalePrice : numberValue(line.line_sale_price),
+          category: recipe?.category || line.category || "",
           recipe,
         };
       });

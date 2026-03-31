@@ -93,8 +93,22 @@ create table if not exists public.menu_lines (
   menu_id text not null references public.menus(id) on delete cascade,
   recipe_id text references public.recipes(id) on delete set null,
   line_order integer not null default 0,
+  course_label text,
+  dish_name text,
+  restaurant text,
+  line_cost numeric(12,4) not null default 0,
+  line_sale_price numeric(12,4) not null default 0,
+  category text,
   created_at timestamptz not null default now()
 );
+
+alter table if exists public.menu_lines
+  add column if not exists course_label text,
+  add column if not exists dish_name text,
+  add column if not exists restaurant text,
+  add column if not exists line_cost numeric(12,4) not null default 0,
+  add column if not exists line_sale_price numeric(12,4) not null default 0,
+  add column if not exists category text;
 
 create index if not exists menu_lines_menu_idx on public.menu_lines (menu_id);
 
