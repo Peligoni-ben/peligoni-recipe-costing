@@ -3328,6 +3328,103 @@ function App() {
     || (String(authUser?.email || "").trim().toLowerCase() === "ben@peligoni.com" ? "manager" : "viewer");
   const canEditSharedData = !supabaseEnabled || !authUser || ["manager", "editor"].includes(currentUserRole);
 
+  const refreshAuthProfile = async (user, session = null) => {
+    if (!user) {
+      setAuthProfile(null);
+      return;
+    }
+
+    const accessToken = session?.access_token || authSession?.access_token || "";
+
+    const fetchProfileRows = async (filterQuery) => {
+      if (!supabaseUrl || !supabaseAnonKey || !accessToken) return null;
+
+      const response = await fetch(
+        `${supabaseUrl}/rest/v1/profiles?select=id,email,full_name,role&limit=1&${filterQuery}`,
+        {
+          headers: {
+            apikey: supabaseAnonKey,
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.message || payload?.error || `Request failed with ${response.status}`);
+      }
+
+      return Array.isArray(payload) ? payload : [];
+    };
+
+    try {
+      const idRows = await fetchProfileRows(`id=eq.${encodeURIComponent(user.id)}`);
+      if (idRows?.[0]) {
+        setAuthProfile({ ...idRows[0], profileError: "" });
+        return;
+      }
+
+      if (user.email) {
+        const emailRows = await fetchProfileRows(`email=eq.${encodeURIComponent(user.email)}`);
+        if (emailRows?.[0]) {
+          setAuthProfile({ ...emailRows[0], profileError: "" });
+          return;
+        }
+      }
+    } catch (restError) {
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("id, email, full_name, role")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        if (error) {
+          throw error;
+        }
+
+        if (data) {
+          setAuthProfile({ ...data, profileError: "" });
+          return;
+        }
+
+        if (user.email) {
+          const { data: emailData, error: emailError } = await supabase
+            .from("profiles")
+            .select("id, email, full_name, role")
+            .eq("email", user.email)
+            .maybeSingle();
+
+          if (emailError) {
+            throw emailError;
+          }
+
+          if (emailData) {
+            setAuthProfile({ ...emailData, profileError: "" });
+            return;
+          }
+        }
+      } catch (fallbackError) {
+        setAuthProfile({
+          id: user.id,
+          email: user.email || "",
+          full_name: "",
+          role: "viewer",
+          profileError: fallbackError?.message || restError?.message || "Could not load the signed-in profile.",
+        });
+        return;
+      }
+    }
+
+    setAuthProfile({
+      id: user.id,
+      email: user.email || "",
+      full_name: "",
+      role: "viewer",
+      profileError: "No matching profile row was found for this signed-in user.",
+    });
+  };
+
   useEffect(() => {
     window.localStorage.setItem(INGREDIENT_MASTER_STORAGE_KEY, JSON.stringify(ingredientMaster));
   }, [ingredientMaster]);
@@ -3360,70 +3457,6 @@ function App() {
       setAuthError("Session check took too long. Please try signing in again.");
     }, 5000);
 
-    const loadProfile = async (user) => {
-      if (!user) {
-        if (!isCancelled) {
-          setAuthProfile(null);
-        }
-        return;
-      }
-
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("id, email, full_name, role")
-        .eq("id", user.id)
-        .maybeSingle();
-
-      if (isCancelled) return;
-
-      if (error) {
-        setAuthProfile({
-          id: user.id,
-          email: user.email || "",
-          full_name: "",
-          role: "viewer",
-          profileError: error.message,
-        });
-        return;
-      }
-
-      if (!data && user.email) {
-        const { data: emailData, error: emailError } = await supabase
-          .from("profiles")
-          .select("id, email, full_name, role")
-          .eq("email", user.email)
-          .maybeSingle();
-
-        if (isCancelled) return;
-
-        if (emailError) {
-          setAuthProfile({
-            id: user.id,
-            email: user.email || "",
-            full_name: "",
-            role: "viewer",
-            profileError: emailError.message,
-          });
-          return;
-        }
-
-        if (emailData) {
-          setAuthProfile(emailData);
-          return;
-        }
-      }
-
-      setAuthProfile(
-        data || {
-          id: user.id,
-          email: user.email || "",
-          full_name: "",
-          role: "viewer",
-          profileError: "No matching profile row was found for this signed-in user.",
-        }
-      );
-    };
-
     supabase.auth
       .getSession()
       .then(async ({ data, error }) => {
@@ -3435,7 +3468,7 @@ function App() {
         }
         setAuthSession(data.session || null);
         setAuthUser(data.session?.user || null);
-        await loadProfile(data.session?.user || null);
+        await refreshAuthProfile(data.session?.user || null, data.session || null);
         if (!isCancelled) setAuthLoading(false);
       })
       .catch((error) => {
@@ -3451,7 +3484,7 @@ function App() {
       setAuthSession(session || null);
       setAuthUser(session?.user || null);
       setAuthError("");
-      await loadProfile(session?.user || null);
+      await refreshAuthProfile(session?.user || null, session || null);
       if (!isCancelled) setAuthLoading(false);
     });
 
@@ -3461,6 +3494,38 @@ function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!supabaseEnabled || !supabase || !authUser || !authSession) return undefined;
+
+    let isCancelled = false;
+
+    const runRefresh = async () => {
+      if (isCancelled) return;
+      await refreshAuthProfile(authUser, authSession);
+    };
+
+    runRefresh();
+
+    const handleFocus = () => {
+      runRefresh();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        runRefresh();
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      isCancelled = true;
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [authSession, authUser]);
 
   useEffect(() => {
     let isCancelled = false;
