@@ -314,6 +314,16 @@ textarea {
   margin-bottom: 18px;
 }
 
+.recipe-paste-card {
+  display: grid;
+  gap: 14px;
+}
+
+.recipe-paste-input {
+  min-height: 220px;
+  white-space: pre-wrap;
+}
+
 .primary-button,
 .secondary-button {
   min-height: 44px;

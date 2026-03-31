@@ -628,6 +628,332 @@ function createRecipeDraft(defaultRestaurant = "Tasi") {
   };
 }
 
+const RECIPE_PASTE_HEADINGS = {
+  ingredients: ["ingredients", "ingredient list", "for the ingredients"],
+  method: ["method", "instructions", "preparation", "directions", "to make", "steps"],
+};
+
+const RECIPE_PASTE_UNITS = new Set([
+  "g",
+  "kg",
+  "ml",
+  "l",
+  "tbsp",
+  "tablespoon",
+  "tablespoons",
+  "tsp",
+  "teaspoon",
+  "teaspoons",
+  "cup",
+  "cups",
+  "oz",
+  "lb",
+  "lbs",
+  "pinch",
+  "pinches",
+  "clove",
+  "cloves",
+  "sprig",
+  "sprigs",
+  "bunch",
+  "bunches",
+  "slice",
+  "slices",
+  "piece",
+  "pieces",
+]);
+
+const RECIPE_PASTE_METADATA_PREFIXES = [
+  "serves",
+  "serving",
+  "servings",
+  "yield",
+  "makes",
+  "prep time",
+  "cook time",
+  "total time",
+  "ready in",
+  "difficulty",
+];
+
+const RECIPE_PASTE_FRACTIONS = {
+  "¼": 0.25,
+  "½": 0.5,
+  "¾": 0.75,
+  "⅓": 1 / 3,
+  "⅔": 2 / 3,
+  "⅛": 0.125,
+  "⅜": 0.375,
+  "⅝": 0.625,
+  "⅞": 0.875,
+};
+
+const RECIPE_PASTE_WORD_NUMBERS = {
+  a: 1,
+  an: 1,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  half: 0.5,
+  quarter: 0.25,
+};
+
+function normalizePastedRecipeLine(line) {
+  return String(line || "")
+    .replace(/\r/g, "")
+    .replace(/\u2022/g, "-")
+    .trim();
+}
+
+function isRecipePasteHeading(line, type) {
+  const normalized = normalizeMatchKey(line).replace(/:$/, "");
+  return RECIPE_PASTE_HEADINGS[type].includes(normalized);
+}
+
+function isLikelyMethodLine(line) {
+  const normalized = String(line || "").trim();
+  if (!normalized) return false;
+  if (/^\d+[\).\s-]/.test(normalized)) return true;
+  if (/^step\s*\d+/i.test(normalized)) return true;
+  return /^(mix|whisk|stir|add|cook|bake|heat|combine|place|roast|blend|pour|serve|season|fold|marinate|grill)\b/i.test(
+    normalized
+  );
+}
+
+function isRecipeMetadataLine(line) {
+  const normalized = normalizeMatchKey(line);
+  if (/^(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+servings?$/.test(normalized)) return true;
+  return RECIPE_PASTE_METADATA_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function parseRecipeQuantity(quantityText) {
+  const raw = String(quantityText || "").trim();
+  if (!raw) return 0;
+  const normalized = normalizeMatchKey(raw);
+  if (RECIPE_PASTE_WORD_NUMBERS[normalized] != null) return RECIPE_PASTE_WORD_NUMBERS[normalized];
+  if (RECIPE_PASTE_FRACTIONS[raw]) return RECIPE_PASTE_FRACTIONS[raw];
+  if (raw.includes(" ")) {
+    const [wholeText, fractionText] = raw.split(/\s+/, 2);
+    if (RECIPE_PASTE_WORD_NUMBERS[normalizeMatchKey(wholeText)] != null && !fractionText?.includes("/")) {
+      return RECIPE_PASTE_WORD_NUMBERS[normalizeMatchKey(wholeText)];
+    }
+    if (fractionText?.includes("/")) {
+      const [top, bottom] = fractionText.split("/").map(Number);
+      return Number(wholeText) + (bottom ? top / bottom : 0);
+    }
+  }
+  if (raw.includes("/")) {
+    const [top, bottom] = raw.split("/").map(Number);
+    return bottom ? top / bottom : 0;
+  }
+  return Number(raw);
+}
+
+function looksLikeIngredientLine(line) {
+  const cleaned = String(line || "")
+    .replace(/^[-*]\s*/, "")
+    .replace(/^\d+[\).\s-]+/, "")
+    .trim();
+  if (!cleaned) return false;
+  if (isRecipeMetadataLine(cleaned) || isLikelyMethodLine(cleaned)) return false;
+  if (/^(\d+(?:\.\d+)?(?:\s+\d+\/\d+)?|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞])\s*/.test(cleaned)) return true;
+  if (/^[-*]\s+/.test(line || "")) return true;
+  if (/[,:-]\s*(\d+(?:\.\d+)?|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞])\b/.test(cleaned)) return true;
+  return cleaned.split(/\s+/).length <= 6;
+}
+
+function parseRecipeIngredientLine(line, fallbackSort) {
+  const cleaned = String(line || "")
+    .replace(/^[-*]\s*/, "")
+    .replace(/^\d+[\).\s-]+/, "")
+    .trim();
+
+  if (!cleaned || cleaned.endsWith(":") || isRecipeMetadataLine(cleaned)) return null;
+
+  let qty = 0;
+  let remainder = cleaned;
+  let quantityMatch = cleaned.match(/^(\d+(?:\.\d+)?(?:\s+\d+\/\d+)?|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞])\s+(.*)$/i);
+
+  if (quantityMatch) {
+    const quantityText = quantityMatch[1];
+    remainder = quantityMatch[2].trim();
+    qty = parseRecipeQuantity(quantityText);
+
+    const unitMatch = remainder.match(/^([A-Za-z]+)\b\.?\s*(.*)$/);
+    if (unitMatch && RECIPE_PASTE_UNITS.has(unitMatch[1].toLowerCase())) {
+      remainder = unitMatch[2].trim();
+    }
+  } else {
+    quantityMatch = cleaned.match(
+      /^(\d+(?:\.\d+)?|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞])([A-Za-z]+)\s+(.*)$/i
+    );
+    if (quantityMatch && RECIPE_PASTE_UNITS.has(String(quantityMatch[2] || "").toLowerCase())) {
+      qty = parseRecipeQuantity(quantityMatch[1]);
+      remainder = quantityMatch[3].trim();
+    } else {
+    quantityMatch = cleaned.match(/^(.*?)[,:-]\s*(\d+(?:\.\d+)?(?:\s+\d+\/\d+)?|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞])(?:\s+([A-Za-z]+))?$/i);
+    if (quantityMatch) {
+      remainder = quantityMatch[1].trim();
+      qty = parseRecipeQuantity(quantityMatch[2]);
+    } else {
+      quantityMatch = cleaned.match(
+        /^(.*?)(\d+(?:\.\d+)?(?:\s+\d+\/\d+)?|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞])\s*([A-Za-z]+)\.?$/i
+      );
+      if (quantityMatch && RECIPE_PASTE_UNITS.has(String(quantityMatch[3] || "").toLowerCase())) {
+        remainder = quantityMatch[1].trim();
+        qty = parseRecipeQuantity(quantityMatch[2]);
+      } else {
+        quantityMatch = cleaned.match(
+          /^(one|two|three|four|five|six|seven|eight|nine|ten|half|quarter|a|an)\s+(.*)$/i
+        );
+        if (quantityMatch) {
+          qty = parseRecipeQuantity(quantityMatch[1]);
+          remainder = quantityMatch[2].trim().replace(/^of\s+/i, "");
+        }
+      }
+    }
+    }
+  }
+
+  return {
+    id: `draft-${fallbackSort}`,
+    sort: fallbackSort,
+    ingredient: toTitleCaseWords(remainder || cleaned),
+    code: "",
+    qty: Number.isFinite(qty) ? qty : 0,
+    cost: 0,
+    sourceType: "",
+    sourceRecipeId: "",
+    sourceUnitCost: 0,
+    sourceYieldType: "",
+  };
+}
+
+function parsePastedRecipeText(input) {
+  const lines = String(input || "")
+    .split("\n")
+    .map(normalizePastedRecipeLine)
+    .filter(Boolean);
+
+  if (!lines.length) {
+    return { name: "", category: "", ingredients: [], methodSteps: [], portionCount: 1 };
+  }
+
+  const servingLine = lines.find((line) => {
+    const normalized = normalizeMatchKey(line);
+    return (
+      /^serves\s+/.test(normalized) ||
+      /^servings?\s+/.test(normalized) ||
+      /^(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+servings?$/.test(normalized)
+    );
+  });
+  const portionCountMatch = servingLine
+    ? normalizeMatchKey(servingLine).match(
+        /(?:serves|servings?)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)|^(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+servings?$/
+      )
+    : null;
+  const portionCount = portionCountMatch
+    ? parseRecipeQuantity(portionCountMatch[1] || portionCountMatch[2] || "")
+    : 1;
+
+  const firstHeadingIndex = lines.findIndex(
+    (line) => isRecipePasteHeading(line, "ingredients") || isRecipePasteHeading(line, "method")
+  );
+  const titleCandidate = firstHeadingIndex === 0 || isRecipeMetadataLine(lines[0]) ? "" : lines[0];
+  const name = toTitleCaseWords(titleCandidate.replace(/:$/, ""));
+
+  const contentLines = (titleCandidate ? lines.slice(1) : [...lines]).filter((line) => !isRecipeMetadataLine(line));
+  let mode = "unknown";
+  const ingredientLines = [];
+  const methodLines = [];
+
+  contentLines.forEach((line) => {
+    if (isRecipePasteHeading(line, "ingredients")) {
+      mode = "ingredients";
+      return;
+    }
+    if (isRecipePasteHeading(line, "method")) {
+      mode = "method";
+      return;
+    }
+    if (mode === "ingredients") {
+      ingredientLines.push(line);
+      return;
+    }
+    if (mode === "method") {
+      methodLines.push(line);
+      return;
+    }
+    if (isLikelyMethodLine(line)) {
+      mode = "method";
+      methodLines.push(line);
+      return;
+    }
+    if (mode !== "method") {
+      ingredientLines.push(line);
+      return;
+    }
+    if (looksLikeIngredientLine(line)) {
+      ingredientLines.push(line);
+      return;
+    }
+    methodLines.push(line);
+  });
+
+  if (!ingredientLines.length && !methodLines.length) {
+    contentLines.forEach((line) => {
+      if (isLikelyMethodLine(line)) {
+        methodLines.push(line);
+      } else {
+        ingredientLines.push(line);
+      }
+    });
+  }
+
+  const ingredients = ingredientLines
+    .map((line, index) => parseRecipeIngredientLine(line, index + 1))
+    .filter(Boolean);
+
+  const methodSteps = methodLines
+    .map((line) => line.replace(/^step\s*\d+[:.)\s-]*/i, "").replace(/^\d+[\).\s-]+/, "").trim())
+    .filter(Boolean);
+
+  return {
+    name,
+    category: "",
+    ingredients,
+    methodSteps,
+    portionCount: Number.isFinite(portionCount) && portionCount > 0 ? portionCount : 1,
+  };
+}
+
+function parseStructuredRecipeFields({ name = "", portions = "", ingredientsText = "", methodText = "" }) {
+  const ingredientLines = String(ingredientsText || "")
+    .split("\n")
+    .map(normalizePastedRecipeLine)
+    .filter(Boolean);
+  const methodSteps = String(methodText || "")
+    .split("\n")
+    .map(normalizePastedRecipeLine)
+    .map((line) => line.replace(/^step\s*\d+[:.)\s-]*/i, "").replace(/^\d+[\).\s-]+/, "").trim())
+    .filter(Boolean);
+
+  return {
+    name: toTitleCaseWords(String(name || "").trim()),
+    category: "",
+    portionCount: Math.max(1, numberValue(portions) || 1),
+    ingredients: ingredientLines.map((line, index) => parseRecipeIngredientLine(line, index + 1)).filter(Boolean),
+    methodSteps,
+  };
+}
+
 const tabs = [
   { id: "queue", label: "Queue", icon: "chart" },
   { id: "recipes", label: "Recipes", icon: "chef" },
@@ -2857,6 +3183,13 @@ function App() {
   const [newRecipeDraft, setNewRecipeDraft] = useState(() =>
     createRecipeDraft(recipes[0]?.restaurant || "Tasi")
   );
+  const [recipePasteText, setRecipePasteText] = useState("");
+  const [structuredRecipeName, setStructuredRecipeName] = useState("");
+  const [structuredRecipePortions, setStructuredRecipePortions] = useState("");
+  const [structuredRecipeIngredients, setStructuredRecipeIngredients] = useState("");
+  const [structuredRecipeMethod, setStructuredRecipeMethod] = useState("");
+  const [recipePasteMessage, setRecipePasteMessage] = useState("");
+  const [recipePasteError, setRecipePasteError] = useState("");
   const [newVenueName, setNewVenueName] = useState("");
   const [backendStatus, setBackendStatus] = useState(
     supabaseEnabled ? "Supabase connected (setup mode)" : "Local mode only"
@@ -4769,6 +5102,84 @@ function App() {
       restaurant: recipeType === "batch" ? "" : defaultRestaurant,
       batchYieldType: recipeType === "batch" ? "g" : "portion",
     });
+  };
+
+  const importPastedRecipeText = () => {
+    const parsedRecipe = parsePastedRecipeText(recipePasteText);
+    if (!parsedRecipe.name && !parsedRecipe.ingredients.length && !parsedRecipe.methodSteps.length) {
+      setRecipePasteError("Paste a recipe first, then I can turn it into a draft.");
+      setRecipePasteMessage("");
+      return;
+    }
+
+    const defaultRestaurant =
+      restaurant === "all" || restaurant === "Batch" ? recipes[0]?.restaurant || "Tasi" : restaurant;
+    const baseDraft = createRecipeDraft(defaultRestaurant);
+    const nextComponents = parsedRecipe.ingredients.length
+      ? parsedRecipe.ingredients
+      : baseDraft.components;
+
+    setActiveDraftLookupId(null);
+    setNewRecipeDraft({
+      ...baseDraft,
+      recipeType: "dish",
+      restaurant: defaultRestaurant,
+      name: parsedRecipe.name || "Imported Draft Recipe",
+      category: parsedRecipe.category || "",
+      portionCount: parsedRecipe.portionCount || 1,
+      methodSteps: parsedRecipe.methodSteps,
+      components: nextComponents,
+    });
+    setBuilderMode("create");
+    setRecipePasteError("");
+    setRecipePasteMessage(
+      `Loaded ${parsedRecipe.name || "draft recipe"} with ${parsedRecipe.portionCount || 1} portion${
+        parsedRecipe.portionCount === 1 ? "" : "s"
+      }, ${nextComponents.length} component${nextComponents.length === 1 ? "" : "s"}, and ${
+        parsedRecipe.methodSteps.length
+      } method step${parsedRecipe.methodSteps.length === 1 ? "" : "s"}.`
+    );
+  };
+
+  const importStructuredRecipeText = () => {
+    const parsedRecipe = parseStructuredRecipeFields({
+      name: structuredRecipeName,
+      portions: structuredRecipePortions,
+      ingredientsText: structuredRecipeIngredients,
+      methodText: structuredRecipeMethod,
+    });
+
+    if (!parsedRecipe.name && !parsedRecipe.ingredients.length && !parsedRecipe.methodSteps.length) {
+      setRecipePasteError("Add some recipe details first, then I can build the draft.");
+      setRecipePasteMessage("");
+      return;
+    }
+
+    const defaultRestaurant =
+      restaurant === "all" || restaurant === "Batch" ? recipes[0]?.restaurant || "Tasi" : restaurant;
+    const baseDraft = createRecipeDraft(defaultRestaurant);
+    const nextComponents = parsedRecipe.ingredients.length ? parsedRecipe.ingredients : baseDraft.components;
+
+    setActiveDraftLookupId(null);
+    setNewRecipeDraft({
+      ...baseDraft,
+      recipeType: "dish",
+      restaurant: defaultRestaurant,
+      name: parsedRecipe.name || "Imported Draft Recipe",
+      category: parsedRecipe.category || "",
+      portionCount: parsedRecipe.portionCount || 1,
+      methodSteps: parsedRecipe.methodSteps,
+      components: nextComponents,
+    });
+    setBuilderMode("create");
+    setRecipePasteError("");
+    setRecipePasteMessage(
+      `Loaded ${parsedRecipe.name || "draft recipe"} with ${parsedRecipe.portionCount || 1} portion${
+        parsedRecipe.portionCount === 1 ? "" : "s"
+      }, ${nextComponents.length} component${nextComponents.length === 1 ? "" : "s"}, and ${
+        parsedRecipe.methodSteps.length
+      } method step${parsedRecipe.methodSteps.length === 1 ? "" : "s"}.`
+    );
   };
 
   const updateNewRecipeField = (field, value) => {
@@ -8146,10 +8557,25 @@ function App() {
 
         {activeTab === "builder" && (
           <BuilderTab
+            Card={Card}
             builderMode={builderMode}
             setBuilderMode={setBuilderMode}
             resetNewRecipeDraft={resetNewRecipeDraft}
             newRecipeDraft={newRecipeDraft}
+            recipePasteText={recipePasteText}
+            setRecipePasteText={setRecipePasteText}
+            structuredRecipeName={structuredRecipeName}
+            setStructuredRecipeName={setStructuredRecipeName}
+            structuredRecipePortions={structuredRecipePortions}
+            setStructuredRecipePortions={setStructuredRecipePortions}
+            structuredRecipeIngredients={structuredRecipeIngredients}
+            setStructuredRecipeIngredients={setStructuredRecipeIngredients}
+            structuredRecipeMethod={structuredRecipeMethod}
+            setStructuredRecipeMethod={setStructuredRecipeMethod}
+            recipePasteMessage={recipePasteMessage}
+            recipePasteError={recipePasteError}
+            importPastedRecipeText={importPastedRecipeText}
+            importStructuredRecipeText={importStructuredRecipeText}
           >
             {builderMode === "create" ? (
               <NewRecipeBuilder
