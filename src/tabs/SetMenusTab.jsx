@@ -199,9 +199,9 @@ export default function SetMenusTab({
               </div>
               <div className="stats-grid two-up">
                 <StatCard label="Per guest cost" value={money(selectedMenu.perGuestCost)} />
-                <StatCard label="Per guest sell" value={money(selectedMenu.perGuestSell)} />
+                <StatCard label="Per guest sell (gross)" value={money(selectedMenu.perGuestSell)} />
                 <StatCard label="Total food cost" value={money(selectedMenu.totalFoodCost)} />
-                <StatCard label="Menu GP" value={percent(selectedMenu.menuGp)} />
+                <StatCard label="Menu GP (net)" value={percent(selectedMenu.menuGp)} />
               </div>
               <div className="support-stack">
                 {getMenuCourseGroups(selectedMenu).map((group) => (

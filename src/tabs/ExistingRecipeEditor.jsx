@@ -178,7 +178,7 @@ export default function ExistingRecipeEditor({
             </div>
             <div>
               <div className="mini-heading">
-                {selectedRecipe.recipeType === "batch" ? "Batch yield" : "Sale price"}
+                {selectedRecipe.recipeType === "batch" ? "Batch yield" : "Sale price (gross)"}
               </div>
               <strong>
                 {selectedRecipe.recipeType === "batch"
@@ -188,7 +188,7 @@ export default function ExistingRecipeEditor({
             </div>
             <div>
               <div className="mini-heading">
-                {selectedRecipe.recipeType === "batch" ? "Cost per yield unit" : "Roundup target"}
+                {selectedRecipe.recipeType === "batch" ? "Cost per yield unit" : "Roundup target (gross)"}
               </div>
               <strong>
                 {selectedRecipe.recipeType === "batch"
@@ -454,7 +454,7 @@ export default function ExistingRecipeEditor({
             ))}
           </label>
           <label className={getFieldIssues(selectedRecipe.validation, "currentSalePrice").length ? "field-error" : ""}>
-            <span>Sale price</span>
+            <span>Sale price (gross)</span>
             <DecimalInput
               disabled={selectedRecipeLocked}
               value={selectedRecipe.currentSalePrice}
@@ -515,7 +515,7 @@ export default function ExistingRecipeEditor({
             </label>
           ) : null}
           <label>
-            <span>Roundup target</span>
+            <span>Roundup target (gross)</span>
             {selectedRecipe.recipeType === "batch" ? (
               <DecimalInput
                 disabled={selectedRecipeLocked}

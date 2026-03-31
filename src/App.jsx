@@ -29,6 +29,7 @@ const REQUIRED_INGREDIENT_COLUMNS = [
   "unit_cost",
 ];
 const OPTIONAL_INGREDIENT_COLUMNS = [
+  "purchase_vat_rate",
   "pack_size",
   "supplier",
   "category",
@@ -38,6 +39,9 @@ const OPTIONAL_INGREDIENT_COLUMNS = [
   "is_locked",
 ];
 const MENU_COURSE_PRESETS = ["Starter", "Main", "Dessert", "Side", "Small plates", "Large plates"];
+const FOOD_SALE_VAT_RATE = 0.13;
+const FOOD_TARGET_COST_RATIO = 0.3;
+const FOOD_PURCHASE_VAT_OPTIONS = [0.13, 0.24];
 const DEFAULT_SERVICE_PERIODS = ["breakfast", "brunch", "lunch", "aperitivo", "dinner", "all day"];
 const DEFAULT_VENUES = [
   "Tasi",
@@ -97,8 +101,28 @@ function toTitleCaseWords(value) {
 function calculateRoundupTarget(recipeCost) {
   const cost = numberValue(recipeCost);
   if (cost <= 0) return 0;
-  const minimumSalePrice = cost / 0.3;
-  return Math.ceil(minimumSalePrice * 2) / 2;
+  const targetNetSalePrice = cost / FOOD_TARGET_COST_RATIO;
+  const targetGrossSalePrice = targetNetSalePrice * (1 + FOOD_SALE_VAT_RATE);
+  return Math.ceil(targetGrossSalePrice * 2) / 2;
+}
+
+function getFoodNetSalePrice(grossSalePrice) {
+  const gross = numberValue(grossSalePrice);
+  if (gross <= 0) return 0;
+  return gross / (1 + FOOD_SALE_VAT_RATE);
+}
+
+function normalizePurchaseVatRate(value) {
+  const numericValue = numberValue(value);
+  if (numericValue >= 1) {
+    const normalizedPercent = numericValue / 100;
+    return FOOD_PURCHASE_VAT_OPTIONS.includes(normalizedPercent) ? normalizedPercent : FOOD_PURCHASE_VAT_OPTIONS[0];
+  }
+  return FOOD_PURCHASE_VAT_OPTIONS.includes(numericValue) ? numericValue : FOOD_PURCHASE_VAT_OPTIONS[0];
+}
+
+function percentFromRate(rate) {
+  return `${Math.round(normalizePurchaseVatRate(rate) * 100)}%`;
 }
 
 function normalizeMatchKey(value) {
@@ -144,10 +168,15 @@ function formatPackSize(value, unit) {
 
 function getIngredientPricingSource(ingredient) {
   const baseUnitCost = numberValue(ingredient?.unit_cost);
+  const purchaseVatRate =
+    String(ingredient?.entry_type || "").trim() === "batch"
+      ? 0
+      : normalizePurchaseVatRate(ingredient?.purchase_vat_rate);
+  const grossUnitCost = baseUnitCost > 0 ? baseUnitCost * (1 + purchaseVatRate) : 0;
   const packParts = parsePackSizeParts(ingredient?.pack_size);
   const packValue = numberValue(packParts.value);
 
-  if (baseUnitCost <= 0) {
+  if (grossUnitCost <= 0) {
     return {
       sourceUnitCost: 0,
       sourceYieldType: "kg",
@@ -158,14 +187,14 @@ function getIngredientPricingSource(ingredient) {
     const totalGrams = packParts.unit === "kg" ? packValue * 1000 : packValue;
     if (totalGrams > 0) {
       return {
-        sourceUnitCost: (baseUnitCost / totalGrams) * 1000,
+        sourceUnitCost: (grossUnitCost / totalGrams) * 1000,
         sourceYieldType: "kg",
       };
     }
   }
 
   return {
-    sourceUnitCost: baseUnitCost,
+    sourceUnitCost: grossUnitCost,
     sourceYieldType: "kg",
   };
 }
@@ -457,6 +486,7 @@ function buildIngredientSuggestions({ query, recipes, ingredientMaster }) {
       ingredient_name: candidate.name,
       ingredient_item_code: candidate.sellingItemCode,
       unit_cost: getBatchUnitCost(candidate),
+      purchase_vat_rate: 0,
       pack_size: candidate.batchYield
         ? `${numberValue(candidate.batchYield)} ${getBatchYieldLabel(candidate)}`
         : "",
@@ -1178,7 +1208,8 @@ function derivePricingComplete(recipe) {
 function enrichRecipeMetrics(recipe) {
   const recipeCost = recipe.components.reduce((sum, component) => sum + numberValue(component.cost), 0);
   const roundup = recipe.recipeType === "batch" ? numberValue(recipe.roundup) : calculateRoundupTarget(recipeCost);
-  const gp = recipe.currentSalePrice > 0 ? (recipe.currentSalePrice - recipeCost) / recipe.currentSalePrice : 0;
+  const currentNetSalePrice = getFoodNetSalePrice(recipe.currentSalePrice);
+  const gp = currentNetSalePrice > 0 ? (currentNetSalePrice - recipeCost) / currentNetSalePrice : 0;
   const variance = recipe.currentSalePrice - roundup;
   const pricingComplete = derivePricingComplete(recipe);
   return {
@@ -1212,6 +1243,7 @@ function calculateMenuCard(menu, recipes) {
   const menuRecipes = recipes.filter((recipe) => lines.some((line) => line.recipeId === recipe.id));
   const perGuestCost = lines.reduce((sum, line) => sum + numberValue(line.lineCost), 0);
   const perGuestSell = lines.reduce((sum, line) => sum + numberValue(line.lineSalePrice), 0);
+  const perGuestSellNet = lines.reduce((sum, line) => sum + getFoodNetSalePrice(line.lineSalePrice), 0);
   const targetSellPerGuest = menu.targetGp < 1 ? perGuestCost / (1 - menu.targetGp) : 0;
 
   return {
@@ -1220,10 +1252,11 @@ function calculateMenuCard(menu, recipes) {
     menuRecipes,
     perGuestCost,
     perGuestSell,
+    perGuestSellNet,
     targetSellPerGuest,
     totalFoodCost: perGuestCost * numberValue(menu.guestCount),
     totalFoodRevenue: perGuestSell * numberValue(menu.guestCount),
-    menuGp: perGuestSell > 0 ? (perGuestSell - perGuestCost) / perGuestSell : 0,
+    menuGp: perGuestSellNet > 0 ? (perGuestSellNet - perGuestCost) / perGuestSellNet : 0,
     targetRevenue: targetSellPerGuest * numberValue(menu.guestCount),
   };
 }
@@ -1482,6 +1515,8 @@ function getIngredientColumnSearchText(row, column) {
       return String(row.displayPrice ?? "");
     case "pack-size":
       return row.displayPackSize || "";
+    case "purchase-vat":
+      return row.displayPurchaseVat || "";
     case "category":
       return row.displayCategory || "";
     case "supplier":
@@ -1503,6 +1538,7 @@ function getIngredientColumnSearchText(row, column) {
         row.displayCode,
         String(row.displayPrice ?? ""),
         row.displayPackSize,
+        row.displayPurchaseVat,
         row.displayCategory,
         row.displaySupplier,
         row.displayUpdated,
@@ -1528,6 +1564,8 @@ function getIngredientSortValue(row, column) {
       return numberValue(row.displayPrice);
     case "pack-size":
       return row.displayPackSize || "";
+    case "purchase-vat":
+      return row.displayPurchaseVat || "";
     case "category":
       return row.displayCategory || "";
     case "supplier":
@@ -1609,6 +1647,7 @@ function createBlankIngredientRow(nextId) {
     ingredient_name: "",
     ingredient_item_code: "",
     unit_cost: "",
+    purchase_vat_rate: FOOD_PURCHASE_VAT_OPTIONS[0],
     pack_size: "",
     supplier: "",
     category: "",
@@ -1682,6 +1721,10 @@ function mergeIngredientRecords(primaryIngredient, duplicateIngredients) {
     ingredient_name: firstFilledValue("ingredient_name", primaryIngredient?.ingredient_name || ""),
     ingredient_item_code: firstFilledValue("ingredient_item_code", primaryIngredient?.ingredient_item_code || ""),
     unit_cost: firstPositiveNumber("unit_cost"),
+    purchase_vat_rate:
+      allIngredients.find((ingredient) => ingredient?.purchase_vat_rate != null)?.purchase_vat_rate
+      ?? primaryIngredient?.purchase_vat_rate
+      ?? FOOD_PURCHASE_VAT_OPTIONS[0],
     pack_size: firstFilledValue("pack_size", primaryIngredient?.pack_size || ""),
     supplier: firstFilledValue("supplier", primaryIngredient?.supplier || ""),
     category: firstFilledValue("category", primaryIngredient?.category || ""),
@@ -1699,6 +1742,7 @@ function sanitizeIngredientMasterRows(rows) {
   restoreMissingIngredientPrices(rows).forEach((ingredient) => {
     const normalizedIngredient = {
       ...ingredient,
+      purchase_vat_rate: normalizePurchaseVatRate(ingredient?.purchase_vat_rate),
       supplier: "",
       category: "",
       is_locked: normalizeBooleanFlag(ingredient?.is_locked),
@@ -1721,6 +1765,9 @@ function validateIngredient(ingredient, duplicates, batchLink) {
   if (!ingredient.ingredient_name?.trim()) issues.push("Missing ingredient name");
   if (!ingredient.ingredient_item_code?.trim()) issues.push("Missing item code");
   if (numberValue(ingredient.unit_cost) <= 0) issues.push("Missing or zero price");
+  if (!FOOD_PURCHASE_VAT_OPTIONS.includes(normalizePurchaseVatRate(ingredient.purchase_vat_rate))) {
+    issues.push("Missing purchase VAT");
+  }
   if (duplicates.code.has(ingredient.ingredient_item_code)) issues.push("Duplicate item code");
   if (duplicates.name.has(ingredient.ingredient_name.trim().toLowerCase())) issues.push("Duplicate ingredient name");
   if (ingredient.entry_type === "batch" && batchLink?.status === "missing") {
@@ -1961,6 +2008,7 @@ function mapIngredientRowToSupabase(ingredient) {
     ingredient_name: ingredient.ingredient_name || "",
     ingredient_item_code: ingredient.ingredient_item_code || "",
     unit_cost: numberValue(ingredient.unit_cost),
+    purchase_vat_rate: normalizePurchaseVatRate(ingredient.purchase_vat_rate),
     pack_size: ingredient.pack_size || "",
     supplier: ingredient.supplier || "",
     category: ingredient.category || "",
@@ -1977,6 +2025,7 @@ function mapSupabaseIngredientRow(row) {
     ingredient_name: row.ingredient_name || "",
     ingredient_item_code: row.ingredient_item_code || "",
     unit_cost: numberValue(row.unit_cost),
+    purchase_vat_rate: normalizePurchaseVatRate(row.purchase_vat_rate),
     pack_size: row.pack_size || "",
     supplier: row.supplier || "",
     category: row.category || "",
@@ -2317,6 +2366,7 @@ function normalizeIngredientMaster(csvText) {
           ingredient_name: getValue("Ingredient name"),
           ingredient_item_code: getValue("PLU Code"),
           unit_cost: numberValue(rawCost),
+          purchase_vat_rate: FOOD_PURCHASE_VAT_OPTIONS[0],
           pack_size: getValue("Grams. / Mililitre"),
           supplier: "",
           category: getValue("Description"),
@@ -2344,6 +2394,7 @@ function normalizeIngredientMaster(csvText) {
       ingredient_name: getValue("ingredient_name"),
       ingredient_item_code: getValue("ingredient_item_code"),
       unit_cost: numberValue(getValue("unit_cost")),
+      purchase_vat_rate: normalizePurchaseVatRate(getValue("purchase_vat_rate")),
       pack_size: getValue("pack_size"),
       supplier: getValue("supplier"),
       category: getValue("category"),
@@ -2363,7 +2414,7 @@ function downloadIngredientTemplate() {
   const headers = REQUIRED_INGREDIENT_COLUMNS.concat(OPTIONAL_INGREDIENT_COLUMNS);
   const sampleRows = [
     headers.join(","),
-    "chicken breast,101.CHI9,1.36,1kg,Example Supplier,Poultry,2026-03-23,ingredient,",
+    "chicken breast,101.CHI9,1.36,0.13,1kg,Example Supplier,Poultry,2026-03-23,ingredient,",
   ].join("\n");
 
   const blob = new Blob([sampleRows], { type: "text/csv;charset=utf-8" });
@@ -2965,6 +3016,7 @@ function seedImportedIngredientRows(currentIngredientMaster, importedRecipes, de
           ingredient_name: recipe.name || recipe.id,
           ingredient_item_code: recipe.sellingItemCode || recipe.id,
           unit_cost: getBatchUnitCost(recipe),
+          purchase_vat_rate: 0,
           pack_size: `${numberValue(recipe.batchYield)} ${getBatchYieldLabel(recipe)}`.trim(),
           supplier: recipe.restaurant || "",
           category: recipe.category || "Batch",
@@ -3006,12 +3058,13 @@ function seedImportedIngredientRows(currentIngredientMaster, importedRecipes, de
         return;
       }
 
-      const row = {
-        id: makeSeedId(),
-        ingredient_name: component.ingredient || component.code || "Imported ingredient",
-        ingredient_item_code: component.code || "",
-        unit_cost: derivedUnitCost,
-        pack_size: "",
+        const row = {
+          id: makeSeedId(),
+          ingredient_name: component.ingredient || component.code || "Imported ingredient",
+          ingredient_item_code: component.code || "",
+          unit_cost: derivedUnitCost,
+          purchase_vat_rate: FOOD_PURCHASE_VAT_OPTIONS[0],
+          pack_size: "",
         supplier: recipe.restaurant || "",
         category: recipe.category || "",
         last_updated: getTodayDateString(),
@@ -4536,6 +4589,7 @@ function App() {
           displayCode: ingredient.ingredient_item_code,
           displayPrice: ingredient.unit_cost,
           displayPackSize: ingredient.pack_size,
+          displayPurchaseVat: percentFromRate(ingredient.purchase_vat_rate),
           displayCategory: ingredient.category,
           displaySupplier: ingredient.supplier,
           displayUpdated: ingredient.last_updated,
@@ -4552,6 +4606,7 @@ function App() {
           displayCode: batch.batchIdentifier,
           displayPrice: getBatchUnitCost(batch),
           displayPackSize: `${numberValue(batch.batchYield)} ${getBatchYieldLabel(batch)}`,
+          displayPurchaseVat: "0%",
           displayCategory: batch.category,
           displaySupplier: batch.restaurant,
           displayUpdated: "",
@@ -5468,6 +5523,7 @@ function App() {
           ingredient_name: savedRecipe.name,
           ingredient_item_code: savedRecipe.sellingItemCode,
           unit_cost: getBatchUnitCost(savedRecipe),
+          purchase_vat_rate: 0,
           pack_size: `${numberValue(savedRecipe.batchYield)} ${getBatchYieldLabel(savedRecipe)}`.trim(),
           supplier: savedRecipe.restaurant || "",
           category: savedRecipe.category || "Batch",
@@ -5700,7 +5756,12 @@ function App() {
 
   const updateIngredientField = (ingredientId, field, value) => {
     setIngredientMaster((current) => {
-      const normalizedValue = field === "ingredient_name" ? toTitleCaseWords(value) : value;
+      const normalizedValue =
+        field === "ingredient_name"
+          ? toTitleCaseWords(value)
+          : field === "purchase_vat_rate"
+            ? normalizePurchaseVatRate(value)
+            : value;
       const nextIngredients = current.map((ingredient) =>
         ingredient.id === ingredientId
           ? ingredient.is_locked && field !== "is_locked"
@@ -6550,6 +6611,27 @@ function App() {
       </td>
       <td>
         {row.sourceKind === "ingredient-master" ? (
+          <select
+            className="table-input"
+            value={String(normalizePurchaseVatRate(row.source.purchase_vat_rate))}
+            disabled={row.source.is_locked || row.source.entry_type === "batch"}
+            onFocus={() => focusIngredientCatalogueRow(row.source.id)}
+            onChange={(event) =>
+              updateIngredientField(row.source.id, "purchase_vat_rate", Number(event.target.value))
+            }
+          >
+            {FOOD_PURCHASE_VAT_OPTIONS.map((rate) => (
+              <option key={`purchase-vat-${rate}`} value={String(rate)}>
+                {percentFromRate(rate)}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <div className="table-static">{row.displayPurchaseVat || "0%"}</div>
+        )}
+      </td>
+      <td>
+        {row.sourceKind === "ingredient-master" ? (
           <input
             className="table-input"
             value={row.source.category}
@@ -6836,6 +6918,7 @@ function App() {
             ingredient_name: matchedRecipe.name || ingredient.ingredient_name,
             ingredient_item_code: matchedRecipe.sellingItemCode || ingredient.ingredient_item_code,
           unit_cost: getBatchUnitCost(matchedRecipe),
+          purchase_vat_rate: 0,
           pack_size: `${numberValue(matchedRecipe.batchYield)} ${getBatchYieldLabel(matchedRecipe)}`.trim(),
           supplier: matchedRecipe.restaurant || ingredient.supplier,
             category: matchedRecipe.category || ingredient.category || "Batch",
@@ -6865,6 +6948,7 @@ function App() {
             ingredient_name: recipe.name,
             ingredient_item_code: recipe.sellingItemCode || recipe.id,
             unit_cost: getBatchUnitCost(recipe),
+            purchase_vat_rate: 0,
             pack_size: `${numberValue(recipe.batchYield)} ${getBatchYieldLabel(recipe)}`.trim(),
             supplier: recipe.restaurant || "",
             category: recipe.category || "Batch",
@@ -9785,7 +9869,7 @@ function App() {
                         />
                       </label>
                       <label className="form-field">
-                        <span>Unit price</span>
+                        <span>Unit price (net)</span>
                         <input
                           inputMode="decimal"
                           value={quickPanelIngredient.unit_cost}
@@ -9794,6 +9878,26 @@ function App() {
                             updateIngredientField(quickPanelIngredient.id, "unit_cost", event.target.value)
                           }
                         />
+                      </label>
+                      <label className="form-field">
+                        <span>Purchase VAT</span>
+                        <select
+                          value={String(normalizePurchaseVatRate(quickPanelIngredient.purchase_vat_rate))}
+                          disabled={quickPanelIngredient.is_locked || quickPanelIngredient.entry_type === "batch"}
+                          onChange={(event) =>
+                            updateIngredientField(
+                              quickPanelIngredient.id,
+                              "purchase_vat_rate",
+                              Number(event.target.value)
+                            )
+                          }
+                        >
+                          {FOOD_PURCHASE_VAT_OPTIONS.map((rate) => (
+                            <option key={`quick-vat-${rate}`} value={String(rate)}>
+                              {percentFromRate(rate)}
+                            </option>
+                          ))}
+                        </select>
                       </label>
                       <label className="form-field ingredient-pack-size-field">
                         <span>Pack size</span>

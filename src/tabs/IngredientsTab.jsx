@@ -214,8 +214,12 @@ export default function IngredientsTab({
                     <strong>{activeIngredientDraft.source.ingredient_item_code || "Not set"}</strong>
                   </div>
                   <div>
-                    <div className="mini-heading">Unit price</div>
+                    <div className="mini-heading">Unit price (net)</div>
                     <strong>{money(activeIngredientDraft.source.unit_cost || 0)}</strong>
+                  </div>
+                  <div>
+                    <div className="mini-heading">Purchase VAT</div>
+                    <strong>{Math.round(Number(activeIngredientDraft.source.purchase_vat_rate || 0.13) * 100)}%</strong>
                   </div>
                   <div>
                     <div className="mini-heading">Category</div>
@@ -446,6 +450,7 @@ export default function IngredientsTab({
                   <option value="code">Code</option>
                   <option value="price">Price</option>
                   <option value="pack-size">Pack size</option>
+                  <option value="purchase-vat">Purchase VAT</option>
                   <option value="category">Category</option>
                   <option value="supplier">Supplier</option>
                   <option value="updated">Updated</option>
@@ -482,8 +487,9 @@ export default function IngredientsTab({
                     <th>{renderIngredientSortHeader("Type", "type")}</th>
                     <th>{renderIngredientSortHeader("Ingredient", "ingredient")}</th>
                     <th>{renderIngredientSortHeader("Code", "code")}</th>
-                    <th>{renderIngredientSortHeader("Price", "price")}</th>
+                    <th>{renderIngredientSortHeader("Price (net)", "price")}</th>
                     <th>{renderIngredientSortHeader("Pack size", "pack-size")}</th>
+                    <th>{renderIngredientSortHeader("Purchase VAT", "purchase-vat")}</th>
                     <th>{renderIngredientSortHeader("Category", "category")}</th>
                     <th>{renderIngredientSortHeader("Supplier", "supplier")}</th>
                     <th>{renderIngredientSortHeader("Updated", "updated")}</th>

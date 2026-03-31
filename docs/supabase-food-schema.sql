@@ -10,6 +10,7 @@ create table if not exists public.ingredients (
   ingredient_name text not null,
   ingredient_item_code text,
   unit_cost numeric(12,4) not null default 0,
+  purchase_vat_rate numeric(12,4) not null default 0.13,
   pack_size text,
   supplier text,
   category text,
@@ -20,6 +21,9 @@ create table if not exists public.ingredients (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table if exists public.ingredients
+  add column if not exists purchase_vat_rate numeric(12,4) not null default 0.13;
 
 create unique index if not exists ingredients_code_unique
   on public.ingredients ((upper(regexp_replace(coalesce(ingredient_item_code, ''), '\s+', '', 'g'))))

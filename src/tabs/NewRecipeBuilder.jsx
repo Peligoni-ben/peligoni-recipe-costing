@@ -66,7 +66,7 @@ export default function NewRecipeBuilder({
           </div>
           {newRecipeDraft.recipeType !== "batch" ? (
             <div>
-              <div className="mini-heading">Auto roundup target</div>
+              <div className="mini-heading">Auto roundup target (gross)</div>
               <strong>{money(newRecipeDraftRoundupTarget)}</strong>
             </div>
           ) : null}
@@ -138,7 +138,7 @@ export default function NewRecipeBuilder({
                 </select>
               </label>
               <label>
-                <span>Sale price</span>
+                <span>Sale price (gross)</span>
                 <DecimalInput
                   value={newRecipeDraft.currentSalePrice}
                   onCommit={(value) => updateNewRecipeField("currentSalePrice", value)}

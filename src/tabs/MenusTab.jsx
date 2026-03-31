@@ -508,7 +508,7 @@ export default function MenusTab({
                     <strong>{money(menu.perGuestCost)}</strong>
                   </div>
                   <div>
-                    <span>Per guest sell</span>
+                    <span>Per guest sell (gross)</span>
                     <strong>{money(menu.perGuestSell)}</strong>
                   </div>
                   <div>
@@ -516,7 +516,7 @@ export default function MenusTab({
                     <strong>{percent(menu.targetGp)}</strong>
                   </div>
                   <div>
-                    <span>Menu GP</span>
+                    <span>Menu GP (net)</span>
                     <strong>{percent(menu.menuGp)}</strong>
                   </div>
                 </div>
