@@ -2267,36 +2267,19 @@ function mapSupabaseBchAuditDecision(row) {
 }
 
 function mergeSupabaseRecipesIntoCurrent(currentRecipes, sharedRecipes, ingredientMaster) {
-  const sharedById = new Map((sharedRecipes || []).map((recipe) => [recipe.id, recipe]));
-  const mergedRecipes = [
-    ...(sharedRecipes || []),
-    ...(currentRecipes || []).filter((recipe) => !sharedById.has(recipe.id)),
-  ];
-  return syncIngredientReferences(linkBatchReferences(mergedRecipes), ingredientMaster);
+  return syncIngredientReferences(linkBatchReferences(sharedRecipes || []), ingredientMaster);
 }
 
 function mergeSupabaseMenusIntoCurrent(currentMenus, sharedMenus, recipes) {
-  const sharedById = new Map((sharedMenus || []).map((menu) => [menu.id, menu]));
-  return [
-    ...(sharedMenus || []),
-    ...(currentMenus || []).filter((menu) => !sharedById.has(menu.id)),
-  ];
+  return [...(sharedMenus || [])];
 }
 
 function mergeSupabaseDishIndexRowsIntoCurrent(currentRows, sharedRows) {
-  const sharedById = new Map((sharedRows || []).map((row) => [row.id, row]));
-  return [
-    ...(sharedRows || []),
-    ...(currentRows || []).filter((row) => !sharedById.has(row.id)),
-  ];
+  return [...(sharedRows || [])];
 }
 
 function mergeSupabaseBchAuditIntoCurrent(currentRows, sharedRows) {
-  const sharedByCode = new Map((sharedRows || []).map((row) => [normalizeCodeKey(row.code), row]));
-  return [
-    ...(sharedRows || []),
-    ...(currentRows || []).filter((row) => !sharedByCode.has(normalizeCodeKey(row.code))),
-  ];
+  return [...(sharedRows || [])];
 }
 
 function parseCsv(text) {
@@ -3601,6 +3584,13 @@ function App() {
           mappedIngredients || ingredientMaster
         );
         setRecipes(nextRecipes);
+        setRecipeAvailableVenues(() =>
+          Object.fromEntries(
+            nextRecipes
+              .filter((recipe) => recipe.recipeType !== "batch" && Array.isArray(recipe.availableVenues) && recipe.availableVenues.length)
+              .map((recipe) => [recipe.id, recipe.availableVenues])
+          )
+        );
         setSelectedRecipeId((current) => current || nextRecipes[0]?.id || null);
         if (Array.isArray(menuRows) && menuRows.length) {
           const sharedMenus = hydrateSupabaseMenus(menuRows, menuLineRows || [], nextRecipes);
