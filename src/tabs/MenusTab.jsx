@@ -39,11 +39,13 @@ export default function MenusTab({
   focusMenuDashboardVenue,
   dashboardInventoryRecipes,
   dashboardMenu,
+  updateMenuField,
   publishRecipeToServiceMenu,
   publishRecipesToServiceMenus,
   removeRecipeFromServiceMenu,
   removeRecipesFromServiceMenus,
   createDraftRecipeFromDishInventory,
+  openRecipeInBuilder,
   getMenuServicePeriod,
   focusMenuBuilder,
   updateMenuLine,
@@ -52,11 +54,54 @@ export default function MenusTab({
   importError,
 }) {
   const [publishCourses, setPublishCourses] = useState({});
+  const [availabilityQuickFilter, setAvailabilityQuickFilter] = useState("all");
 
   const rowCourseDefaults = useMemo(() => {
     const entries = availabilityRows.map((recipe) => [recipe.id, publishCourses[recipe.id] || inferMenuCourseFromRecipe(recipe)]);
     return Object.fromEntries(entries);
   }, [availabilityRows, inferMenuCourseFromRecipe, publishCourses]);
+
+  const dashboardMenuRecipeIds = useMemo(
+    () => new Set((dashboardMenu?.lines || []).map((line) => line.recipeId).filter(Boolean)),
+    [dashboardMenu]
+  );
+
+  const availabilityQuickSummary = useMemo(() => {
+    const counts = {
+      all: availabilityRows.length,
+      onMenu: 0,
+      notOnMenu: 0,
+      inventoryOnly: 0,
+    };
+
+    availabilityRows.forEach((row) => {
+      const onMenu = row.rowSource !== "inventory" && dashboardMenuRecipeIds.has(row.id);
+      if (row.rowSource === "inventory") {
+        counts.inventoryOnly += 1;
+      }
+      if (onMenu) {
+        counts.onMenu += 1;
+      } else {
+        counts.notOnMenu += 1;
+      }
+    });
+
+    return counts;
+  }, [availabilityRows, dashboardMenuRecipeIds]);
+
+  const displayedAvailabilityRows = useMemo(() => {
+    if (availabilityQuickFilter === "all") return availabilityRows;
+    if (availabilityQuickFilter === "on-menu") {
+      return availabilityRows.filter((row) => row.rowSource !== "inventory" && dashboardMenuRecipeIds.has(row.id));
+    }
+    if (availabilityQuickFilter === "not-on-menu") {
+      return availabilityRows.filter((row) => row.rowSource === "inventory" || !dashboardMenuRecipeIds.has(row.id));
+    }
+    if (availabilityQuickFilter === "inventory-only") {
+      return availabilityRows.filter((row) => row.rowSource === "inventory");
+    }
+    return availabilityRows;
+  }, [availabilityQuickFilter, availabilityRows, dashboardMenuRecipeIds]);
 
   const isVenueWorkspace = availabilityVenueFilter !== "all";
 
@@ -196,18 +241,91 @@ export default function MenusTab({
                   {dashboardInventoryRecipes.length} available dish{dashboardInventoryRecipes.length === 1 ? "" : "es"}
                 </span>
               </div>
-              <div className="badge-row">
-                {dashboardInventoryRecipes.slice(0, 24).map((recipe) => (
-                  <span key={recipe.id} className="badge">
-                    {recipe.name}
-                  </span>
-                ))}
+              <div className="badge-row compact">
+                <button
+                  type="button"
+                  className={`secondary-button ${availabilityQuickFilter === "all" ? "toggle-button-active" : ""}`.trim()}
+                  onClick={() => setAvailabilityQuickFilter("all")}
+                >
+                  All dishes
+                  <Badge tone="default">{availabilityQuickSummary.all}</Badge>
+                </button>
+                <button
+                  type="button"
+                  className={`secondary-button ${availabilityQuickFilter === "on-menu" ? "toggle-button-active" : ""}`.trim()}
+                  onClick={() => setAvailabilityQuickFilter("on-menu")}
+                >
+                  On this menu
+                  <Badge tone="good">{availabilityQuickSummary.onMenu}</Badge>
+                </button>
+                <button
+                  type="button"
+                  className={`secondary-button ${availabilityQuickFilter === "not-on-menu" ? "toggle-button-active" : ""}`.trim()}
+                  onClick={() => setAvailabilityQuickFilter("not-on-menu")}
+                >
+                  Still to add
+                  <Badge tone="default">{availabilityQuickSummary.notOnMenu}</Badge>
+                </button>
+                <button
+                  type="button"
+                  className={`secondary-button ${availabilityQuickFilter === "inventory-only" ? "toggle-button-active" : ""}`.trim()}
+                  onClick={() => setAvailabilityQuickFilter("inventory-only")}
+                >
+                  No recipe yet
+                  <Badge tone="warn">{availabilityQuickSummary.inventoryOnly}</Badge>
+                </button>
               </div>
-              {dashboardInventoryRecipes.length > 24 ? (
-                <p className="support-text">
-                  Plus {dashboardInventoryRecipes.length - 24} more available dish
-                  {dashboardInventoryRecipes.length - 24 === 1 ? "" : "es"}.
-                </p>
+              <p className="support-text">
+                Use these to switch between the full service list, what is already on this menu, and what still needs publishing.
+              </p>
+              {dashboardMenu ? (
+                <div className="support-stack">
+                  <div className="usage-card">
+                    <div className="usage-top">
+                      <strong>Selected dishes</strong>
+                      <Badge tone="default">
+                        {dashboardMenu.lines.length} dish{dashboardMenu.lines.length === 1 ? "" : "es"}
+                      </Badge>
+                    </div>
+                    {dashboardMenu.lines.length ? (
+                      <div className="support-stack">
+                        {dashboardMenu.lines.map((line) => (
+                          <div key={`${dashboardMenu.id}-${line.id}-selected`} className="review-item">
+                            <div>
+                              <strong>{line.dishName}</strong>
+                              <div className="support-text">
+                                {line.courseLabel || "Unassigned"} · {money(line.lineSalePrice)} current ·{" "}
+                                {line.recipe?.roundup ? money(line.recipe.roundup) : "N/A"} suggested
+                              </div>
+                            </div>
+                            <div className="badge-row compact">
+                              {line.recipeId ? (
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => openRecipeInBuilder(line.recipeId)}
+                                >
+                                  Edit dish
+                                </button>
+                              ) : null}
+                              {line.recipeId ? (
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => removeRecipeFromServiceMenu({ id: line.recipeId, name: line.dishName }, dashboardMenu.restaurant)}
+                                >
+                                  Remove
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="support-text">No dishes have been added to this menu yet.</p>
+                    )}
+                  </div>
+                </div>
               ) : null}
             </Card>
 
@@ -221,6 +339,20 @@ export default function MenusTab({
                       <p>{dashboardMenu.restaurant}</p>
                     </div>
                     <div className="badge-row compact">
+                      <button
+                        type="button"
+                        className={`secondary-button ${dashboardMenu.isLiveMenu ? "" : "toggle-button-active"}`.trim()}
+                        onClick={() => updateMenuField(dashboardMenu.id, "isLiveMenu", false)}
+                      >
+                        Draft menu
+                      </button>
+                      <button
+                        type="button"
+                        className={`secondary-button ${dashboardMenu.isLiveMenu ? "toggle-button-active" : ""}`.trim()}
+                        onClick={() => updateMenuField(dashboardMenu.id, "isLiveMenu", true)}
+                      >
+                        Live menu
+                      </button>
                       <button type="button" className="primary-button" onClick={() => saveMenuChanges(dashboardMenu)}>
                         Save menu
                       </button>
@@ -361,11 +493,11 @@ export default function MenusTab({
                 <th>Category</th>
                 <th>Code</th>
                 <th>Available venues</th>
-                <th>{isVenueWorkspace ? "Menu action" : "Status"}</th>
+                <th>{isVenueWorkspace ? "Menu picker" : "Status"}</th>
               </tr>
             </thead>
             <tbody>
-              {availabilityRows.map((recipe) => (
+              {displayedAvailabilityRows.map((recipe) => (
                 <tr key={recipe.id}>
                   <td>{recipe.name}</td>
                   <td>{recipe.restaurant}</td>
@@ -394,51 +526,46 @@ export default function MenusTab({
                           </>
                         ) : (
                           <>
-                            <span
-                              className={`menus-publish-status ${
-                                dashboardMenu?.restaurant && isRecipeOnVenueMenu(recipe.id, getMenuServicePeriod(dashboardMenu.restaurant) ? dashboardMenu.restaurant : availabilityVenueFilter)
-                                  ? "on-menu"
-                                  : "off-menu"
-                              }`}
-                            >
-                              {dashboardMenu?.restaurant && isRecipeOnVenueMenu(recipe.id, getMenuServicePeriod(dashboardMenu.restaurant) ? dashboardMenu.restaurant : availabilityVenueFilter)
-                                ? "On menu"
-                                : "Not on menu"}
-                            </span>
-                            <select
-                              value={rowCourseDefaults[recipe.id] || ""}
-                              onChange={(event) =>
-                                setPublishCourses((current) => ({ ...current, [recipe.id]: event.target.value }))
-                              }
-                            >
-                              <option value="">Unassigned</option>
-                              {menuCoursePresets.map((course) => (
-                                <option key={course} value={course}>
-                                  {course}
-                                </option>
-                              ))}
-                            </select>
+                            {dashboardMenu?.restaurant && isRecipeOnVenueMenu(
+                              recipe.id,
+                              getMenuServicePeriod(dashboardMenu.restaurant) ? dashboardMenu.restaurant : availabilityVenueFilter
+                            ) ? (
+                              <>
+                                <span className="menus-publish-status on-menu">On this menu</span>
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  disabled={!selectedMenuRestaurant}
+                                  onClick={() => removeRecipeFromServiceMenu(recipe, selectedMenuRestaurant)}
+                                >
+                                  Remove from menu
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <span className="menus-publish-status off-menu">Not on this menu</span>
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  disabled={!selectedMenuRestaurant}
+                                  onClick={() =>
+                                    publishRecipeToServiceMenu(
+                                      recipe,
+                                      selectedMenuRestaurant,
+                                      rowCourseDefaults[recipe.id] || recipe.category || ""
+                                    )
+                                  }
+                                >
+                                  Add to menu
+                                </button>
+                              </>
+                            )}
                             <button
                               type="button"
                               className="secondary-button"
-                              disabled={!selectedMenuRestaurant}
-                              onClick={() =>
-                                publishRecipeToServiceMenu(
-                                  recipe,
-                                  selectedMenuRestaurant,
-                                  rowCourseDefaults[recipe.id] || ""
-                                )
-                              }
+                              onClick={() => openRecipeInBuilder(recipe.id)}
                             >
-                              Add
-                            </button>
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              disabled={!selectedMenuRestaurant}
-                              onClick={() => removeRecipeFromServiceMenu(recipe, selectedMenuRestaurant)}
-                            >
-                              Remove
+                              Edit dish
                             </button>
                           </>
                         )}
@@ -449,10 +576,10 @@ export default function MenusTab({
                   </td>
                 </tr>
               ))}
-              {!availabilityRows.length ? (
+              {!displayedAvailabilityRows.length ? (
                 <tr>
                   <td colSpan={6} className="empty-state-cell">
-                    No dishes match the current venue filter.
+                    No dishes match the current menu filter.
                   </td>
                 </tr>
               ) : null}

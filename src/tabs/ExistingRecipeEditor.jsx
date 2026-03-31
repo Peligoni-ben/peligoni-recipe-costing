@@ -69,6 +69,29 @@ export default function ExistingRecipeEditor({
   getComponentSourceRouteLabel,
   batchUsage,
 }) {
+  const buildRecipePillHandlers = (action, disabled = false) => {
+    if (disabled) {
+      return {
+        onPointerDown: undefined,
+        onClick: undefined,
+      };
+    }
+
+    const runAction = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      action();
+    };
+
+    return {
+      onPointerDown: runAction,
+      onClick: (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      },
+    };
+  };
+
   return (
     <div className="panel-stack">
       <Card>
@@ -283,14 +306,17 @@ export default function ExistingRecipeEditor({
                 type="button"
                 className={`recipe-pill ${selectedRecipe.isLive ? "active" : ""}`}
                 disabled={selectedRecipe.recipeType === "batch" || selectedRecipeLocked}
-                onClick={() => updateRecipeField(selectedRecipe.id, "isLive", !selectedRecipe.isLive)}
+                {...buildRecipePillHandlers(
+                  () => updateRecipeField(selectedRecipe.id, "isLive", !selectedRecipe.isLive),
+                  selectedRecipe.recipeType === "batch" || selectedRecipeLocked
+                )}
               >
                 {selectedRecipe.recipeType === "batch" ? "Batch recipes are not live dishes" : "Recipe live"}
               </button>
               <button
                 type="button"
                 className={`recipe-pill ${selectedRecipeLocked ? "active" : ""}`}
-                onClick={() => updateRecipeField(selectedRecipe.id, "isLocked", !selectedRecipeLocked)}
+                {...buildRecipePillHandlers(() => updateRecipeField(selectedRecipe.id, "isLocked", !selectedRecipeLocked))}
               >
                 {selectedRecipeLocked ? "Recipe locked" : "Lock recipe"}
               </button>
@@ -371,14 +397,17 @@ export default function ExistingRecipeEditor({
               <small key={issue.text} className="field-help field-help-error">{issue.text}</small>
             ))}
           </label>
-          <label className={`editor-label ${getFieldIssues(selectedRecipe.validation, "restaurant").length ? "field-error" : ""}`}>
+          <div className={`editor-label ${getFieldIssues(selectedRecipe.validation, "restaurant").length ? "field-error" : ""}`}>
             <span>Venue</span>
             <div className="recipe-pill-row">
               <button
                 type="button"
                 className={`recipe-pill ${selectedRecipe.restaurant ? "" : "active"}`}
                 disabled={selectedRecipeLocked}
-                onClick={() => updateRecipeField(selectedRecipe.id, "restaurant", "")}
+                {...buildRecipePillHandlers(
+                  () => updateRecipeField(selectedRecipe.id, "restaurant", ""),
+                  selectedRecipeLocked
+                )}
               >
                 Blank
               </button>
@@ -388,7 +417,10 @@ export default function ExistingRecipeEditor({
                   type="button"
                   className={`recipe-pill ${selectedRecipe.restaurant === venue ? "active" : ""}`}
                   disabled={selectedRecipeLocked}
-                  onClick={() => updateRecipeField(selectedRecipe.id, "restaurant", venue)}
+                  {...buildRecipePillHandlers(
+                    () => updateRecipeField(selectedRecipe.id, "restaurant", venue),
+                    selectedRecipeLocked
+                  )}
                 >
                   {venue}
                 </button>
@@ -397,9 +429,9 @@ export default function ExistingRecipeEditor({
             {getFieldIssues(selectedRecipe.validation, "restaurant").map((issue) => (
               <small key={issue.text} className="field-help field-help-error">{issue.text}</small>
             ))}
-          </label>
+          </div>
           {selectedRecipe.recipeType !== "batch" ? (
-            <label className="editor-label span-2">
+            <div className="editor-label span-2">
               <span>Also available in</span>
               <div className="recipe-pill-row">
                 {venues
@@ -410,28 +442,31 @@ export default function ExistingRecipeEditor({
                       type="button"
                       className={`recipe-pill ${selectedRecipeSecondaryVenues.includes(venue) ? "active" : ""}`}
                       disabled={selectedRecipeLocked}
-                      onClick={() => {
+                      {...buildRecipePillHandlers(() => {
                         const existing = selectedRecipeSecondaryVenues || [];
                         const nextSecondary = existing.includes(venue)
                           ? existing.filter((item) => item !== venue)
                           : [...new Set([...existing, venue])];
                         setRecipeSecondaryVenues(selectedRecipe.id, selectedRecipe.restaurant, nextSecondary);
-                      }}
+                      }, selectedRecipeLocked)}
                     >
                       {venue}
                     </button>
                   ))}
               </div>
-            </label>
+            </div>
           ) : null}
-          <label>
+          <div>
             <span>Recipe type</span>
             <div className="recipe-pill-row">
               <button
                 type="button"
                 className={`recipe-pill ${selectedRecipe.recipeType === "dish" ? "active" : ""}`}
                 disabled={selectedRecipeLocked}
-                onClick={() => updateRecipeField(selectedRecipe.id, "recipeType", "dish")}
+                {...buildRecipePillHandlers(
+                  () => updateRecipeField(selectedRecipe.id, "recipeType", "dish"),
+                  selectedRecipeLocked
+                )}
               >
                 Dish recipe
               </button>
@@ -439,12 +474,15 @@ export default function ExistingRecipeEditor({
                 type="button"
                 className={`recipe-pill ${selectedRecipe.recipeType === "batch" ? "active" : ""}`}
                 disabled={selectedRecipeLocked}
-                onClick={() => updateRecipeField(selectedRecipe.id, "recipeType", "batch")}
+                {...buildRecipePillHandlers(
+                  () => updateRecipeField(selectedRecipe.id, "recipeType", "batch"),
+                  selectedRecipeLocked
+                )}
               >
                 Batch recipe
               </button>
             </div>
-          </label>
+          </div>
           <label className={getFieldIssues(selectedRecipe.validation, "category").length ? "field-error" : ""}>
             <span>Category</span>
             <input
@@ -509,7 +547,7 @@ export default function ExistingRecipeEditor({
             </label>
           ) : null}
           {selectedRecipe.recipeType === "batch" ? (
-            <label className={`editor-label ${getFieldIssues(selectedRecipe.validation, "batchYieldType").length ? "field-error" : ""}`}>
+            <div className={`editor-label ${getFieldIssues(selectedRecipe.validation, "batchYieldType").length ? "field-error" : ""}`}>
               <span>Yield type</span>
               <div className="recipe-pill-row">
                 {["portion", "g", "kg", "ml", "l", "tray", "bottle", "jar"].map((yieldType) => (
@@ -518,7 +556,10 @@ export default function ExistingRecipeEditor({
                     type="button"
                     className={`recipe-pill ${selectedRecipe.batchYieldType === yieldType ? "active" : ""}`}
                     disabled={selectedRecipeLocked}
-                    onClick={() => updateRecipeField(selectedRecipe.id, "batchYieldType", yieldType)}
+                    {...buildRecipePillHandlers(
+                      () => updateRecipeField(selectedRecipe.id, "batchYieldType", yieldType),
+                      selectedRecipeLocked
+                    )}
                   >
                     {yieldType}
                   </button>
@@ -527,7 +568,7 @@ export default function ExistingRecipeEditor({
               {getFieldIssues(selectedRecipe.validation, "batchYieldType").map((issue) => (
                 <small key={issue.text} className="field-help field-help-warn">{issue.text}</small>
               ))}
-            </label>
+            </div>
           ) : null}
           <label>
             <span>Roundup target (gross)</span>
@@ -544,14 +585,17 @@ export default function ExistingRecipeEditor({
               />
             )}
           </label>
-          <label className={`editor-label ${getMetaIssues(selectedRecipe.validation, "recipeComplete").length ? "field-error" : ""}`}>
+          <div className={`editor-label ${getMetaIssues(selectedRecipe.validation, "recipeComplete").length ? "field-error" : ""}`}>
             <span>Recipe complete</span>
             <div className="recipe-pill-row">
               <button
                 type="button"
                 className={`recipe-pill ${String(selectedRecipe.recipeComplete ?? "0") === "0" ? "active" : ""}`}
                 disabled={selectedRecipeLocked}
-                onClick={() => updateRecipeField(selectedRecipe.id, "recipeComplete", "0")}
+                {...buildRecipePillHandlers(
+                  () => updateRecipeField(selectedRecipe.id, "recipeComplete", "0"),
+                  selectedRecipeLocked
+                )}
               >
                 Incomplete
               </button>
@@ -559,7 +603,10 @@ export default function ExistingRecipeEditor({
                 type="button"
                 className={`recipe-pill ${String(selectedRecipe.recipeComplete ?? "0") === "1" ? "active" : ""}`}
                 disabled={selectedRecipeLocked}
-                onClick={() => updateRecipeField(selectedRecipe.id, "recipeComplete", "1")}
+                {...buildRecipePillHandlers(
+                  () => updateRecipeField(selectedRecipe.id, "recipeComplete", "1"),
+                  selectedRecipeLocked
+                )}
               >
                 Complete
               </button>
@@ -567,16 +614,19 @@ export default function ExistingRecipeEditor({
             {getMetaIssues(selectedRecipe.validation, "recipeComplete").map((issue) => (
               <small key={issue.text} className="field-help field-help-warn">{issue.text}</small>
             ))}
-          </label>
+          </div>
           {selectedRecipe.recipeType !== "batch" ? (
-            <label className={`editor-label ${getMetaIssues(selectedRecipe.validation, "pricingComplete").length ? "field-error" : ""}`}>
+            <div className={`editor-label ${getMetaIssues(selectedRecipe.validation, "pricingComplete").length ? "field-error" : ""}`}>
               <span>Pricing complete</span>
               <div className="recipe-pill-row">
                 <button
                   type="button"
                   className={`recipe-pill ${String(selectedRecipe.pricingComplete ?? "0") === "0" ? "active" : ""}`}
                   disabled={selectedRecipeLocked}
-                  onClick={() => updateRecipeField(selectedRecipe.id, "pricingComplete", "0")}
+                  {...buildRecipePillHandlers(
+                    () => updateRecipeField(selectedRecipe.id, "pricingComplete", "0"),
+                    selectedRecipeLocked
+                  )}
                 >
                   Incomplete
                 </button>
@@ -584,7 +634,10 @@ export default function ExistingRecipeEditor({
                   type="button"
                   className={`recipe-pill ${String(selectedRecipe.pricingComplete ?? "0") === "1" ? "active" : ""}`}
                   disabled={selectedRecipeLocked}
-                  onClick={() => updateRecipeField(selectedRecipe.id, "pricingComplete", "1")}
+                  {...buildRecipePillHandlers(
+                    () => updateRecipeField(selectedRecipe.id, "pricingComplete", "1"),
+                    selectedRecipeLocked
+                  )}
                 >
                   Complete
                 </button>
@@ -592,7 +645,7 @@ export default function ExistingRecipeEditor({
               {getMetaIssues(selectedRecipe.validation, "pricingComplete").map((issue) => (
                 <small key={issue.text} className="field-help field-help-warn">{issue.text}</small>
               ))}
-            </label>
+            </div>
           ) : null}
         </div>
 

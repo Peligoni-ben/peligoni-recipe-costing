@@ -3543,6 +3543,7 @@ function App() {
   const refreshSharedData = useCallback(async () => {
     if (!supabaseEnabled || !supabase) return;
     if (authLoading || !authUser) return;
+    if (["builder", "ingredients", "venue-menus", "menus"].includes(activeTab)) return;
 
     try {
       setSharedDataRefreshing(true);
@@ -3646,7 +3647,7 @@ function App() {
     } finally {
       setSharedDataRefreshing(false);
     }
-  }, [authLoading, authUser, ingredientMaster]);
+  }, [activeTab, authLoading, authUser, ingredientMaster]);
 
   useEffect(() => {
     refreshSharedData();
@@ -3920,17 +3921,19 @@ function App() {
     );
     return Array.from(new Set([...menus.map((menu) => menu.restaurant).filter(Boolean), ...derivedOptions]));
   }, [menus, venues]);
+  const liveMenuRecipeIds = useMemo(() => getRestaurantLiveRecipeIds(menus), [menus]);
 
   const filteredRecipes = useMemo(() => {
     const q = search.trim().toLowerCase();
     return recipes.filter((recipe) => {
       const matchesRestaurant = restaurant === "all" || getRecipeVenueKey(recipe) === restaurant;
+      const appearsLive = recipe.isLive || liveMenuRecipeIds.has(recipe.id);
       const matchesReview =
         reviewFilter === "all" ||
         (reviewFilter === "needs-review" && recipe.validation.reviewStatus === "needs-review") ||
         (reviewFilter === "warning" && recipe.validation.reviewStatus === "warning") ||
         (reviewFilter === "ready" && recipe.validation.reviewStatus === "ready") ||
-        (reviewFilter === "live" && recipe.isLive);
+        (reviewFilter === "live" && appearsLive);
       const matchesSearch =
         q.length === 0 ||
         recipe.name.toLowerCase().includes(q) ||
@@ -3939,12 +3942,12 @@ function App() {
         recipe.components.some((component) => component.ingredient.toLowerCase().includes(q));
       return matchesRestaurant && matchesSearch && matchesReview;
     });
-  }, [recipes, restaurant, reviewFilter, search]);
+  }, [liveMenuRecipeIds, recipes, restaurant, reviewFilter, search]);
   const liveRecipeVenueSummary = useMemo(() => {
     const grouped = new Map();
 
     recipes
-      .filter((recipe) => recipe.recipeType !== "batch" && recipe.isLive)
+      .filter((recipe) => recipe.recipeType !== "batch" && (recipe.isLive || liveMenuRecipeIds.has(recipe.id)))
       .forEach((recipe) => {
         const venueLabel = getRecipeVenueKey(recipe) || "Blank";
         grouped.set(venueLabel, (grouped.get(venueLabel) || 0) + 1);
@@ -3953,7 +3956,7 @@ function App() {
     return Array.from(grouped.entries())
       .sort((left, right) => left[0].localeCompare(right[0], undefined, { numeric: true, sensitivity: "base" }))
       .map(([venue, count]) => ({ venue, count }));
-  }, [recipes]);
+  }, [liveMenuRecipeIds, recipes]);
   const availabilityVenueSummary = useMemo(() => {
     const grouped = new Map();
 
@@ -4366,9 +4369,11 @@ function App() {
     () => ({
       needsReview: recipes.filter((recipe) => recipe.validation.reviewStatus === "needs-review").length,
       warnings: recipes.filter((recipe) => recipe.validation.reviewStatus === "warning").length,
-      live: recipes.filter((recipe) => recipe.recipeType !== "batch" && recipe.isLive).length,
+      live: recipes.filter(
+        (recipe) => recipe.recipeType !== "batch" && (recipe.isLive || liveMenuRecipeIds.has(recipe.id))
+      ).length,
     }),
-    [recipes]
+    [liveMenuRecipeIds, recipes]
   );
   const batchUsage = useMemo(() => {
     if (!selectedRecipe || selectedRecipe.recipeType !== "batch") return [];
@@ -5080,6 +5085,12 @@ function App() {
 
   const createDraftRecipeFromDishInventory = async (row, { menuRestaurant = "", courseLabel = "" } = {}) => {
     if (requireEditAccess()) return null;
+    const targetMenu = menuRestaurant ? menus.find((menu) => menu.restaurant === menuRestaurant) || null : null;
+    if (targetMenu?.isLiveMenu) {
+      setImportError(`Switch ${targetMenu.name} back to draft before adding dishes.`);
+      setImportMessage("");
+      return null;
+    }
     const next = String(recipes.length + 1).padStart(3, "0");
     const nextVenue = normalizeVenueName(row.venue, row.sourceTab) || "Tasi";
     const draftRecipe = enrichRecipeMetrics({
@@ -7932,6 +7943,7 @@ function App() {
     setMenus((current) =>
       current.map((menu) => {
         if (menu.id !== menuId) return menu;
+        if (menu.isLiveMenu) return menu;
         return {
           ...menu,
           lines: menu.lines.map((line) => {
@@ -8142,6 +8154,12 @@ function App() {
   const publishRecipeToServiceMenu = async (recipe, menuRestaurant, courseLabel = "") => {
     if (!recipe || !menuRestaurant) return;
     if (requireEditAccess()) return;
+    const targetMenu = menus.find((menu) => menu.restaurant === menuRestaurant) || null;
+    if (targetMenu?.isLiveMenu) {
+      setImportError(`Switch ${targetMenu.name} back to draft before changing its dishes.`);
+      setImportMessage("");
+      return;
+    }
 
     const update = buildServiceMenuPublishUpdate(menus, recipe, menuRestaurant, courseLabel);
     if (!update) return;
@@ -8311,6 +8329,12 @@ function App() {
     const targetMenu = menus.find(
       (menu) => menu.restaurant === menuRestaurant && menu.lines.some((line) => line.recipeId === recipe.id)
     );
+
+    if (targetMenu?.isLiveMenu) {
+      setImportError(`Switch ${targetMenu.name} back to draft before changing its dishes.`);
+      setImportMessage("");
+      return;
+    }
 
     if (!targetMenu) {
       setImportError("");
@@ -9072,11 +9096,13 @@ function App() {
             focusMenuDashboardVenue={focusMenuDashboardVenue}
             dashboardInventoryRecipes={dashboardInventoryRecipes}
             dashboardMenu={dashboardMenu}
+            updateMenuField={updateMenuField}
             publishRecipeToServiceMenu={publishRecipeToServiceMenu}
             publishRecipesToServiceMenus={publishRecipesToServiceMenus}
             removeRecipeFromServiceMenu={removeRecipeFromServiceMenu}
             removeRecipesFromServiceMenus={removeRecipesFromServiceMenus}
             createDraftRecipeFromDishInventory={createDraftRecipeFromDishInventory}
+            openRecipeInBuilder={openRecipeInBuilder}
             getMenuServicePeriod={getMenuServicePeriod}
             focusMenuBuilder={focusMenuBuilder}
             updateMenuLine={updateMenuLine}
