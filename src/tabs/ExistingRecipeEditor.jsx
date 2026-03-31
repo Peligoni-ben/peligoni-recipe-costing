@@ -7,6 +7,7 @@ export default function ExistingRecipeEditor({
   Icon,
   DecimalInput,
   selectedRecipe,
+  editWarning,
   importMessage,
   importError,
   setBuilderMode,
@@ -120,6 +121,7 @@ export default function ExistingRecipeEditor({
         </div>
         {importMessage ? <p className="support-text success-text">{importMessage}</p> : null}
         {importError ? <p className="support-text error-text">{importError}</p> : null}
+        {editWarning ? <p className="support-text error-text">{editWarning}</p> : null}
 
         <div className="recipe-context">
           <details className="recipe-picker" open={false}>

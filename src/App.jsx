@@ -23,6 +23,7 @@ const VENUES_STORAGE_KEY = "peligoni-working-venues";
 const DISH_INDEX_STORAGE_KEY = "peligoni-dish-index";
 const BCH_AUDIT_STORAGE_KEY = "peligoni-bch-audit";
 const RECIPE_AVAILABLE_VENUES_STORAGE_KEY = "peligoni-recipe-available-venues";
+const EDIT_SESSION_STALE_MS = 90 * 1000;
 const REQUIRED_INGREDIENT_COLUMNS = [
   "ingredient_name",
   "ingredient_item_code",
@@ -3336,6 +3337,7 @@ function App() {
   const [authLoading, setAuthLoading] = useState(supabaseEnabled);
   const [sharedDataRefreshing, setSharedDataRefreshing] = useState(supabaseEnabled);
   const [sharedDashboardSnapshot, setSharedDashboardSnapshot] = useState(null);
+  const [activeEditSessions, setActiveEditSessions] = useState([]);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
@@ -3709,6 +3711,61 @@ function App() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [authLoading, authUser, refreshSharedData]);
+
+  useEffect(() => {
+    if (!supabaseEnabled || !supabase || !authUser || !currentEditTarget) {
+      setActiveEditSessions([]);
+      return undefined;
+    }
+
+    let isCancelled = false;
+    const sessionId = `${currentEditTarget.entityType}:${currentEditTarget.entityId}:${authUser.id}`;
+
+    const loadSessions = async () => {
+      const cutoffIso = new Date(Date.now() - EDIT_SESSION_STALE_MS).toISOString();
+      const { data, error } = await supabase
+        .from("edit_sessions")
+        .select("*")
+        .eq("entity_type", currentEditTarget.entityType)
+        .eq("entity_id", currentEditTarget.entityId)
+        .gt("last_seen_at", cutoffIso)
+        .order("last_seen_at", { ascending: false });
+
+      if (isCancelled || error) return;
+      setActiveEditSessions(Array.isArray(data) ? data : []);
+    };
+
+    const heartbeat = async () => {
+      const { error } = await supabase.from("edit_sessions").upsert(
+        {
+          id: sessionId,
+          entity_type: currentEditTarget.entityType,
+          entity_id: currentEditTarget.entityId,
+          user_id: authUser.id,
+          user_email: authUser.email || "",
+          user_name: authProfile?.full_name || authUser.email || "",
+          last_seen_at: new Date().toISOString(),
+        },
+        { onConflict: "id" }
+      );
+
+      if (isCancelled || error) return;
+      await loadSessions();
+    };
+
+    heartbeat();
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        heartbeat();
+      }
+    }, 15000);
+
+    return () => {
+      isCancelled = true;
+      window.clearInterval(intervalId);
+      supabase.from("edit_sessions").delete().eq("id", sessionId);
+    };
+  }, [authProfile?.full_name, authUser, currentEditTarget]);
 
   useEffect(() => {
     if (!supabaseEnabled || !supabase || !authUser || currentUserRole !== "manager") {
@@ -4337,6 +4394,39 @@ function App() {
     if (!filteredDashboardVenueMenus.length) return null;
     return filteredDashboardVenueMenus.find((menu) => menu.isLiveMenu) || filteredDashboardVenueMenus[0];
   }, [filteredDashboardVenueMenus]);
+  const currentEditTarget = useMemo(() => {
+    if (!supabaseEnabled || !supabase || !authUser || !canEditSharedData) return null;
+    if (activeTab === "builder" && builderMode === "edit" && selectedRecipe) {
+      return {
+        entityType: "recipe",
+        entityId: selectedRecipe.id,
+      };
+    }
+    if (activeTab === "venue-menus" && dashboardMenu) {
+      return {
+        entityType: "menu",
+        entityId: dashboardMenu.id,
+      };
+    }
+    if (activeTab === "menus" && selectedMenu) {
+      return {
+        entityType: "menu",
+        entityId: selectedMenu.id,
+      };
+    }
+    return null;
+  }, [activeTab, authUser, builderMode, canEditSharedData, dashboardMenu, selectedMenu, selectedRecipe]);
+  const currentEditWarning = useMemo(() => {
+    if (!currentEditTarget || !authUser) return "";
+    const otherEditors = activeEditSessions.filter((session) => session.user_id !== authUser.id);
+    if (!otherEditors.length) return "";
+    const names = otherEditors.map((session) => session.user_name || session.user_email || "Another user");
+    const entityLabel = currentEditTarget.entityType === "recipe" ? "recipe" : "menu";
+    if (names.length === 1) {
+      return `${names[0]} is also editing this ${entityLabel}. Save carefully to avoid overwriting their changes.`;
+    }
+    return `${names.join(", ")} are also editing this ${entityLabel}. Save carefully to avoid overwriting their changes.`;
+  }, [activeEditSessions, authUser, currentEditTarget]);
   const dashboardInventoryRecipes = useMemo(() => {
     if (menuDashboardVenue === "all") return [];
     return recipes.filter(
@@ -9022,6 +9112,7 @@ function App() {
                 Icon={Icon}
                 DecimalInput={DecimalInput}
                 selectedRecipe={selectedRecipe}
+                editWarning={currentEditTarget?.entityType === "recipe" ? currentEditWarning : ""}
                 importMessage={importMessage}
                 importError={importError}
                 setBuilderMode={setBuilderMode}
@@ -9132,6 +9223,7 @@ function App() {
             focusMenuDashboardVenue={focusMenuDashboardVenue}
             dashboardInventoryRecipes={dashboardInventoryRecipes}
             dashboardMenu={dashboardMenu}
+            dashboardEditWarning={currentEditTarget?.entityType === "menu" ? currentEditWarning : ""}
             updateMenuField={updateMenuField}
             publishRecipeToServiceMenu={publishRecipeToServiceMenu}
             publishRecipesToServiceMenus={publishRecipesToServiceMenus}

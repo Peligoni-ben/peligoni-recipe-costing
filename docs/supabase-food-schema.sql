@@ -135,3 +135,16 @@ create table if not exists public.bch_audit (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+create table if not exists public.edit_sessions (
+  id text primary key,
+  entity_type text not null,
+  entity_id text not null,
+  user_id uuid not null,
+  user_email text,
+  user_name text,
+  last_seen_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists edit_sessions_entity_idx on public.edit_sessions (entity_type, entity_id);

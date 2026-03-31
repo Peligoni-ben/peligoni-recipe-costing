@@ -39,6 +39,7 @@ export default function MenusTab({
   focusMenuDashboardVenue,
   dashboardInventoryRecipes,
   dashboardMenu,
+  dashboardEditWarning,
   updateMenuField,
   publishRecipeToServiceMenu,
   publishRecipesToServiceMenus,
@@ -332,6 +333,7 @@ export default function MenusTab({
             <Card>
               {dashboardMenu ? (
                 <>
+                  {dashboardEditWarning ? <p className="support-text error-text">{dashboardEditWarning}</p> : null}
                   <div className="card-header">
                     <div>
                       <div className="eyebrow">Current menu</div>
