@@ -36,6 +36,7 @@ export default function IngredientsTab({
   normalizeExistingNames,
   recipes,
   createMissingIngredientRowsFromRecipes,
+  refreshRecipeComponentSources,
   syncBatchIngredientsWithRecipes,
   exportIngredientMaster,
   downloadIngredientTemplate,
@@ -378,6 +379,14 @@ export default function IngredientsTab({
                 disabled={!recipes.length}
               >
                 Create missing from recipes
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={refreshRecipeComponentSources}
+                disabled={!recipes.length}
+              >
+                Refresh recipe units and costs
               </button>
               <button
                 type="button"

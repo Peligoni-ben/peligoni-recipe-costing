@@ -152,7 +152,7 @@ function getIngredientSignature({ ingredient_name = "", ingredient_item_code = "
 function parsePackSizeParts(value) {
   const match = String(value || "")
     .trim()
-    .match(/^(\d+(?:\.\d+)?)\s*(g|kg)?$/i);
+    .match(/^(\d+(?:\.\d+)?)\s*(g|kg|ml|l)?$/i);
 
   return {
     value: match?.[1] || "",
@@ -184,11 +184,12 @@ function getIngredientPricingSource(ingredient) {
   }
 
   if (packValue > 0) {
-    const totalGrams = packParts.unit === "kg" ? packValue * 1000 : packValue;
-    if (totalGrams > 0) {
+    const isLiquid = packParts.unit === "ml" || packParts.unit === "l";
+    const totalBaseUnits = packParts.unit === "kg" || packParts.unit === "l" ? packValue * 1000 : packValue;
+    if (totalBaseUnits > 0) {
       return {
-        sourceUnitCost: (grossUnitCost / totalGrams) * 1000,
-        sourceYieldType: "kg",
+        sourceUnitCost: (grossUnitCost / totalBaseUnits) * 1000,
+        sourceYieldType: isLiquid ? "l" : "kg",
       };
     }
   }
@@ -5116,7 +5117,7 @@ function App() {
     const inferredRestaurant = restaurant !== "all" && restaurant !== "Batch" ? restaurant : "";
     const name = ingredient.ingredient_name?.trim() || `New Batch ${next}`;
     const sellingItemCode = ingredient.ingredient_item_code?.trim() || `BATCH${next}`;
-    const newRecipe = enrichRecipeMetrics({
+  const newRecipe = enrichRecipeMetrics({
       id: `BATCH-${next}`,
       sourceRow: "",
       restaurant: inferredRestaurant,
@@ -5133,8 +5134,12 @@ function App() {
       pricingComplete: "1",
       recipeType: "batch",
       portionCount: 1,
-      batchYield: numberValue(ingredient.pack_size) > 0 ? numberValue(ingredient.pack_size) : 1,
-      batchYieldType: "portion",
+      batchYield: numberValue(parsePackSizeParts(ingredient.pack_size).value) > 0
+        ? numberValue(parsePackSizeParts(ingredient.pack_size).value)
+        : 1,
+      batchYieldType: ["g", "kg", "ml", "l"].includes(parsePackSizeParts(ingredient.pack_size).unit)
+        ? parsePackSizeParts(ingredient.pack_size).unit
+        : "portion",
       method: "",
       methodSteps: [],
       presentationNotes: "",
@@ -5849,6 +5854,16 @@ function App() {
       addedRows > 0
         ? `Added ${addedRows} missing ingredient row${addedRows === 1 ? "" : "s"} from recipes and batches (${addedIngredientRows} ingredient, ${addedBatchRows} batch) and locked the ingredient master.`
         : "No missing ingredient rows were found in the current recipes and batches. Locked the ingredient master."
+    );
+  };
+
+  const refreshRecipeComponentSources = () => {
+    if (requireEditAccess()) return;
+    const refreshedRecipes = syncIngredientReferences(recipes, ingredientMaster);
+    setRecipes(refreshedRecipes);
+    setIngredientUploadError("");
+    setIngredientUploadMessage(
+      "Refreshed recipe component source costs and units from the current ingredient master and batch recipes."
     );
   };
 
@@ -6603,6 +6618,8 @@ function App() {
             >
               <option value="g">g</option>
               <option value="kg">kg</option>
+              <option value="ml">ml</option>
+              <option value="l">l</option>
             </select>
           </div>
         ) : (
@@ -8933,6 +8950,7 @@ function App() {
               normalizeExistingNames={normalizeExistingNames}
               recipes={recipes}
               createMissingIngredientRowsFromRecipes={createMissingIngredientRowsFromRecipes}
+              refreshRecipeComponentSources={refreshRecipeComponentSources}
               syncBatchIngredientsWithRecipes={syncBatchIngredientsWithRecipes}
               exportIngredientMaster={exportIngredientMaster}
               downloadIngredientTemplate={downloadIngredientTemplate}
@@ -9935,6 +9953,8 @@ function App() {
                           >
                             <option value="g">g</option>
                             <option value="kg">kg</option>
+                            <option value="ml">ml</option>
+                            <option value="l">l</option>
                           </select>
                         </div>
                       </label>
