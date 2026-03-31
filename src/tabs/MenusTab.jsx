@@ -47,6 +47,7 @@ export default function MenusTab({
   getMenuServicePeriod,
   focusMenuBuilder,
   updateMenuLine,
+  saveMenuChanges,
   importMessage,
   importError,
 }) {
@@ -220,6 +221,9 @@ export default function MenusTab({
                       <p>{dashboardMenu.restaurant}</p>
                     </div>
                     <div className="badge-row compact">
+                      <button type="button" className="primary-button" onClick={saveMenuChanges}>
+                        Save menu
+                      </button>
                       <button type="button" className="secondary-button" onClick={() => openMenuSheetPreview(dashboardMenu)}>
                         Open menu sheet
                       </button>

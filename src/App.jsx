@@ -9072,6 +9072,7 @@ function App() {
             getMenuServicePeriod={getMenuServicePeriod}
             focusMenuBuilder={focusMenuBuilder}
             updateMenuLine={updateMenuLine}
+            saveMenuChanges={saveMenuChanges}
             importMessage={importMessage}
             importError={importError}
           />
