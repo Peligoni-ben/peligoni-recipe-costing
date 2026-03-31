@@ -3557,17 +3557,34 @@ function App() {
 
   const updateUserRole = async (profileId, role) => {
     if (!supabaseEnabled || !supabase || currentUserRole !== "manager") return;
+    const accessToken = authSession?.access_token;
+    if (!accessToken || !supabaseUrl || !supabaseAnonKey) {
+      setUserAdminError("Could not verify the signed-in session for updating roles. Please sign out and back in.");
+      return;
+    }
 
     setUserAdminError("");
     setUserAdminMessage("");
 
-    const { error } = await supabase
-      .from("profiles")
-      .update({ role, updated_at: new Date().toISOString() })
-      .eq("id", profileId);
+    const response = await fetch(`${supabaseUrl}/rest/v1/profiles?id=eq.${encodeURIComponent(profileId)}`, {
+      method: "PATCH",
+      headers: {
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation",
+      },
+      body: JSON.stringify({
+        role,
+        updated_at: new Date().toISOString(),
+      }),
+    });
 
-    if (error) {
-      setUserAdminError(`Could not update user role: ${error.message}`);
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      setUserAdminError(
+        `Could not update user role: ${payload?.message || payload?.error || `Request failed with ${response.status}`}`
+      );
       return;
     }
 
