@@ -3307,6 +3307,8 @@ function App() {
   const [authProfile, setAuthProfile] = useState(null);
   const [userProfiles, setUserProfiles] = useState([]);
   const [authLoading, setAuthLoading] = useState(supabaseEnabled);
+  const [sharedDataRefreshing, setSharedDataRefreshing] = useState(supabaseEnabled);
+  const [sharedDashboardSnapshot, setSharedDashboardSnapshot] = useState(null);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
@@ -3537,6 +3539,7 @@ function App() {
     if (authLoading || !authUser) return;
 
     try {
+      setSharedDataRefreshing(true);
       const [
         { data: venueRows, error: venueError },
         { data: ingredientRows, error: ingredientError },
@@ -3634,8 +3637,10 @@ function App() {
       setBackendStatus("Supabase connected");
     } catch (error) {
       setBackendStatus("Supabase connected, but shared data could not be loaded yet");
+    } finally {
+      setSharedDataRefreshing(false);
     }
-  }, [authLoading, authUser, bchAuditDecisions, dishIndexRows, ingredientMaster]);
+  }, [authLoading, authUser, ingredientMaster]);
 
   useEffect(() => {
     refreshSharedData();
@@ -3859,6 +3864,7 @@ function App() {
   }, [deletedIngredientSignatures]);
 
   useEffect(() => {
+    if (supabaseEnabled) return;
     const deletedSet = new Set(deletedIngredientSignatures);
     setIngredientMaster((current) => {
       const seeded = seedImportedIngredientRows(current, recipes, deletedSet);
@@ -4720,6 +4726,37 @@ function App() {
     [dishIndexRowsWithMatches]
   );
   const queueTotal = queueRecipes.length + queueIngredients.length + queueDishIndex.length;
+  useEffect(() => {
+    if (supabaseEnabled && sharedDataRefreshing) return;
+    setSharedDashboardSnapshot({
+      queueTotal,
+      summaryRecipeCount: summary.recipeCount,
+      reviewNeedsReview: reviewCounts.needsReview,
+      reviewLive: reviewCounts.live,
+      queueRecipes: queueRecipes.length,
+      queueIngredients: queueIngredients.length,
+      queueDishIndex: queueDishIndex.length,
+      bchAuditTotal: bchAuditSummary.total,
+    });
+  }, [
+    bchAuditSummary.total,
+    queueDishIndex.length,
+    queueIngredients.length,
+    queueRecipes.length,
+    queueTotal,
+    reviewCounts.live,
+    reviewCounts.needsReview,
+    sharedDataRefreshing,
+    summary.recipeCount,
+  ]);
+  const displayQueueTotal = sharedDashboardSnapshot?.queueTotal ?? queueTotal;
+  const displayRecipeCount = sharedDashboardSnapshot?.summaryRecipeCount ?? summary.recipeCount;
+  const displayNeedsReviewCount = sharedDashboardSnapshot?.reviewNeedsReview ?? reviewCounts.needsReview;
+  const displayLiveCount = sharedDashboardSnapshot?.reviewLive ?? reviewCounts.live;
+  const displayQueueRecipesCount = sharedDashboardSnapshot?.queueRecipes ?? queueRecipes.length;
+  const displayQueueIngredientsCount = sharedDashboardSnapshot?.queueIngredients ?? queueIngredients.length;
+  const displayQueueDishIndexCount = sharedDashboardSnapshot?.queueDishIndex ?? queueDishIndex.length;
+  const displayBchAuditTotal = sharedDashboardSnapshot?.bchAuditTotal ?? bchAuditSummary.total;
   const combinedIngredientCatalog = useMemo(
     () => {
       const linkedRecipeBatchIds = new Set(
@@ -8504,14 +8541,14 @@ function App() {
         <div className="stats-grid">
           <StatCard
             label="Queue items"
-            value={queueTotal}
+            value={displayQueueTotal}
             onClick={() => {
               setActiveTab("queue");
             }}
           />
           <StatCard
             label="Recipes"
-            value={summary.recipeCount}
+            value={displayRecipeCount}
             onClick={() => {
               setActiveTab("recipes");
               setReviewFilter("all");
@@ -8520,15 +8557,15 @@ function App() {
           />
           <StatCard
             label="Needs review"
-            value={reviewCounts.needsReview}
-            tone={reviewCounts.needsReview ? "negative" : ""}
+            value={displayNeedsReviewCount}
+            tone={displayNeedsReviewCount ? "negative" : ""}
             onClick={() => {
               setActiveTab("queue");
             }}
           />
           <StatCard
             label="Live dishes"
-            value={reviewCounts.live}
+            value={displayLiveCount}
             onClick={() => {
               setActiveTab("recipes");
               setReviewFilter("live");
@@ -8588,15 +8625,15 @@ function App() {
         {activeTab === "queue" && (
           <div className="tab-panel">
             <div className="stats-grid">
-              <StatCard label="Recipes to review" value={queueRecipes.length} onClick={() => setActiveTab("recipes")} />
+              <StatCard label="Recipes to review" value={displayQueueRecipesCount} onClick={() => setActiveTab("recipes")} />
               <StatCard
                 label="Ingredients to review"
-                value={queueIngredients.length}
+                value={displayQueueIngredientsCount}
                 onClick={() => openIngredientsWorkspace()}
               />
               <StatCard
                 label="Dish matches to resolve"
-                value={queueDishIndex.length}
+                value={displayQueueDishIndexCount}
                 onClick={() => {
                   setShowArchivedDishIndexRows(false);
                   setActiveTab("dish-index");
@@ -8604,11 +8641,11 @@ function App() {
               />
               <StatCard
                 label="BCH audit items"
-                value={bchAuditSummary.total}
+                value={displayBchAuditTotal}
                 tone={bchAuditSummary.missing || bchAuditSummary.needsReview ? "warning" : ""}
                 onClick={() => setActiveTab("bch-audit")}
               />
-              <StatCard label="Live dishes" value={reviewCounts.live} onClick={() => {
+              <StatCard label="Live dishes" value={displayLiveCount} onClick={() => {
                 setActiveTab("recipes");
                 setReviewFilter("live");
               }} />
