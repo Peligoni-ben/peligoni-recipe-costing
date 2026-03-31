@@ -3198,18 +3198,22 @@ function getBaselineMenus(recipes) {
 
 function App() {
   const [recipes, setRecipes] = useState(() => {
-    return getBaselineRecipes();
+    return supabaseEnabled ? [] : getBaselineRecipes();
   });
   const [menus, setMenus] = useState(() => {
-    return getBaselineMenus(getBaselineRecipes());
+    return supabaseEnabled ? [] : getBaselineMenus(getBaselineRecipes());
   });
   const [venues, setVenues] = useState(() => {
+    if (supabaseEnabled) {
+      return [...DEFAULT_VENUES];
+    }
     const storedVenues = loadStoredCollection(VENUES_STORAGE_KEY)
       .map((venue) => normalizeVenueName(String(venue || "").trim()))
       .filter(Boolean);
     return Array.from(new Set([...DEFAULT_VENUES, ...storedVenues]));
   });
   const [dishIndexRows, setDishIndexRows] = useState(() => {
+    if (supabaseEnabled) return [];
     const storedDishIndex = loadStoredCollection(DISH_INDEX_STORAGE_KEY);
     return Array.isArray(storedDishIndex)
       ? storedDishIndex.map((row) => ({
@@ -3226,11 +3230,12 @@ function App() {
       : [];
   });
   const [bchAuditDecisions, setBchAuditDecisions] = useState(() => {
+    if (supabaseEnabled) return [];
     const stored = loadStoredCollection(BCH_AUDIT_STORAGE_KEY);
     return Array.isArray(stored) ? stored : [];
   });
   const [recipeAvailableVenues, setRecipeAvailableVenues] = useState(() =>
-    loadStoredObject(RECIPE_AVAILABLE_VENUES_STORAGE_KEY)
+    supabaseEnabled ? {} : loadStoredObject(RECIPE_AVAILABLE_VENUES_STORAGE_KEY)
   );
   const [deletedIngredientSignatures, setDeletedIngredientSignatures] = useState(() => {
     const stored = loadStoredCollection(DELETED_INGREDIENT_SIGNATURES_STORAGE_KEY);
@@ -3240,7 +3245,7 @@ function App() {
   const [search, setSearch] = useState("");
   const [restaurant, setRestaurant] = useState("all");
   const [selectedRecipeId, setSelectedRecipeId] = useState(recipes[0]?.id || null);
-  const [ingredientMaster, setIngredientMaster] = useState(() => loadIngredientMaster());
+  const [ingredientMaster, setIngredientMaster] = useState(() => (supabaseEnabled ? [] : loadIngredientMaster()));
   const [ingredientUploadMessage, setIngredientUploadMessage] = useState("");
   const [ingredientUploadError, setIngredientUploadError] = useState("");
   const [ingredientReturnTarget, setIngredientReturnTarget] = useState(null);
@@ -3421,21 +3426,26 @@ function App() {
   };
 
   useEffect(() => {
+    if (supabaseEnabled) return;
     window.localStorage.setItem(INGREDIENT_MASTER_STORAGE_KEY, JSON.stringify(ingredientMaster));
   }, [ingredientMaster]);
 
   useEffect(() => {
+    if (supabaseEnabled) return;
     window.localStorage.setItem(RECIPES_STORAGE_KEY, JSON.stringify(recipes));
   }, [recipes]);
   useEffect(() => {
+    if (supabaseEnabled) return;
     saveStoredCollection(RECIPE_AVAILABLE_VENUES_STORAGE_KEY, recipeAvailableVenues);
   }, [recipeAvailableVenues]);
 
   useEffect(() => {
+    if (supabaseEnabled) return;
     window.localStorage.setItem(MENUS_STORAGE_KEY, JSON.stringify(menus));
   }, [menus]);
 
   useEffect(() => {
+    if (supabaseEnabled) return;
     window.localStorage.setItem(VENUES_STORAGE_KEY, JSON.stringify(venues));
   }, [venues]);
 
@@ -3690,10 +3700,12 @@ function App() {
   }, [activeTab, authUser, currentUserRole]);
 
   useEffect(() => {
+    if (supabaseEnabled) return;
     window.localStorage.setItem(DISH_INDEX_STORAGE_KEY, JSON.stringify(dishIndexRows));
   }, [dishIndexRows]);
 
   useEffect(() => {
+    if (supabaseEnabled) return;
     window.localStorage.setItem(BCH_AUDIT_STORAGE_KEY, JSON.stringify(bchAuditDecisions));
   }, [bchAuditDecisions]);
 
@@ -6105,7 +6117,9 @@ function App() {
 
   const saveIngredientMasterChanges = async () => {
     if (requireEditAccess()) return;
-    saveStoredCollection(INGREDIENT_MASTER_STORAGE_KEY, ingredientMaster);
+    if (!supabaseEnabled) {
+      saveStoredCollection(INGREDIENT_MASTER_STORAGE_KEY, ingredientMaster);
+    }
     setRecipes((current) => syncIngredientReferences(current, ingredientMaster));
     setIngredientUploadError("");
     setIngredientUploadMessage(`Saved ${ingredientMaster.length} ingredient rows and refreshed linked recipe costs.`);
@@ -6229,7 +6243,9 @@ function App() {
 
     const syncedRecipes = syncIngredientReferences(recipes, ingredientMaster);
     setRecipes(syncedRecipes);
-    saveStoredCollection(RECIPES_STORAGE_KEY, syncedRecipes);
+    if (!supabaseEnabled) {
+      saveStoredCollection(RECIPES_STORAGE_KEY, syncedRecipes);
+    }
     const syncedSelectedRecipe =
       syncedRecipes.find((recipe) => recipe.id === selectedRecipe.id) || selectedRecipe;
 
@@ -6288,7 +6304,9 @@ function App() {
 
   const saveMenuChanges = async () => {
     if (requireEditAccess()) return;
-    saveStoredCollection(MENUS_STORAGE_KEY, menus);
+    if (!supabaseEnabled) {
+      saveStoredCollection(MENUS_STORAGE_KEY, menus);
+    }
     setImportError("");
     setImportMessage(
       `Saved ${selectedMenu?.name || "menu"}${selectedMenu?.restaurant ? ` for ${selectedMenu.restaurant}` : ""}.`
