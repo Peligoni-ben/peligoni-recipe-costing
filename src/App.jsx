@@ -2619,17 +2619,13 @@ function buildRecipeCostSheetHtml(recipe, componentRows) {
           <td>${escapeHtml(row.ingredientCode || "")}</td>
           <td>${escapeHtml(row.description || "")}</td>
           <td>${escapeHtml(row.unitOfMeasure || "")}</td>
-          <td class="numeric">${escapeHtml(row.unitPrice || "")}</td>
+          <td class="numeric">${escapeHtml(money(row.unitPrice || 0))}</td>
           <td class="numeric">${escapeHtml(row.quantityUsed || "")}</td>
-          <td class="numeric">${escapeHtml(row.cost || "")}</td>
+          <td class="numeric">${escapeHtml(money(row.cost || 0))}</td>
         </tr>
       `
     )
     .join("");
-
-  const totalQuantity = formatQuantityCell(
-    componentRows.reduce((sum, row) => sum + numberValue(row.rawQty), 0)
-  );
 
   return `<!doctype html>
     <html lang="en">
@@ -2697,14 +2693,14 @@ function buildRecipeCostSheetHtml(recipe, componentRows) {
               <th>Ingr. Code</th>
               <th>Descr Code</th>
               <th>Unit of meas.</th>
-              <th>Price per kilo</th>
-              <th>Quantity used in the recipe</th>
+              <th>Unit price</th>
+              <th>Qty used</th>
               <th>Cost</th>
             </tr>
             ${componentRowsHtml}
             <tr>
               <td colspan="4" class="total-label">Total</td>
-              <td class="numeric total-number">${escapeHtml(totalQuantity)}</td>
+              <td class="numeric total-number">Mixed units</td>
               <td class="numeric total-number">${escapeHtml(money(recipe.recipeCost))}</td>
             </tr>
           </table>
@@ -2726,26 +2722,82 @@ function buildRecipeCostSheetCsv(recipe, componentRows) {
 
   const rows = [
     ["Recipe code", recipe.id || "", "Descr.", recipe.name || "", "Item code", recipe.sellingItemCode || ""],
-    ["Ingr. Code", "Descr Code", "Unit of meas.", "Unit price (EUR)", "Quantity used in the recipe", "Cost (EUR)"],
+    ["Ingr. Code", "Descr Code", "Unit of meas.", "Unit price (EUR)", "Qty used", "Cost (EUR)"],
     ...componentRows.map((row) => [
       row.ingredientCode || "",
       row.description || "",
       row.unitOfMeasure || "",
-      csvMoney(row.unitPrice),
+      csvMoney(row.unitPrice || 0),
       row.quantityUsed || "",
-      csvMoney(row.cost),
+      csvMoney(row.cost || 0),
     ]),
     [
       "Total",
       "",
       "",
       "",
-      formatQuantityCell(componentRows.reduce((sum, row) => sum + numberValue(row.rawQty), 0)),
+      "Mixed units",
       csvMoney(recipe.recipeCost),
     ],
   ];
 
   return rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
+}
+
+function getSourceUnitLabel(sourceYieldType = "", matchedIngredient = null) {
+  return sourceYieldType === "kg"
+    ? "Kg"
+    : sourceYieldType === "g"
+      ? "g"
+      : sourceYieldType === "l"
+        ? "L"
+        : sourceYieldType === "ml"
+          ? "ml"
+          : sourceYieldType === "portion"
+            ? "Portion"
+            : sourceYieldType === "tray"
+              ? "Tray"
+              : sourceYieldType === "jar"
+                ? "Jar"
+                : sourceYieldType === "bottle"
+                  ? "Bottle"
+                  : matchedIngredient
+                    ? "Kg"
+                    : "Pcs";
+}
+
+function getComponentQuantityUnitLabel(sourceYieldType = "", matchedIngredient = null) {
+  if (sourceYieldType === "kg" || sourceYieldType === "g") return "g";
+  if (sourceYieldType === "l" || sourceYieldType === "ml") return "ml";
+  if (sourceYieldType === "portion") return "portion";
+  if (sourceYieldType === "tray") return "tray";
+  if (sourceYieldType === "jar") return "jar";
+  if (sourceYieldType === "bottle") return "bottle";
+
+  if (matchedIngredient) {
+    const packUnit = parsePackSizeParts(matchedIngredient.pack_size).unit;
+    if (packUnit === "kg" || packUnit === "g") return "g";
+    if (packUnit === "l" || packUnit === "ml") return "ml";
+  }
+
+  return "pcs";
+}
+
+function formatCostSheetQuantity(value, sourceYieldType = "", matchedIngredient = null) {
+  const numericValue = numberValue(value);
+  if (!numericValue) return "0";
+
+  if (sourceYieldType === "kg") {
+    return `${(numericValue / 1000).toFixed(3)} kg`;
+  }
+
+  if (sourceYieldType === "l") {
+    return `${(numericValue / 1000).toFixed(3)} L`;
+  }
+
+  const quantityUnit = getComponentQuantityUnitLabel(sourceYieldType, matchedIngredient);
+  const decimals = quantityUnit === "pcs" || quantityUnit === "portion" || quantityUnit === "tray" || quantityUnit === "jar" || quantityUnit === "bottle" ? 0 : 3;
+  return `${numericValue.toFixed(decimals)} ${quantityUnit}`;
 }
 
 function fromNormalizedImport({ Recipes = [], Recipe_Components = [] }) {
@@ -7187,8 +7239,8 @@ function App() {
     }
   };
 
-  const buildRecipeCostSheetRows = (recipe) =>
-    recipe.components.map((component) => {
+  const buildRecipeCostSheetRows = (recipe) => {
+    const flattenComponent = (component, prefix = "", visitedBatchIds = new Set()) => {
       const matchedBatch =
         component.sourceRecipeId && component.sourceType === "batch"
           ? recipes.find((item) => item.id === component.sourceRecipeId) || null
@@ -7200,6 +7252,25 @@ function App() {
             normalizeMatchKey(ingredient.ingredient_name) === normalizeMatchKey(component.ingredient)
         ) || null;
 
+      if (matchedBatch && !visitedBatchIds.has(matchedBatch.id) && numberValue(matchedBatch.batchYield) > 0) {
+        const nextVisited = new Set(visitedBatchIds);
+        nextVisited.add(matchedBatch.id);
+        const scaleFactor = numberValue(component.qty) / numberValue(matchedBatch.batchYield);
+
+        return matchedBatch.components.flatMap((batchComponent) => {
+          const scaledComponent = {
+            ...batchComponent,
+            qty: numberValue(batchComponent.qty) * scaleFactor,
+            cost: numberValue(batchComponent.cost) * scaleFactor,
+          };
+          return flattenComponent(
+            scaledComponent,
+            `${prefix}${matchedBatch.name || component.ingredient || "Batch"} > `,
+            nextVisited
+          );
+        });
+      }
+
       const sourceYieldType =
         component.sourceYieldType ||
         (matchedBatch
@@ -7207,26 +7278,6 @@ function App() {
           : matchedIngredient
             ? getIngredientPricingSource(matchedIngredient).sourceYieldType
             : "");
-      const unitOfMeasure =
-        sourceYieldType === "kg"
-          ? "Kg"
-          : sourceYieldType === "g"
-            ? "g"
-            : sourceYieldType === "l"
-              ? "L"
-              : sourceYieldType === "ml"
-                ? "ml"
-                : sourceYieldType === "portion"
-                  ? "Portion"
-                  : sourceYieldType === "tray"
-                    ? "Tray"
-                    : sourceYieldType === "jar"
-                      ? "Jar"
-                      : sourceYieldType === "bottle"
-                        ? "Bottle"
-                        : matchedIngredient
-                          ? "Kg"
-                          : "Pcs";
       const sourceUnitCost =
         numberValue(component.sourceUnitCost) ||
         (matchedBatch
@@ -7235,16 +7286,20 @@ function App() {
             ? getIngredientPricingSource(matchedIngredient).sourceUnitCost
             : 0);
 
-      return {
-        ingredientCode: component.code || "",
-        description: component.ingredient || "",
-        unitOfMeasure,
-        unitPrice: money(sourceUnitCost),
-        quantityUsed: formatQuantityCell(component.qty),
-        rawQty: component.qty,
-        cost: money(component.cost),
-      };
-    });
+      return [
+        {
+          ingredientCode: component.code || "",
+          description: `${prefix}${component.ingredient || ""}`.trim(),
+          unitOfMeasure: getSourceUnitLabel(sourceYieldType, matchedIngredient),
+          unitPrice: sourceUnitCost,
+          quantityUsed: formatCostSheetQuantity(component.qty, sourceYieldType, matchedIngredient),
+          cost: numberValue(component.cost),
+        },
+      ];
+    };
+
+    return recipe.components.flatMap((component) => flattenComponent(component));
+  };
 
   const openRecipeCostSheetForRecipe = (recipe, options = {}) => {
     const componentRows = buildRecipeCostSheetRows(recipe);
