@@ -11,6 +11,7 @@ export default function DishInventoryTab({
   openRecipeInBuilder,
   createRecipeFromDishIndex,
   openMenusForDishInventoryRow,
+  unlinkDishIndexRecipe,
 }) {
   return (
     <div className="tab-panel">
@@ -87,6 +88,15 @@ export default function DishInventoryTab({
                           >
                             Open in menus
                           </button>
+                          {row.match.recipe ? (
+                            <button
+                              type="button"
+                              className="secondary-button small"
+                              onClick={() => unlinkDishIndexRecipe(row.id)}
+                            >
+                              Unlink recipe
+                            </button>
+                          ) : null}
                         </>
                       ) : (
                         <>

@@ -631,9 +631,20 @@ function getDishIndexMatch(row, recipes) {
 }
 
 function mergeImportedDishIndexRows(currentRows, importedRows) {
-  const importedIds = new Set(importedRows.map((row) => row.id));
-  const preserved = currentRows.filter((row) => !importedIds.has(row.id));
-  return [...importedRows, ...preserved];
+  const currentById = new Map((currentRows || []).map((row) => [row.id, row]));
+  const nextImportedRows = (importedRows || []).map((row) => {
+    const existing = currentById.get(row.id);
+    if (!existing) return row;
+    return {
+      ...row,
+      linkedRecipeId: existing.linkedRecipeId || "",
+      reviewState: existing.reviewState || "",
+      isArchived: Boolean(existing.isArchived),
+    };
+  });
+  const importedIds = new Set(nextImportedRows.map((row) => row.id));
+  const preserved = (currentRows || []).filter((row) => !importedIds.has(row.id));
+  return [...nextImportedRows, ...preserved];
 }
 
 function createRecipeDraft(defaultRestaurant = "Tasi") {
@@ -1437,6 +1448,9 @@ function getBatchYieldLabel(recipe) {
 }
 
 function getLinkedBatchComponentQty(recipe, batchRecipe, fallbackQty = 0) {
+  const numericFallbackQty = numberValue(fallbackQty);
+  if (numericFallbackQty > 0) return numericFallbackQty;
+
   if (
     recipe?.recipeType !== "batch" &&
     batchRecipe?.batchYieldType === "portion" &&
@@ -1446,7 +1460,7 @@ function getLinkedBatchComponentQty(recipe, batchRecipe, fallbackQty = 0) {
     return numberValue(batchRecipe.batchYield) / numberValue(recipe.portionCount);
   }
 
-  return numberValue(fallbackQty);
+  return numericFallbackQty;
 }
 
 function getChefPortionNote(recipe) {
@@ -2322,7 +2336,37 @@ function mergeSupabaseMenusIntoCurrent(currentMenus, sharedMenus, recipes) {
 }
 
 function mergeSupabaseDishIndexRowsIntoCurrent(currentRows, sharedRows) {
-  return [...(sharedRows || [])];
+  const currentById = new Map((currentRows || []).map((row) => [row.id, row]));
+  const nextSharedRows = (sharedRows || []).map((row) => {
+    const existing = currentById.get(row.id);
+    if (!existing) return row;
+
+    const sharedHasExplicitDecision = Boolean(row.reviewState || row.linkedRecipeId || row.isArchived);
+    if (sharedHasExplicitDecision) {
+      return {
+        ...row,
+        linkedRecipeId: row.linkedRecipeId || "",
+        reviewState: row.reviewState || "",
+        isArchived: Boolean(row.isArchived),
+      };
+    }
+
+    const localHasExplicitDecision = Boolean(existing.reviewState || existing.linkedRecipeId || existing.isArchived);
+    if (!localHasExplicitDecision) {
+      return row;
+    }
+
+    return {
+      ...row,
+      linkedRecipeId: existing.linkedRecipeId || "",
+      reviewState: existing.reviewState || "",
+      isArchived: Boolean(existing.isArchived),
+    };
+  });
+
+  const sharedIds = new Set(nextSharedRows.map((row) => row.id));
+  const preserved = (currentRows || []).filter((row) => !sharedIds.has(row.id));
+  return [...nextSharedRows, ...preserved];
 }
 
 function mergeSupabaseBchAuditIntoCurrent(currentRows, sharedRows) {
@@ -3668,19 +3712,15 @@ function App() {
       }
 
       if (Array.isArray(dishIndexRowsShared) && dishIndexRowsShared.length) {
-        const nextDishIndexRows = mergeSupabaseDishIndexRowsIntoCurrent(
-          dishIndexRows,
-          dishIndexRowsShared.map(mapSupabaseDishIndexRow)
+        setDishIndexRows((current) =>
+          mergeSupabaseDishIndexRowsIntoCurrent(current, dishIndexRowsShared.map(mapSupabaseDishIndexRow))
         );
-        setDishIndexRows(nextDishIndexRows);
       }
 
       if (Array.isArray(bchAuditRowsShared) && bchAuditRowsShared.length) {
-        const nextBchAuditDecisions = mergeSupabaseBchAuditIntoCurrent(
-          bchAuditDecisions,
-          bchAuditRowsShared.map(mapSupabaseBchAuditDecision)
+        setBchAuditDecisions((current) =>
+          mergeSupabaseBchAuditIntoCurrent(current, bchAuditRowsShared.map(mapSupabaseBchAuditDecision))
         );
-        setBchAuditDecisions(nextBchAuditDecisions);
       }
 
       setBackendStatus("Supabase connected");
@@ -5318,6 +5358,16 @@ function App() {
     await updateDishIndexRow(rowId, {
       linkedRecipeId: "",
       reviewState: "no-recipe",
+    });
+    setActiveDishIndexLookupId(null);
+    setDishIndexLookupQuery("");
+  };
+
+  const unlinkDishIndexRecipe = async (rowId) => {
+    await updateDishIndexRow(rowId, {
+      linkedRecipeId: "",
+      reviewState: "no-recipe",
+      isArchived: false,
     });
     setActiveDishIndexLookupId(null);
     setDishIndexLookupQuery("");
@@ -9274,6 +9324,7 @@ function App() {
             openRecipeInBuilder={openRecipeInBuilder}
             createRecipeFromDishIndex={createRecipeFromDishIndex}
             openMenusForDishInventoryRow={openMenusForDishInventoryRow}
+            unlinkDishIndexRecipe={unlinkDishIndexRecipe}
           />
         )}
 
@@ -9767,7 +9818,7 @@ function App() {
                                 <button
                                   type="button"
                                   className="secondary-button small"
-                                  onClick={() => clearDishIndexDecision(row.id)}
+                                  onClick={() => unlinkDishIndexRecipe(row.id)}
                                 >
                                   Clear review
                                 </button>

@@ -761,7 +761,10 @@ export default function ExistingRecipeEditor({
         <div className="component-stack">
           {selectedRecipe.components.map((component) => {
             const componentIssues = getComponentIssues(selectedRecipe.validation, component.id);
-            const componentReadOnly = selectedRecipeLocked || isParentLinkedComponent(component);
+            const componentSourceManaged = isParentLinkedComponent(component);
+            const componentReadOnly = selectedRecipeLocked || componentSourceManaged;
+            const componentIngredientReadOnly = selectedRecipeLocked;
+            const componentQtyReadOnly = selectedRecipeLocked;
             const matchedBatchSource = findBatchRecipeMatch(component);
             const hasOpenableBatchSource = Boolean(matchedBatchSource);
             return (
@@ -832,7 +835,7 @@ export default function ExistingRecipeEditor({
               >
                 <RecipeIngredientLookupField
                   value={component.ingredient}
-                  disabled={componentReadOnly}
+                  disabled={componentIngredientReadOnly}
                   className={
                     getComponentFieldIssues(selectedRecipe.validation, component.id, "ingredient").length
                       ? "input-error"
@@ -842,7 +845,7 @@ export default function ExistingRecipeEditor({
                     updateComponentField(selectedRecipe.id, component.id, "ingredient", event.target.value)
                   }
                   onFocusField={() =>
-                    !componentReadOnly &&
+                    !componentIngredientReadOnly &&
                     setActiveLookup({
                       recipeId: selectedRecipe.id,
                       componentId: component.id,
@@ -911,16 +914,16 @@ export default function ExistingRecipeEditor({
                 </label>
                 <label>
                   <span>Qty (g)</span>
-                  <input
-                    disabled={componentReadOnly}
+                  <DecimalInput
+                    disabled={componentQtyReadOnly}
                     value={component.qty}
                     className={
                       getComponentFieldIssues(selectedRecipe.validation, component.id, "qty").length
                         ? "input-warn"
                         : ""
                     }
-                    onChange={(event) =>
-                      updateComponentField(selectedRecipe.id, component.id, "qty", event.target.value)
+                    onCommit={(value) =>
+                      updateComponentField(selectedRecipe.id, component.id, "qty", value)
                     }
                     placeholder={
                       component.sourceType === "batch"
@@ -965,10 +968,15 @@ export default function ExistingRecipeEditor({
                         : "Editing cost manually will disconnect this row from auto-costing."}
                     </small>
                   ) : null}
-                  {isParentLinkedComponent(component) ? (
-                    <small className="field-help field-help-info">
-                      Use `Open batch recipe` to change the parent batch and let this row update from the source.
-                    </small>
+                  {componentSourceManaged ? (
+                    <>
+                      <small className="field-help field-help-info">
+                        The batch source is linked, but you can still change the ingredient and quantity used in this recipe here.
+                      </small>
+                      <small className="field-help field-help-info">
+                        Use `Open batch recipe` to change the batch itself.
+                      </small>
+                    </>
                   ) : null}
                   {normalizeCodeKey(component.code).startsWith("BCH") && !hasOpenableBatchSource ? (
                     <small className="field-help field-help-warn">

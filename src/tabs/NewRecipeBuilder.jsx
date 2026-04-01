@@ -225,7 +225,10 @@ export default function NewRecipeBuilder({
 
         <div className="component-stack">
           {newRecipeDraft.components.map((component) => {
-            const componentReadOnly = isParentLinkedComponent(component);
+            const componentSourceManaged = isParentLinkedComponent(component);
+            const componentReadOnly = componentSourceManaged;
+            const componentIngredientReadOnly = false;
+            const componentQtyReadOnly = false;
             return (
               <RecipeComponentCard
                 key={component.id}
@@ -252,9 +255,9 @@ export default function NewRecipeBuilder({
               >
                 <RecipeIngredientLookupField
                   value={component.ingredient}
-                  disabled={componentReadOnly}
+                  disabled={componentIngredientReadOnly}
                   onChange={(event) => updateNewComponentField(component.id, "ingredient", event.target.value)}
-                  onFocusField={() => !componentReadOnly && setActiveDraftLookupId(component.id)}
+                  onFocusField={() => !componentIngredientReadOnly && setActiveDraftLookupId(component.id)}
                   onBlurField={() => {
                     window.setTimeout(() => {
                       setActiveDraftLookupId((current) => (current === component.id ? null : current));
@@ -290,10 +293,10 @@ export default function NewRecipeBuilder({
                 </label>
                 <label>
                   <span>Qty</span>
-                  <input
-                    disabled={componentReadOnly}
+                  <DecimalInput
+                    disabled={componentQtyReadOnly}
                     value={component.qty}
-                    onChange={(event) => updateNewComponentField(component.id, "qty", event.target.value)}
+                    onCommit={(value) => updateNewComponentField(component.id, "qty", value)}
                     placeholder={component.sourceType === "batch" ? `Qty (${component.sourceYieldType || "yield units"})` : "Qty"}
                   />
                   {shouldAutoCostComponent(component) ? (
@@ -310,10 +313,15 @@ export default function NewRecipeBuilder({
                     onCommit={(value) => updateNewComponentField(component.id, "cost", value)}
                     placeholder="Cost"
                   />
-                  {componentReadOnly ? (
-                    <small className="field-help">
-                      Edit the linked batch recipe instead of changing this component here.
-                    </small>
+                  {componentSourceManaged ? (
+                    <>
+                      <small className="field-help">
+                        The batch source is linked, but you can change the ingredient and quantity used in this recipe here.
+                      </small>
+                      <small className="field-help">
+                        Edit the linked batch recipe only when you want to change the batch itself.
+                      </small>
+                    </>
                   ) : shouldAutoCostComponent(component) ? (
                     <small className="field-help field-help-info">
                       Editing cost manually will disconnect this row from auto-costing.
