@@ -763,6 +763,7 @@ export default function ExistingRecipeEditor({
             const componentIssues = getComponentIssues(selectedRecipe.validation, component.id);
             const componentSourceManaged = isParentLinkedComponent(component);
             const componentReadOnly = selectedRecipeLocked || componentSourceManaged;
+            const componentDeleteReadOnly = selectedRecipeLocked;
             const componentIngredientReadOnly = selectedRecipeLocked;
             const componentQtyReadOnly = selectedRecipeLocked;
             const matchedBatchSource = findBatchRecipeMatch(component);
@@ -824,7 +825,7 @@ export default function ExistingRecipeEditor({
                     <button
                       type="button"
                       className="icon-button"
-                      disabled={componentReadOnly}
+                      disabled={componentDeleteReadOnly}
                       onClick={() => removeComponent(selectedRecipe.id, component.id)}
                       aria-label="Remove component"
                     >

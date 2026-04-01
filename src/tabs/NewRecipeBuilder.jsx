@@ -227,6 +227,7 @@ export default function NewRecipeBuilder({
           {newRecipeDraft.components.map((component) => {
             const componentSourceManaged = isParentLinkedComponent(component);
             const componentReadOnly = componentSourceManaged;
+            const componentDeleteReadOnly = false;
             const componentIngredientReadOnly = false;
             const componentQtyReadOnly = false;
             return (
@@ -245,7 +246,7 @@ export default function NewRecipeBuilder({
                   <button
                     type="button"
                     className="icon-button"
-                    disabled={componentReadOnly}
+                    disabled={componentDeleteReadOnly}
                     onClick={() => removeNewDraftComponent(component.id)}
                     aria-label="Remove component"
                   >
