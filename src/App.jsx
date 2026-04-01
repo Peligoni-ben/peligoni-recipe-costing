@@ -676,6 +676,21 @@ function mergeImportedDishIndexRows(currentRows, importedRows) {
   return [...nextImportedRows, ...preserved];
 }
 
+function resolveServiceMenuTarget(currentMenus, menuRestaurant) {
+  const exactMatch = (currentMenus || []).find((menu) => menu.restaurant === menuRestaurant) || null;
+  if (exactMatch) return exactMatch;
+
+  const baseVenue = getBaseVenueName(menuRestaurant);
+  const requestedService = getMenuServicePeriod(menuRestaurant);
+  if (!baseVenue || !requestedService) return null;
+
+  const unscopedVenueMenus = (currentMenus || []).filter(
+    (menu) => getBaseVenueName(menu.restaurant) === baseVenue && !getMenuServicePeriod(menu.restaurant)
+  );
+
+  return unscopedVenueMenus.length === 1 ? unscopedVenueMenus[0] : null;
+}
+
 function createRecipeDraft(defaultRestaurant = "Tasi") {
   return {
     restaurant: defaultRestaurant,
@@ -5374,12 +5389,21 @@ function App() {
     setRecipes((current) => [draftRecipe, ...current]);
 
     if (menuRestaurant) {
+      if (supabaseEnabled && supabase) {
+        setSelectedRecipeId(draftRecipe.id);
+        setBuilderMode("edit");
+        setActiveTab("builder");
+        setImportError("");
+        setImportMessage(`Created draft recipe ${draftRecipe.name}. Save it before adding it to ${menuRestaurant}.`);
+        return draftRecipe;
+      }
+
       const update = buildServiceMenuPublishUpdate(menus, draftRecipe, menuRestaurant, courseLabel || row.course || "");
       if (update) {
         setMenus(update.nextMenus);
         setSelectedMenuId(update.nextMenu.id);
-        setMenuDashboardVenue(getBaseVenueName(menuRestaurant));
-        setMenuDashboardService(getMenuServicePeriod(menuRestaurant) || "all");
+        setMenuDashboardVenue(getBaseVenueName(update.nextMenu.restaurant));
+        setMenuDashboardService(getMenuServicePeriod(update.nextMenu.restaurant) || "all");
         setImportError("");
         setImportMessage(`Created draft recipe and added ${draftRecipe.name} to ${update.nextMenu.name}.`);
       }
@@ -6539,6 +6563,35 @@ function App() {
     return { error };
   };
 
+  const validateRecipeIdsForSupabase = async (recipeIds) => {
+    if (!supabaseEnabled || !supabase) {
+      return { error: null, missingRecipeIds: [] };
+    }
+
+    const uniqueRecipeIds = Array.from(new Set((recipeIds || []).map((id) => String(id || "").trim()).filter(Boolean)));
+    if (!uniqueRecipeIds.length) {
+      return { error: null, missingRecipeIds: [] };
+    }
+
+    const { data, error } = await supabase.from("recipes").select("id").in("id", uniqueRecipeIds);
+    if (error) {
+      return { error, missingRecipeIds: [] };
+    }
+
+    const sharedRecipeIds = new Set((Array.isArray(data) ? data : []).map((row) => String(row.id || "").trim()));
+    const missingRecipeIds = uniqueRecipeIds.filter((id) => !sharedRecipeIds.has(id));
+
+    return { error: null, missingRecipeIds };
+  };
+
+  const validateMenuRecipeIdsForSupabase = async (menu) => {
+    if (!supabaseEnabled || !supabase || !menu) {
+      return { error: null, missingRecipeIds: [] };
+    }
+
+    return validateRecipeIdsForSupabase((menu.lines || []).map((line) => line.recipeId));
+  };
+
   const runOptionalSharedSync = async ({ enabled = true, sync, onSuccess, onError } = {}) => {
     if (!enabled || !supabaseEnabled || !supabase || typeof sync !== "function") {
       return { error: null, skipped: true };
@@ -6607,6 +6660,18 @@ function App() {
 
   const syncMenuToSupabase = async (menu) => {
     if (!supabaseEnabled || !supabase || !menu) return { error: null };
+
+    const { error: validationError, missingRecipeIds } = await validateMenuRecipeIdsForSupabase(menu);
+    if (validationError) return { error: validationError };
+    if (missingRecipeIds.length) {
+      return {
+        error: new Error(
+          `Menu contains recipe ids not yet saved to Supabase: ${missingRecipeIds.slice(0, 5).join(", ")}${
+            missingRecipeIds.length > 5 ? "..." : ""
+          }`
+        ),
+      };
+    }
 
     const menuPayload = mapMenuRowToSupabase(menu);
     const linePayload = (menu.lines || []).map((line, index) =>
@@ -8309,7 +8374,7 @@ function App() {
   const buildServiceMenuPublishUpdate = (currentMenus, recipe, menuRestaurant, courseLabel = "") => {
     if (!recipe || !menuRestaurant) return null;
 
-    const targetMenu = currentMenus.find((menu) => menu.restaurant === menuRestaurant) || {
+    const targetMenu = resolveServiceMenuTarget(currentMenus, menuRestaurant) || {
       id: `LOCAL-MENU-${String(currentMenus.length + 1).padStart(3, "0")}`,
       name: `${menuRestaurant} Menu`,
       restaurant: menuRestaurant,
@@ -8426,7 +8491,21 @@ function App() {
   const publishRecipeToServiceMenu = async (recipe, menuRestaurant, courseLabel = "") => {
     if (!recipe || !menuRestaurant) return;
     if (requireEditAccess()) return;
-    const targetMenu = menus.find((menu) => menu.restaurant === menuRestaurant) || null;
+    if (supabaseEnabled && supabase) {
+      const { error, missingRecipeIds } = await validateRecipeIdsForSupabase([recipe.id]);
+      if (error) {
+        setImportError(`Could not verify recipe before adding it to the menu: ${error.message}`);
+        setImportMessage("");
+        return;
+      }
+      if (missingRecipeIds.length) {
+        setImportError(`Save ${recipe.name || "this recipe"} to shared data before adding it to ${menuRestaurant}.`);
+        setImportMessage("");
+        return;
+      }
+    }
+
+    const targetMenu = resolveServiceMenuTarget(menus, menuRestaurant);
     if (targetMenu?.isLiveMenu) {
       setImportError(`Switch ${targetMenu.name} back to draft before changing its dishes.`);
       setImportMessage("");
@@ -8438,8 +8517,8 @@ function App() {
 
     setMenus(update.nextMenus);
     setSelectedMenuId(update.nextMenu.id);
-    setMenuDashboardVenue(getBaseVenueName(menuRestaurant));
-    setMenuDashboardService(getMenuServicePeriod(menuRestaurant) || "all");
+    setMenuDashboardVenue(getBaseVenueName(update.nextMenu.restaurant));
+    setMenuDashboardService(getMenuServicePeriod(update.nextMenu.restaurant) || "all");
     setImportError("");
 
     if (update.alreadyIncluded) {
