@@ -65,8 +65,12 @@ export default function DishInventoryTab({
                   <td>{row.course || "Uncategorised"}</td>
                   <td className="strong-cell">{row.dishName}</td>
                   <td>
-                    <Badge tone={row.match.recipe ? "positive" : "warning"}>
-                      {row.match.recipe ? "Recipe ready" : "No recipe yet"}
+                    <Badge tone={row.match.source === "invalid-batch-link" ? "negative" : row.match.recipe ? "positive" : "warning"}>
+                      {row.match.source === "invalid-batch-link"
+                        ? "Linked to batch"
+                        : row.match.recipe
+                          ? "Recipe ready"
+                          : "No recipe yet"}
                     </Badge>
                   </td>
                   <td>{row.match.recipe ? row.match.recipe.name : "Not linked"}</td>
@@ -88,15 +92,13 @@ export default function DishInventoryTab({
                           >
                             Open in menus
                           </button>
-                          {row.match.recipe ? (
-                            <button
-                              type="button"
-                              className="secondary-button small"
-                              onClick={() => unlinkDishIndexRecipe(row.id)}
-                            >
-                              Unlink recipe
-                            </button>
-                          ) : null}
+                          <button
+                            type="button"
+                            className="secondary-button small"
+                            onClick={() => unlinkDishIndexRecipe(row.id)}
+                          >
+                            Unlink recipe
+                          </button>
                         </>
                       ) : (
                         <>
@@ -114,6 +116,15 @@ export default function DishInventoryTab({
                           >
                             Open in menus
                           </button>
+                          {row.linkedRecipeId ? (
+                            <button
+                              type="button"
+                              className="secondary-button small"
+                              onClick={() => unlinkDishIndexRecipe(row.id)}
+                            >
+                              Unlink recipe
+                            </button>
+                          ) : null}
                         </>
                       )}
                     </div>

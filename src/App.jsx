@@ -113,6 +113,23 @@ function getFoodNetSalePrice(grossSalePrice) {
   return gross / (1 + FOOD_SALE_VAT_RATE);
 }
 
+function getRecipeComponentTotalCost(recipe) {
+  return (recipe?.components || []).reduce((sum, component) => sum + numberValue(component.cost), 0);
+}
+
+function getDishPortionCount(recipe) {
+  return Math.max(1, numberValue(recipe?.portionCount) || 1);
+}
+
+function getRecipeCostValue(recipe) {
+  const totalComponentCost = getRecipeComponentTotalCost(recipe);
+  if (recipe?.recipeType === "batch") {
+    return totalComponentCost;
+  }
+
+  return totalComponentCost / getDishPortionCount(recipe);
+}
+
 function normalizePurchaseVatRate(value) {
   const numericValue = numberValue(value);
   if (numericValue >= 1) {
@@ -530,6 +547,11 @@ function buildIngredientSuggestions({ query, recipes, ingredientMaster }) {
 }
 
 function getDishIndexMatch(row, recipes) {
+  const dishRecipes = (recipes || []).filter((recipe) => recipe?.recipeType !== "batch");
+  const linkedRecipe = row.linkedRecipeId
+    ? (recipes || []).find((recipe) => recipe.id === row.linkedRecipeId) || null
+    : null;
+
   if (row.reviewState === "no-recipe") {
     return {
       status: "missing",
@@ -540,17 +562,24 @@ function getDishIndexMatch(row, recipes) {
     };
   }
 
-  if (row.linkedRecipeId) {
-    const linkedRecipe = recipes.find((recipe) => recipe.id === row.linkedRecipeId) || null;
-    if (linkedRecipe) {
-      return {
-        status: "matched",
-        confidence: "manual",
-        score: 1,
-        recipe: linkedRecipe,
-        source: "manual-link",
-      };
-    }
+  if (linkedRecipe && linkedRecipe.recipeType !== "batch") {
+    return {
+      status: "matched",
+      confidence: "manual",
+      score: 1,
+      recipe: linkedRecipe,
+      source: "manual-link",
+    };
+  }
+
+  if (linkedRecipe && linkedRecipe.recipeType === "batch") {
+    return {
+      status: "invalid",
+      confidence: "manual",
+      score: 0,
+      recipe: linkedRecipe,
+      source: "invalid-batch-link",
+    };
   }
 
   const dishNameKey = normalizeMatchKey(row.dishName);
@@ -568,7 +597,7 @@ function getDishIndexMatch(row, recipes) {
     };
   }
 
-  const exactMatches = recipes.filter((recipe) => normalizeMatchKey(recipe.name) === dishNameKey);
+  const exactMatches = dishRecipes.filter((recipe) => normalizeMatchKey(recipe.name) === dishNameKey);
   const exactVenueMatch =
     exactMatches.find((recipe) => normalizeMatchKey(getBaseVenueName(getRecipeVenueLabel(recipe))) === venueKey) ||
     exactMatches[0] ||
@@ -587,7 +616,7 @@ function getDishIndexMatch(row, recipes) {
   let bestRecipe = null;
   let bestScore = 0;
 
-  recipes.forEach((recipe) => {
+  dishRecipes.forEach((recipe) => {
     const nameScore = getTokenOverlapScore(row.dishName, recipe.name);
     const venueScore =
       venueKey && normalizeMatchKey(getBaseVenueName(getRecipeVenueLabel(recipe))) === venueKey ? 0.15 : 0;
@@ -1246,7 +1275,7 @@ function derivePricingComplete(recipe) {
 }
 
 function enrichRecipeMetrics(recipe) {
-  const recipeCost = recipe.components.reduce((sum, component) => sum + numberValue(component.cost), 0);
+  const recipeCost = getRecipeCostValue(recipe);
   const roundup = recipe.recipeType === "batch" ? numberValue(recipe.roundup) : calculateRoundupTarget(recipeCost);
   const currentNetSalePrice = getFoodNetSalePrice(recipe.currentSalePrice);
   const gp = currentNetSalePrice > 0 ? (currentNetSalePrice - recipeCost) / currentNetSalePrice : 0;
@@ -2335,14 +2364,47 @@ function mergeSupabaseMenusIntoCurrent(currentMenus, sharedMenus, recipes) {
   return [...(sharedMenus || [])];
 }
 
-function mergeSupabaseDishIndexRowsIntoCurrent(currentRows, sharedRows) {
+function dishIndexDecisionSnapshot(row) {
+  return {
+    linkedRecipeId: row?.linkedRecipeId || "",
+    reviewState: row?.reviewState || "",
+    isArchived: Boolean(row?.isArchived),
+  };
+}
+
+function hasDishIndexExplicitDecision(row) {
+  return Boolean(row?.reviewState || row?.linkedRecipeId || row?.isArchived);
+}
+
+function dishIndexDecisionMatches(left, right) {
+  return (
+    (left?.linkedRecipeId || "") === (right?.linkedRecipeId || "") &&
+    (left?.reviewState || "") === (right?.reviewState || "") &&
+    Boolean(left?.isArchived) === Boolean(right?.isArchived)
+  );
+}
+
+function mergeSupabaseDishIndexRowsIntoCurrent(currentRows, sharedRows, pendingDecisionsById = new Map()) {
   const currentById = new Map((currentRows || []).map((row) => [row.id, row]));
   const nextSharedRows = (sharedRows || []).map((row) => {
     const existing = currentById.get(row.id);
     if (!existing) return row;
 
-    const sharedHasExplicitDecision = Boolean(row.reviewState || row.linkedRecipeId || row.isArchived);
-    if (sharedHasExplicitDecision) {
+    const pendingDecision = pendingDecisionsById.get(row.id) || null;
+    if (pendingDecision) {
+      if (dishIndexDecisionMatches(row, pendingDecision)) {
+        pendingDecisionsById.delete(row.id);
+      } else {
+        return {
+          ...row,
+          linkedRecipeId: existing.linkedRecipeId || "",
+          reviewState: existing.reviewState || "",
+          isArchived: Boolean(existing.isArchived),
+        };
+      }
+    }
+
+    if (hasDishIndexExplicitDecision(row)) {
       return {
         ...row,
         linkedRecipeId: row.linkedRecipeId || "",
@@ -2351,8 +2413,7 @@ function mergeSupabaseDishIndexRowsIntoCurrent(currentRows, sharedRows) {
       };
     }
 
-    const localHasExplicitDecision = Boolean(existing.reviewState || existing.linkedRecipeId || existing.isArchived);
-    if (!localHasExplicitDecision) {
+    if (!hasDishIndexExplicitDecision(existing)) {
       return row;
     }
 
@@ -3415,6 +3476,7 @@ function App() {
   const menuBuilderRef = useRef(null);
   const exportPreviewFrameRef = useRef(null);
   const previousActiveTabRef = useRef("recipes");
+  const pendingDishIndexDecisionSyncRef = useRef(new Map());
   const ingredientNavigationTargetRef = useRef(null);
   const previousIngredientsTabOpenRef = useRef(false);
   const currentUserRole =
@@ -3713,7 +3775,11 @@ function App() {
 
       if (Array.isArray(dishIndexRowsShared) && dishIndexRowsShared.length) {
         setDishIndexRows((current) =>
-          mergeSupabaseDishIndexRowsIntoCurrent(current, dishIndexRowsShared.map(mapSupabaseDishIndexRow))
+          mergeSupabaseDishIndexRowsIntoCurrent(
+            current,
+            dishIndexRowsShared.map(mapSupabaseDishIndexRow),
+            pendingDishIndexDecisionSyncRef.current
+          )
         );
       }
 
@@ -4226,7 +4292,8 @@ function App() {
   );
   const dishIndexLookupOptions = useMemo(() => {
     const query = dishIndexLookupQuery.trim().toLowerCase();
-    return [...recipes]
+    return recipes
+      .filter((recipe) => recipe.recipeType !== "batch")
       .sort((left, right) =>
         String(left.name || "").localeCompare(String(right.name || ""), undefined, {
           numeric: true,
@@ -5329,23 +5396,33 @@ function App() {
   };
 
   const updateDishIndexRow = async (rowId, updates) => {
-    let nextRow = null;
-    setDishIndexRows((current) =>
-      current.map((row) => {
-        if (row.id !== rowId) return row;
-        nextRow = { ...row, ...updates };
-        return nextRow;
-      })
-    );
-    await runOptionalSharedSync({
-      enabled: Boolean(nextRow),
+    const currentRow = dishIndexRows.find((row) => row.id === rowId) || null;
+    if (!currentRow) return;
+
+    const nextRow = { ...currentRow, ...updates };
+    setDishIndexRows((current) => current.map((row) => (row.id === rowId ? nextRow : row)));
+
+    pendingDishIndexDecisionSyncRef.current.set(rowId, dishIndexDecisionSnapshot(nextRow));
+
+    const result = await runOptionalSharedSync({
+      enabled: true,
       sync: () => syncDishIndexRowToSupabase(nextRow),
       onError: (error) =>
         setImportError(`Saved dish index change locally, but could not sync to Supabase: ${error.message}`),
     });
+
+    if (!supabaseEnabled || result?.skipped) {
+      pendingDishIndexDecisionSyncRef.current.delete(rowId);
+    }
   };
 
   const confirmDishIndexMatch = async (rowId, recipeId) => {
+    const recipe = recipes.find((item) => item.id === recipeId) || null;
+    if (!recipe || recipe.recipeType === "batch") {
+      setImportError("Dish inventory can only link to dish recipes, not batch recipes.");
+      return;
+    }
+
     await updateDishIndexRow(rowId, {
       linkedRecipeId: recipeId,
       reviewState: "confirmed",
@@ -6912,10 +6989,11 @@ function App() {
       previousIngredientsTabOpenRef.current = false;
     }
   }, [activeTab]);
-  const newRecipeDraftCost = useMemo(
-    () => newRecipeDraft.components.reduce((sum, component) => sum + numberValue(component.cost), 0),
-    [newRecipeDraft.components]
-  );
+  const newRecipeDraftCost = useMemo(() => getRecipeCostValue(newRecipeDraft), [
+    newRecipeDraft.components,
+    newRecipeDraft.portionCount,
+    newRecipeDraft.recipeType,
+  ]);
   const newRecipeDraftRoundupTarget = useMemo(
     () => (newRecipeDraft.recipeType === "batch" ? 0 : calculateRoundupTarget(newRecipeDraftCost)),
     [newRecipeDraft.recipeType, newRecipeDraftCost]
@@ -9744,14 +9822,18 @@ function App() {
                                   ? "positive"
                                   : row.match.status === "possible"
                                     ? "warning"
-                                    : "negative"
+                                    : row.match.status === "invalid"
+                                      ? "negative"
+                                      : "negative"
                               }
                             >
                               {row.match.status === "matched"
                                 ? "Matched"
                                 : row.match.status === "possible"
                                   ? "Possible"
-                                  : "Missing"}
+                                  : row.match.status === "invalid"
+                                    ? "Invalid batch link"
+                                    : "Missing"}
                             </Badge>
                             {row.match.recipe ? (
                               <div className="support-text">{row.match.recipe.name}</div>
@@ -9763,6 +9845,9 @@ function App() {
                             ) : null}
                             {row.match.source === "manual-no-recipe" ? (
                               <div className="support-text">Marked as no recipe yet</div>
+                            ) : null}
+                            {row.match.source === "invalid-batch-link" ? (
+                              <div className="support-text">Batch recipes cannot be linked here. Unlink it and choose a dish recipe instead.</div>
                             ) : null}
                             {row.isArchived ? (
                               <div className="support-text">Archived</div>
@@ -9780,7 +9865,7 @@ function App() {
                                   Open match
                                 </button>
                               ) : null}
-                              {row.match.recipe && row.match.source !== "manual-link" ? (
+                              {row.match.recipe && !["manual-link", "invalid-batch-link"].includes(row.match.source) ? (
                                 <button
                                   type="button"
                                   className="secondary-button small"
