@@ -43,6 +43,7 @@ const MENU_COURSE_PRESETS = ["Starter", "Main", "Dessert", "Side", "Small plates
 const FOOD_SALE_VAT_RATE = 0.13;
 const FOOD_TARGET_COST_RATIO = 0.3;
 const FOOD_PURCHASE_VAT_OPTIONS = [0.13, 0.24];
+const MANUAL_COMPONENT_SOURCE_TYPE = "manual";
 const DEFAULT_SERVICE_PERIODS = ["breakfast", "brunch", "lunch", "aperitivo", "dinner", "all day"];
 const DEFAULT_VENUES = [
   "Tasi",
@@ -2371,8 +2372,43 @@ function mapSupabaseBchAuditDecision(row) {
   };
 }
 
-function mergeSupabaseRecipesIntoCurrent(currentRecipes, sharedRecipes, ingredientMaster) {
-  return syncIngredientReferences(linkBatchReferences(sharedRecipes || []), ingredientMaster);
+function mergeSupabaseRecipesIntoCurrent(
+  currentRecipes,
+  sharedRecipes,
+  ingredientMaster,
+  pendingRecipesById = new Map()
+) {
+  const currentById = new Map((currentRecipes || []).map((recipe) => [recipe.id, recipe]));
+  const nextRecipesById = new Map();
+
+  (sharedRecipes || []).forEach((recipe) => {
+    const existing = currentById.get(recipe.id) || null;
+    const pendingSnapshot = pendingRecipesById.get(recipe.id) || null;
+
+    if (existing && pendingSnapshot) {
+      if (recipeSyncSnapshot(recipe) === pendingSnapshot) {
+        pendingRecipesById.delete(recipe.id);
+      } else {
+        nextRecipesById.set(recipe.id, existing);
+        return;
+      }
+    }
+
+    nextRecipesById.set(recipe.id, recipe);
+  });
+
+  currentById.forEach((recipe, recipeId) => {
+    if (!nextRecipesById.has(recipeId)) {
+      nextRecipesById.set(recipeId, recipe);
+      return;
+    }
+
+    if (pendingRecipesById.has(recipeId)) {
+      nextRecipesById.set(recipeId, recipe);
+    }
+  });
+
+  return syncIngredientReferences(linkBatchReferences(Array.from(nextRecipesById.values())), ingredientMaster);
 }
 
 function mergeSupabaseMenusIntoCurrent(currentMenus, sharedMenus, recipes) {
@@ -2385,6 +2421,42 @@ function dishIndexDecisionSnapshot(row) {
     reviewState: row?.reviewState || "",
     isArchived: Boolean(row?.isArchived),
   };
+}
+
+function recipeSyncSnapshot(recipe) {
+  return JSON.stringify({
+    id: recipe?.id || "",
+    restaurant: recipe?.restaurant || "",
+    availableVenues: Array.isArray(recipe?.availableVenues) ? recipe.availableVenues : [],
+    name: recipe?.name || "",
+    category: recipe?.category || "",
+    sellingItemCode: recipe?.sellingItemCode || "",
+    currentSalePrice: numberValue(recipe?.currentSalePrice),
+    roundup: numberValue(recipe?.roundup),
+    recipeType: recipe?.recipeType || "dish",
+    batchYield: numberValue(recipe?.batchYield),
+    batchYieldType: recipe?.batchYieldType || "",
+    portionCount: numberValue(recipe?.portionCount),
+    methodSteps: Array.isArray(recipe?.methodSteps) ? recipe.methodSteps : [],
+    presentationNotes: recipe?.presentationNotes || "",
+    recipeComplete: recipe?.recipeComplete || "",
+    pricingComplete: recipe?.pricingComplete || "",
+    isLive: Boolean(recipe?.isLive),
+    isLocked: Boolean(recipe?.isLocked),
+    workflowStage: recipe?.workflowStage || "",
+    components: (recipe?.components || []).map((component) => ({
+      id: component?.id || "",
+      sort: numberValue(component?.sort),
+      ingredient: component?.ingredient || "",
+      code: component?.code || "",
+      qty: numberValue(component?.qty),
+      cost: numberValue(component?.cost),
+      sourceType: component?.sourceType || "",
+      sourceRecipeId: component?.sourceRecipeId || "",
+      sourceUnitCost: numberValue(component?.sourceUnitCost),
+      sourceYieldType: component?.sourceYieldType || "",
+    })),
+  });
 }
 
 function hasDishIndexExplicitDecision(row) {
@@ -3127,6 +3199,10 @@ function syncIngredientReferences(recipes, ingredientMaster) {
         return component;
       }
 
+      if (component.sourceType === MANUAL_COMPONENT_SOURCE_TYPE) {
+        return component;
+      }
+
       const matchedIngredient =
         findBestIngredientMatch(ingredientMaster, component.code, component.ingredient) ||
         ingredientByCode.get(normalizeCodeKey(component.code)) ||
@@ -3491,6 +3567,7 @@ function App() {
   const menuBuilderRef = useRef(null);
   const exportPreviewFrameRef = useRef(null);
   const previousActiveTabRef = useRef("recipes");
+  const pendingRecipeSyncRef = useRef(new Map());
   const pendingDishIndexDecisionSyncRef = useRef(new Map());
   const ingredientNavigationTargetRef = useRef(null);
   const previousIngredientsTabOpenRef = useRef(false);
@@ -3761,12 +3838,16 @@ function App() {
           componentRows || [],
           mappedIngredients || ingredientMaster
         );
-        const nextRecipes = mergeSupabaseRecipesIntoCurrent(
-          baselineRecipes,
-          sharedRecipes,
-          mappedIngredients || ingredientMaster
-        );
-        setRecipes(nextRecipes);
+        let nextRecipes = [];
+        setRecipes((current) => {
+          nextRecipes = mergeSupabaseRecipesIntoCurrent(
+            current,
+            sharedRecipes,
+            mappedIngredients || ingredientMaster,
+            pendingRecipeSyncRef.current
+          );
+          return nextRecipes;
+        });
         setRecipeAvailableVenues(() =>
           Object.fromEntries(
             nextRecipes
@@ -5571,7 +5652,7 @@ function App() {
                 }
 
                 if (field === "cost" && shouldAutoCostComponent(nextComponent)) {
-                  nextComponent.sourceType = "";
+                  nextComponent.sourceType = MANUAL_COMPONENT_SOURCE_TYPE;
                   nextComponent.sourceRecipeId = "";
                   nextComponent.sourceUnitCost = 0;
                   nextComponent.sourceYieldType = "";
@@ -5893,7 +5974,7 @@ function App() {
               }
 
               if (field === "cost" && shouldAutoCostComponent(nextComponent)) {
-                nextComponent.sourceType = "";
+                nextComponent.sourceType = MANUAL_COMPONENT_SOURCE_TYPE;
                 nextComponent.sourceRecipeId = "";
                 nextComponent.sourceUnitCost = 0;
                 nextComponent.sourceYieldType = "";
@@ -6619,17 +6700,26 @@ function App() {
     if (requireEditAccess()) return;
     if (!selectedRecipe) return;
 
-    const syncedRecipes = syncIngredientReferences(recipes, ingredientMaster);
-    setRecipes(syncedRecipes);
+    let syncedRecipes = [];
+    let syncedSelectedRecipe = selectedRecipe;
+    setRecipes((current) => {
+      syncedRecipes = syncIngredientReferences(current, ingredientMaster);
+      syncedSelectedRecipe =
+        syncedRecipes.find((recipe) => recipe.id === selectedRecipe.id) || selectedRecipe;
+      return syncedRecipes;
+    });
     if (!supabaseEnabled) {
       saveStoredCollection(RECIPES_STORAGE_KEY, syncedRecipes);
     }
-    const syncedSelectedRecipe =
-      syncedRecipes.find((recipe) => recipe.id === selectedRecipe.id) || selectedRecipe;
+
+    pendingRecipeSyncRef.current.set(
+      syncedSelectedRecipe.id,
+      recipeSyncSnapshot(syncedSelectedRecipe)
+    );
 
     if (syncedSelectedRecipe.recipeType === "batch") {
       setTimeout(() => {
-        syncBatchIngredientsWithRecipes();
+        syncBatchIngredientsWithRecipes(syncedRecipes);
       }, 0);
     }
 
@@ -7503,8 +7593,8 @@ function App() {
     setRecipeLookupQuery("");
   };
 
-  const syncBatchIngredientsWithRecipes = () => {
-    const batchRecipes = recipes.filter((recipe) => recipe.recipeType === "batch");
+  const syncBatchIngredientsWithRecipes = (recipesSource = recipes) => {
+    const batchRecipes = (recipesSource || []).filter((recipe) => recipe.recipeType === "batch");
     const usedRecipeIds = new Set();
     let matchedCount = 0;
     let clearedCount = 0;
