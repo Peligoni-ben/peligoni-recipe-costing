@@ -3,7 +3,7 @@ import { useState } from "react";
 export default function BuilderTab({
   Card,
   builderMode,
-  setBuilderMode,
+  requestBuilderModeChange,
   resetNewRecipeDraft,
   newRecipeDraft,
   recipePasteText,
@@ -31,17 +31,20 @@ export default function BuilderTab({
         <button
           type="button"
           className={`tab-button ${builderMode === "edit" ? "active" : ""}`}
-          onClick={() => setBuilderMode("edit")}
+          onClick={() => requestBuilderModeChange("edit", null, "switch to edit existing")}
         >
           Edit existing
         </button>
         <button
           type="button"
           className={`tab-button ${builderMode === "create" ? "active" : ""}`}
-          onClick={() => {
-            setBuilderMode("create");
-            resetNewRecipeDraft(newRecipeDraft.recipeType || "dish");
-          }}
+          onClick={() =>
+            requestBuilderModeChange(
+              "create",
+              () => resetNewRecipeDraft(newRecipeDraft.recipeType || "dish"),
+              "switch to create new"
+            )
+          }
         >
           Create new
         </button>
@@ -50,7 +53,7 @@ export default function BuilderTab({
           className={`tab-button ${showRecipePasteTool ? "active" : ""}`}
           onClick={() => {
             setShowRecipePasteTool((current) => !current);
-            setBuilderMode("create");
+            requestBuilderModeChange("create", null, "open insert dish");
           }}
         >
           Insert dish

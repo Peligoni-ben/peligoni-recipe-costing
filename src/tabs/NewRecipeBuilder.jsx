@@ -8,7 +8,7 @@ export default function NewRecipeBuilder({
   DecimalInput,
   newRecipeDraft,
   getNextBatchCode,
-  setBuilderMode,
+  requestBuilderModeChange,
   money,
   newRecipeDraftCost,
   newRecipeDraftRoundupTarget,
@@ -52,7 +52,7 @@ export default function NewRecipeBuilder({
             <button
               type="button"
               className="secondary-button"
-              onClick={() => setBuilderMode("edit")}
+              onClick={() => requestBuilderModeChange("edit", null, "find recipe to edit")}
             >
               Find recipe to edit
             </button>

@@ -10,8 +10,8 @@ export default function ExistingRecipeEditor({
   editWarning,
   importMessage,
   importError,
-  setBuilderMode,
-  setRecipeEditLookup,
+  startNewRecipe,
+  selectRecipeForEditing,
   resetNewRecipeDraft,
   builderRecipeFilter,
   setBuilderRecipeFilter,
@@ -22,7 +22,6 @@ export default function ExistingRecipeEditor({
   clearRecipeLookup,
   filteredRecipeEditOptions,
   recipeEditLookup,
-  setSelectedRecipeId,
   money,
   numberValue,
   getBatchYieldLabel,
@@ -30,6 +29,7 @@ export default function ExistingRecipeEditor({
   selectedRecipeComponentCount,
   getRecipeVenueLabel,
   saveCurrentRecipeChanges,
+  hasUnsavedChanges,
   openRecipeCostSheetForRecipe,
   openChefSheetPreviewForRecipe,
   deleteRecipe,
@@ -109,11 +109,7 @@ export default function ExistingRecipeEditor({
             <button
               type="button"
               className="secondary-button"
-              onClick={() => {
-                setBuilderMode("create");
-                setRecipeEditLookup("");
-                resetNewRecipeDraft("dish");
-              }}
+              onClick={startNewRecipe}
             >
               Start new recipe
             </button>
@@ -122,6 +118,29 @@ export default function ExistingRecipeEditor({
         {importMessage ? <p className="support-text success-text">{importMessage}</p> : null}
         {importError ? <p className="support-text error-text">{importError}</p> : null}
         {editWarning ? <p className="support-text error-text">{editWarning}</p> : null}
+        {hasUnsavedChanges ? (
+          <div className="builder-summary-banner">
+            <div className="card-header">
+              <div>
+                <div className="eyebrow">Unsaved changes</div>
+                <h2>Save this recipe before moving on</h2>
+              </div>
+              <div className="badge-row compact">
+                <Badge tone="warn">Changes pending</Badge>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={saveCurrentRecipeChanges}
+                >
+                  Review and save
+                </button>
+              </div>
+            </div>
+            <p className="support-text">
+              Your latest recipe edits are only protected once you save them.
+            </p>
+          </div>
+        ) : null}
 
         <div className="recipe-context">
           <details className="recipe-picker" open={false}>
@@ -181,11 +200,7 @@ export default function ExistingRecipeEditor({
                       key={option.id}
                       type="button"
                       className={`lookup-option ${(recipeEditLookup || selectedRecipe.id) === option.id ? "lookup-option-active" : ""}`}
-                      onClick={() => {
-                        setRecipeEditLookup(option.id);
-                        setSelectedRecipeId(option.id);
-                        setRecipeLookupQuery("");
-                      }}
+                      onClick={() => selectRecipeForEditing(option.id)}
                     >
                       <div className="lookup-main">
                         <strong>{option.label}</strong>
@@ -250,7 +265,7 @@ export default function ExistingRecipeEditor({
               className="primary-button"
               onClick={saveCurrentRecipeChanges}
             >
-              Save {selectedRecipe.recipeType === "batch" ? "batch" : "recipe"}
+              {hasUnsavedChanges ? "Review and save" : `Save ${selectedRecipe.recipeType === "batch" ? "batch" : "recipe"}`}
             </button>
             <button
               type="button"

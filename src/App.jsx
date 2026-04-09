@@ -3542,6 +3542,9 @@ function App() {
   const [recipePasteMessage, setRecipePasteMessage] = useState("");
   const [recipePasteError, setRecipePasteError] = useState("");
   const [newVenueName, setNewVenueName] = useState("");
+  const [saveConfirmation, setSaveConfirmation] = useState(null);
+  const [saveConfirmationBusy, setSaveConfirmationBusy] = useState(false);
+  const [navigationConfirmation, setNavigationConfirmation] = useState(null);
   const [backendStatus, setBackendStatus] = useState(
     supabaseEnabled ? "Supabase connected (setup mode)" : "Local mode only"
   );
@@ -3568,6 +3571,8 @@ function App() {
   const exportPreviewFrameRef = useRef(null);
   const previousActiveTabRef = useRef("recipes");
   const pendingRecipeSyncRef = useRef(new Map());
+  const savedRecipeSnapshotsRef = useRef(new Map());
+  const pendingNavigationActionRef = useRef(null);
   const pendingDishIndexDecisionSyncRef = useRef(new Map());
   const ingredientNavigationTargetRef = useRef(null);
   const previousIngredientsTabOpenRef = useRef(false);
@@ -3847,6 +3852,11 @@ function App() {
             pendingRecipeSyncRef.current
           );
           return nextRecipes;
+        });
+        nextRecipes.forEach((recipe) => {
+          if (!pendingRecipeSyncRef.current.has(recipe.id)) {
+            savedRecipeSnapshotsRef.current.set(recipe.id, recipeSyncSnapshot(recipe));
+          }
         });
         setRecipeAvailableVenues(() =>
           Object.fromEntries(
@@ -4594,6 +4604,157 @@ function App() {
     }
     return `${names.join(", ")} are also editing this ${entityLabel}. Save carefully to avoid overwriting their changes.`;
   }, [activeEditSessions, authUser, currentEditTarget]);
+  const hasUnsavedSelectedRecipeChanges = useMemo(() => {
+    if (activeTab !== "builder" || builderMode !== "edit" || !selectedRecipe) return false;
+    const savedSnapshot = savedRecipeSnapshotsRef.current.get(selectedRecipe.id) || "";
+    if (!savedSnapshot) return false;
+    return savedSnapshot !== recipeSyncSnapshot(selectedRecipe);
+  }, [activeTab, builderMode, selectedRecipe]);
+  useEffect(() => {
+    if (!selectedRecipe) return;
+    if (!savedRecipeSnapshotsRef.current.has(selectedRecipe.id)) {
+      savedRecipeSnapshotsRef.current.set(selectedRecipe.id, recipeSyncSnapshot(selectedRecipe));
+    }
+  }, [selectedRecipe]);
+  useEffect(() => {
+    if (!hasUnsavedSelectedRecipeChanges) return undefined;
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+      return "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [hasUnsavedSelectedRecipeChanges]);
+  const openCurrentRecipeSaveConfirmation = () => {
+    if (requireEditAccess()) return;
+    if (!selectedRecipe) return;
+    const issues = selectedRecipe.validation?.issues || [];
+    const errorCount = issues.filter((issue) => issue.level === "error").length;
+    const warningCount = issues.filter((issue) => issue.level === "warn").length;
+
+    setSaveConfirmation({
+      mode: "existing",
+      title: `Save ${selectedRecipe.recipeType === "batch" ? "batch" : "recipe"}`,
+      recipeName: selectedRecipe.name || selectedRecipe.id,
+      recipeId: selectedRecipe.id,
+      recipeType: selectedRecipe.recipeType,
+      venue: getRecipeVenueLabel(selectedRecipe),
+      itemCode: selectedRecipe.sellingItemCode || "Missing",
+      componentCount: selectedRecipe.components?.length || 0,
+      reviewStatus: selectedRecipe.validation?.reviewStatus || "ready",
+      errorCount,
+      warningCount,
+      caution: currentEditTarget?.entityType === "recipe" ? currentEditWarning : "",
+      confirmLabel: `Save ${selectedRecipe.recipeType === "batch" ? "batch" : "recipe"}`,
+    });
+  };
+  const openNewRecipeSaveConfirmation = () => {
+    if (requireEditAccess()) return;
+    const recipeType = newRecipeDraft.recipeType === "batch" ? "batch" : "recipe";
+    setSaveConfirmation({
+      mode: "new",
+      title: `Create new ${recipeType}`,
+      recipeName: newRecipeDraft.name || (recipeType === "batch" ? "New Batch" : "New Dish"),
+      recipeId: recipeType === "batch" ? getNextBatchCode() : "Will be assigned on save",
+      recipeType: newRecipeDraft.recipeType,
+      venue:
+        newRecipeDraft.recipeType === "batch"
+          ? "Batch recipes are shared"
+          : newRecipeDraft.restaurant || "Missing venue",
+      itemCode:
+        newRecipeDraft.recipeType === "batch"
+          ? newRecipeDraft.sellingItemCode?.trim() || getNextBatchCode()
+          : newRecipeDraft.sellingItemCode?.trim() || "Will be assigned on save",
+      componentCount: newRecipeDraft.components?.length || 0,
+      reviewStatus: "draft",
+      errorCount: 0,
+      warningCount: 0,
+      caution: "",
+      confirmLabel: `Save new ${recipeType}`,
+    });
+  };
+  const closeSaveConfirmation = () => {
+    if (saveConfirmationBusy) return;
+    setSaveConfirmation(null);
+  };
+  const closeNavigationConfirmation = () => {
+    if (saveConfirmationBusy) return;
+    pendingNavigationActionRef.current = null;
+    setNavigationConfirmation(null);
+  };
+  const runWithUnsavedRecipeGuard = (action, contextLabel = "leave this recipe") => {
+    if (!hasUnsavedSelectedRecipeChanges) {
+      action();
+      return;
+    }
+    pendingNavigationActionRef.current = action;
+    setNavigationConfirmation({
+      title: "Unsaved recipe changes",
+      recipeName: selectedRecipe?.name || selectedRecipe?.id || "Current recipe",
+      contextLabel,
+    });
+  };
+  const requestActiveTabChange = (tabId) => {
+    if (tabId === activeTab) return;
+    runWithUnsavedRecipeGuard(() => setActiveTab(tabId), `switch to ${tabId.replace(/-/g, " ")}`);
+  };
+  const requestOpenRecipeInBuilder = (recipeId) => {
+    const targetRecipe = recipes.find((item) => item.id === recipeId) || null;
+    const targetLabel = targetRecipe?.name || recipeId || "another recipe";
+    runWithUnsavedRecipeGuard(() => openRecipeInBuilder(recipeId), `open ${targetLabel}`);
+  };
+  const requestBuilderModeChange = (mode, afterChange = null, contextLabel = "switch builder mode") => {
+    runWithUnsavedRecipeGuard(() => {
+      setBuilderMode(mode);
+      if (typeof afterChange === "function") {
+        afterChange();
+      }
+    }, contextLabel);
+  };
+  const requestSelectRecipeForEditing = (recipeId) => {
+    const targetRecipe = recipes.find((item) => item.id === recipeId) || null;
+    const targetLabel = targetRecipe?.name || recipeId || "another recipe";
+    runWithUnsavedRecipeGuard(() => {
+      setRecipeEditLookup(recipeId);
+      setSelectedRecipeId(recipeId);
+      setRecipeLookupQuery("");
+    }, `open ${targetLabel}`);
+  };
+  const confirmSaveFromModal = async () => {
+    if (!saveConfirmation || saveConfirmationBusy) return;
+    setSaveConfirmationBusy(true);
+    try {
+      if (saveConfirmation.mode === "existing") {
+        await saveCurrentRecipeChanges();
+      } else {
+        await saveNewRecipeDraft();
+      }
+      setSaveConfirmation(null);
+      if (pendingNavigationActionRef.current) {
+        const pendingAction = pendingNavigationActionRef.current;
+        pendingNavigationActionRef.current = null;
+        setNavigationConfirmation(null);
+        pendingAction();
+      }
+    } finally {
+      setSaveConfirmationBusy(false);
+    }
+  };
+  const continueWithoutSaving = () => {
+    const pendingAction = pendingNavigationActionRef.current;
+    pendingNavigationActionRef.current = null;
+    setNavigationConfirmation(null);
+    if (typeof pendingAction === "function") {
+      pendingAction();
+    }
+  };
+  const reviewAndSaveBeforeNavigation = () => {
+    setNavigationConfirmation(null);
+    openCurrentRecipeSaveConfirmation();
+  };
   useEffect(() => {
     if (!supabaseEnabled || !supabase || !authUser || !currentEditTarget) {
       setActiveEditSessions([]);
@@ -6716,6 +6877,10 @@ function App() {
       syncedSelectedRecipe.id,
       recipeSyncSnapshot(syncedSelectedRecipe)
     );
+    savedRecipeSnapshotsRef.current.set(
+      syncedSelectedRecipe.id,
+      recipeSyncSnapshot(syncedSelectedRecipe)
+    );
 
     if (syncedSelectedRecipe.recipeType === "batch") {
       setTimeout(() => {
@@ -7394,7 +7559,7 @@ function App() {
               <button
                 type="button"
                 className="secondary-button table-action-button"
-                onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
+                onClick={() => requestOpenRecipeInBuilder(row.batchLink.recipeId)}
               >
                 Open recipe
               </button>
@@ -7407,7 +7572,7 @@ function App() {
               <button
                 type="button"
                 className="secondary-button table-action-button"
-                onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
+                onClick={() => requestOpenRecipeInBuilder(row.batchLink.recipeId)}
               >
                 Open recipe
               </button>
@@ -7420,7 +7585,7 @@ function App() {
               <button
                 type="button"
                 className="secondary-button table-action-button"
-                onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
+                onClick={() => requestOpenRecipeInBuilder(row.batchLink.recipeId)}
               >
                 Open recipe
               </button>
@@ -7447,7 +7612,7 @@ function App() {
               <button
                 type="button"
                 className="secondary-button table-action-button"
-                onClick={() => openRecipeInBuilder(row.batchLink.recipeId)}
+                onClick={() => requestOpenRecipeInBuilder(row.batchLink.recipeId)}
               >
                 Open recipe
               </button>
@@ -8093,9 +8258,11 @@ function App() {
       setImportMessage("");
       return;
     }
-    openRecipeInBuilder(matchedBatch.id);
-    setImportError("");
-    setImportMessage(`Opened linked batch recipe ${matchedBatch.name}.`);
+    runWithUnsavedRecipeGuard(() => {
+      openRecipeInBuilder(matchedBatch.id);
+      setImportError("");
+      setImportMessage(`Opened linked batch recipe ${matchedBatch.name}.`);
+    }, `open ${matchedBatch.name}`);
   };
 
   const jumpToIngredientRecord = (component) => {
@@ -9018,14 +9185,14 @@ function App() {
             label="Queue items"
             value={displayQueueTotal}
             onClick={() => {
-              setActiveTab("queue");
+              requestActiveTabChange("queue");
             }}
           />
           <StatCard
             label="Recipes"
             value={displayRecipeCount}
             onClick={() => {
-              setActiveTab("recipes");
+              requestActiveTabChange("recipes");
               setReviewFilter("all");
               setRecipeListTypeFilter("all");
             }}
@@ -9035,14 +9202,14 @@ function App() {
             value={displayNeedsReviewCount}
             tone={displayNeedsReviewCount ? "negative" : ""}
             onClick={() => {
-              setActiveTab("queue");
+              requestActiveTabChange("queue");
             }}
           />
           <StatCard
             label="Live dishes"
             value={displayLiveCount}
             onClick={() => {
-              setActiveTab("recipes");
+              requestActiveTabChange("recipes");
               setReviewFilter("live");
               setRecipeListTypeFilter("dish");
             }}
@@ -9055,7 +9222,7 @@ function App() {
               key={tab.id}
               type="button"
               className={`tab-button ${activeTab === tab.id ? "active" : ""}`}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => requestActiveTabChange(tab.id)}
             >
               <Icon name={tab.icon} />
               {tab.label}
@@ -9170,7 +9337,7 @@ function App() {
                             <button
                               type="button"
                               className="secondary-button table-action-button"
-                              onClick={() => openRecipeInBuilder(recipe.id)}
+                              onClick={() => requestOpenRecipeInBuilder(recipe.id)}
                             >
                               Open recipe
                             </button>
@@ -9285,7 +9452,7 @@ function App() {
                               <button
                                 type="button"
                                 className="secondary-button table-action-button"
-                                onClick={() => openRecipeInBuilder(row.match.recipe.id)}
+                                onClick={() => requestOpenRecipeInBuilder(row.match.recipe.id)}
                               >
                                 Open match
                               </button>
@@ -9370,7 +9537,7 @@ function App() {
           <BuilderTab
             Card={Card}
             builderMode={builderMode}
-            setBuilderMode={setBuilderMode}
+            requestBuilderModeChange={requestBuilderModeChange}
             resetNewRecipeDraft={resetNewRecipeDraft}
             newRecipeDraft={newRecipeDraft}
             recipePasteText={recipePasteText}
@@ -9396,7 +9563,7 @@ function App() {
                 DecimalInput={DecimalInput}
                 newRecipeDraft={newRecipeDraft}
                 getNextBatchCode={getNextBatchCode}
-                setBuilderMode={setBuilderMode}
+                requestBuilderModeChange={requestBuilderModeChange}
                 money={money}
                 newRecipeDraftCost={newRecipeDraftCost}
                 newRecipeDraftRoundupTarget={newRecipeDraftRoundupTarget}
@@ -9420,7 +9587,7 @@ function App() {
                 updateNewMethodStep={updateNewMethodStep}
                 removeNewMethodStep={removeNewMethodStep}
                 resetNewRecipeDraft={resetNewRecipeDraft}
-                saveNewRecipeDraft={saveNewRecipeDraft}
+                saveNewRecipeDraft={openNewRecipeSaveConfirmation}
               />
             ) : selectedRecipe ? (
               <ExistingRecipeEditor
@@ -9432,8 +9599,17 @@ function App() {
                 editWarning={currentEditTarget?.entityType === "recipe" ? currentEditWarning : ""}
                 importMessage={importMessage}
                 importError={importError}
-                setBuilderMode={setBuilderMode}
-                setRecipeEditLookup={setRecipeEditLookup}
+                startNewRecipe={() =>
+                  requestBuilderModeChange(
+                    "create",
+                    () => {
+                      setRecipeEditLookup("");
+                      resetNewRecipeDraft("dish");
+                    },
+                    "start a new recipe"
+                  )
+                }
+                selectRecipeForEditing={requestSelectRecipeForEditing}
                 resetNewRecipeDraft={resetNewRecipeDraft}
                 builderRecipeFilter={builderRecipeFilter}
                 setBuilderRecipeFilter={setBuilderRecipeFilter}
@@ -9451,7 +9627,8 @@ function App() {
                 getBatchUnitCost={getBatchUnitCost}
                 selectedRecipeComponentCount={selectedRecipeComponentCount}
                 getRecipeVenueLabel={getRecipeVenueLabel}
-                saveCurrentRecipeChanges={saveCurrentRecipeChanges}
+                saveCurrentRecipeChanges={openCurrentRecipeSaveConfirmation}
+                hasUnsavedChanges={hasUnsavedSelectedRecipeChanges}
                 openRecipeCostSheetForRecipe={openRecipeCostSheetForRecipe}
                 openChefSheetPreviewForRecipe={openChefSheetPreviewForRecipe}
                 deleteRecipe={deleteRecipe}
@@ -9547,7 +9724,7 @@ function App() {
             removeRecipeFromServiceMenu={removeRecipeFromServiceMenu}
             removeRecipesFromServiceMenus={removeRecipesFromServiceMenus}
             createDraftRecipeFromDishInventory={createDraftRecipeFromDishInventory}
-            openRecipeInBuilder={openRecipeInBuilder}
+            openRecipeInBuilder={requestOpenRecipeInBuilder}
             getMenuServicePeriod={getMenuServicePeriod}
             focusMenuBuilder={focusMenuBuilder}
             updateMenuLine={updateMenuLine}
@@ -9568,7 +9745,7 @@ function App() {
             setDishInventorySearch={setDishInventorySearch}
             dishInventoryStatusFilter={dishInventoryStatusFilter}
             setDishInventoryStatusFilter={setDishInventoryStatusFilter}
-            openRecipeInBuilder={openRecipeInBuilder}
+            openRecipeInBuilder={requestOpenRecipeInBuilder}
             createRecipeFromDishIndex={createRecipeFromDishIndex}
             openMenusForDishInventoryRow={openMenusForDishInventoryRow}
             unlinkDishIndexRecipe={unlinkDishIndexRecipe}
@@ -10029,7 +10206,7 @@ function App() {
                                 <button
                                   type="button"
                                   className="secondary-button small"
-                                  onClick={() => openRecipeInBuilder(row.match.recipe.id)}
+                                  onClick={() => requestOpenRecipeInBuilder(row.match.recipe.id)}
                                 >
                                   Open match
                                 </button>
@@ -10445,7 +10622,7 @@ function App() {
                               <button
                                 type="button"
                                 className="secondary-button small"
-                                onClick={() => openRecipeInBuilder(row.resolvedBatchRecipeId)}
+                                onClick={() => requestOpenRecipeInBuilder(row.resolvedBatchRecipeId)}
                               >
                                 Open batch recipe
                               </button>
@@ -10454,7 +10631,7 @@ function App() {
                               <button
                                 type="button"
                                 className="secondary-button small"
-                                onClick={() => openRecipeInBuilder(row.usedInRecipes[0].recipeId)}
+                                onClick={() => requestOpenRecipeInBuilder(row.usedInRecipes[0].recipeId)}
                               >
                                 Open first usage
                               </button>
@@ -10476,6 +10653,145 @@ function App() {
         )}
 
       </div>
+      {navigationConfirmation && typeof document !== "undefined"
+        ? createPortal(
+            <div className="export-modal-overlay" onClick={closeNavigationConfirmation}>
+              <div className="export-modal save-confirm-modal" onClick={(event) => event.stopPropagation()}>
+                <div className="card-header">
+                  <div>
+                    <div className="eyebrow">Unsaved changes</div>
+                    <h2>{navigationConfirmation.title}</h2>
+                  </div>
+                  <div className="badge-row compact">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={closeNavigationConfirmation}
+                      disabled={saveConfirmationBusy}
+                    >
+                      Keep editing
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={continueWithoutSaving}
+                      disabled={saveConfirmationBusy}
+                    >
+                      Leave without saving
+                    </button>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={reviewAndSaveBeforeNavigation}
+                      disabled={saveConfirmationBusy}
+                    >
+                      Review and save
+                    </button>
+                  </div>
+                </div>
+                <div className="support-stack">
+                  <div className="review-box">
+                    <strong>{navigationConfirmation.recipeName}</strong>
+                    <p className="support-text">
+                      You have unsaved changes. Save before you {navigationConfirmation.contextLabel} so those edits stay in place.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+      {saveConfirmation && typeof document !== "undefined"
+        ? createPortal(
+            <div className="export-modal-overlay" onClick={closeSaveConfirmation}>
+              <div className="export-modal save-confirm-modal" onClick={(event) => event.stopPropagation()}>
+                <div className="card-header">
+                  <div>
+                    <div className="eyebrow">Save review</div>
+                    <h2>{saveConfirmation.title}</h2>
+                  </div>
+                  <div className="badge-row compact">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={closeSaveConfirmation}
+                      disabled={saveConfirmationBusy}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={confirmSaveFromModal}
+                      disabled={saveConfirmationBusy}
+                    >
+                      {saveConfirmationBusy ? "Saving..." : saveConfirmation.confirmLabel}
+                    </button>
+                  </div>
+                </div>
+                <div className="support-stack">
+                  <div className="summary-banner">
+                    <div>
+                      <span>Name</span>
+                      <strong>{saveConfirmation.recipeName}</strong>
+                    </div>
+                    <div>
+                      <span>Code</span>
+                      <strong>{saveConfirmation.itemCode}</strong>
+                    </div>
+                    <div>
+                      <span>Venue</span>
+                      <strong>{saveConfirmation.venue}</strong>
+                    </div>
+                    <div>
+                      <span>Components</span>
+                      <strong>{saveConfirmation.componentCount}</strong>
+                    </div>
+                  </div>
+                  <div className="badge-row compact">
+                    <Badge tone={saveConfirmation.recipeType === "batch" ? "default" : "good"}>
+                      {saveConfirmation.recipeType === "batch" ? "Batch" : "Dish"}
+                    </Badge>
+                    <Badge
+                      tone={
+                        saveConfirmation.reviewStatus === "needs-review"
+                          ? "bad"
+                          : saveConfirmation.reviewStatus === "warning"
+                            ? "warn"
+                            : "good"
+                      }
+                    >
+                      {saveConfirmation.reviewStatus === "needs-review"
+                        ? "Needs review"
+                        : saveConfirmation.reviewStatus === "warning"
+                          ? "Warning"
+                          : saveConfirmation.reviewStatus === "draft"
+                            ? "Draft"
+                            : "Ready"}
+                    </Badge>
+                    {saveConfirmation.errorCount ? (
+                      <Badge tone="bad">{saveConfirmation.errorCount} error{saveConfirmation.errorCount === 1 ? "" : "s"}</Badge>
+                    ) : null}
+                    {saveConfirmation.warningCount ? (
+                      <Badge tone="warn">{saveConfirmation.warningCount} warning{saveConfirmation.warningCount === 1 ? "" : "s"}</Badge>
+                    ) : null}
+                  </div>
+                  {saveConfirmation.caution ? (
+                    <div className="review-box">
+                      <strong>Save carefully</strong>
+                      <p className="support-text">{saveConfirmation.caution}</p>
+                    </div>
+                  ) : null}
+                  <p className="support-text">
+                    Review the recipe summary above, then confirm save when you are ready to write these changes.
+                  </p>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
       {exportPreview && typeof document !== "undefined"
         ? createPortal(
             <div className="export-modal-overlay" onClick={closeExportPreview}>
@@ -10529,7 +10845,7 @@ function App() {
                         type="button"
                         className="secondary-button"
                         onClick={() => {
-                          openRecipeInBuilder(quickPanelBatch.id);
+                          requestOpenRecipeInBuilder(quickPanelBatch.id);
                           setQuickPanel(null);
                         }}
                       >
