@@ -7651,6 +7651,29 @@ function App() {
     return { error: null };
   };
 
+  const deleteRecipeFromSupabase = async (recipe) => {
+    if (!supabaseEnabled || !supabase || !recipe) return { error: null };
+
+    const { error: menuLineError } = await supabase.from("menu_lines").delete().eq("recipe_id", recipe.id);
+    if (menuLineError) return { error: menuLineError };
+
+    const { error: componentError } = await supabase.from("recipe_components").delete().eq("recipe_id", recipe.id);
+    if (componentError) return { error: componentError };
+
+    if (recipe.recipeType === "batch") {
+      const { error: ingredientError } = await supabase
+        .from("ingredients")
+        .delete()
+        .eq("linked_recipe_id", recipe.id);
+      if (ingredientError) return { error: ingredientError };
+    }
+
+    const { error: recipeError } = await supabase.from("recipes").delete().eq("id", recipe.id);
+    if (recipeError) return { error: recipeError };
+
+    return { error: null };
+  };
+
   const syncRecipeCollectionToSupabase = async (recipesToSync) => {
     const syncTargets = Array.isArray(recipesToSync) ? recipesToSync.filter(Boolean) : [];
     let syncedCount = 0;
@@ -8074,7 +8097,7 @@ function App() {
     setIngredientUploadMessage("Kept that duplicate group separate for now.");
   };
 
-  const deleteRecipe = (recipe) => {
+  const deleteRecipe = async (recipe) => {
     if (requireEditAccess()) return;
     if (!recipe || recipe.isLocked) {
       setImportError("Unlock the recipe before deleting it.");
@@ -8089,23 +8112,40 @@ function App() {
     );
     if (!confirmed) return;
 
-    setRecipes((current) =>
-      syncIngredientReferences(
-        current.filter((item) => item.id !== recipe.id),
-        ingredientMaster
-      )
+    const nextIngredientMaster =
+      recipe.recipeType === "batch"
+        ? ingredientMaster.filter((ingredient) => ingredient.linked_recipe_id !== recipe.id)
+        : ingredientMaster;
+    const nextRecipes = syncIngredientReferences(
+      recipes.filter((item) => item.id !== recipe.id),
+      nextIngredientMaster
     );
-    setMenus((current) =>
-      current.map((menu) => ({
-        ...menu,
-        lines: menu.lines.filter((line) => line.recipeId !== recipe.id),
-      }))
-    );
+    const nextMenus = menus.map((menu) => ({
+      ...menu,
+      lines: menu.lines.filter((line) => line.recipeId !== recipe.id),
+    }));
+
     if (recipe.recipeType === "batch") {
-      setIngredientMaster((current) =>
-        current.filter((ingredient) => ingredient.linked_recipe_id !== recipe.id)
-      );
+      setIngredientMaster(nextIngredientMaster);
+      if (!supabaseEnabled) {
+        saveStoredCollection(INGREDIENT_MASTER_STORAGE_KEY, nextIngredientMaster);
+      }
     }
+    setRecipes(nextRecipes);
+    setMenus(nextMenus);
+    setRecipeAvailableVenues((current) => {
+      if (!current[recipe.id]) return current;
+      const nextMap = { ...current };
+      delete nextMap[recipe.id];
+      return nextMap;
+    });
+    if (!supabaseEnabled) {
+      saveStoredCollection(RECIPES_STORAGE_KEY, nextRecipes);
+      saveStoredCollection(MENUS_STORAGE_KEY, nextMenus);
+    }
+
+    pendingRecipeSyncRef.current.delete(recipe.id);
+    savedRecipeSnapshotsRef.current.delete(recipe.id);
     if (selectedRecipeId === recipe.id) {
       const nextRecipe = recipes.find((item) => item.id !== recipe.id) || null;
       setSelectedRecipeId(nextRecipe?.id || null);
@@ -8116,6 +8156,16 @@ function App() {
     }
     setImportError("");
     setImportMessage(`Deleted recipe ${recipe.name || recipe.id}.`);
+
+    await runOptionalSharedSync({
+      sync: () => deleteRecipeFromSupabase(recipe),
+      onError: (error) =>
+        setImportError(
+          `Deleted recipe locally, but could not remove it from Supabase: ${error.message}`
+        ),
+      onSuccess: () =>
+        setImportMessage(`Deleted recipe ${recipe.name || recipe.id} locally and from Supabase.`),
+    });
   };
 
   const activeIngredientDraft = useMemo(
