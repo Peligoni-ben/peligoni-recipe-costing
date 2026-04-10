@@ -2845,7 +2845,9 @@ function mergeSupabaseRecipesIntoCurrent(
 
   currentById.forEach((recipe, recipeId) => {
     if (!nextRecipesById.has(recipeId)) {
-      nextRecipesById.set(recipeId, recipe);
+      if (pendingRecipesById.has(recipeId)) {
+        nextRecipesById.set(recipeId, recipe);
+      }
       return;
     }
 
