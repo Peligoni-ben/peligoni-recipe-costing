@@ -32,6 +32,7 @@ const REQUIRED_INGREDIENT_COLUMNS = [
   "unit_cost",
 ];
 const OPTIONAL_INGREDIENT_COLUMNS = [
+  "ingredient_id",
   "purchase_vat_rate",
   "pack_size",
   "supplier",
@@ -501,9 +502,22 @@ function getPackSizeMatchScore(leftPackSize = "", rightPackSize = "") {
 }
 
 function findBestIngredientImportMatch(ingredientMaster, importedIngredient) {
+  const importedId = String(importedIngredient?.id || importedIngredient?.ingredient_id || "").trim();
   const importedCode = normalizeCodeKey(importedIngredient?.ingredient_item_code);
   const importedName = getComparableIngredientName(importedIngredient?.ingredient_name);
   const importedNameKey = normalizeMatchKey(importedName);
+
+  if (importedId) {
+    const matchedById =
+      ingredientMaster.find((ingredient) => String(ingredient?.id || "").trim() === importedId) || null;
+    if (matchedById) {
+      return {
+        ingredient: matchedById,
+        confidence: "high",
+        reason: "Matched exported ingredient row",
+      };
+    }
+  }
 
   if (importedCode) {
     const matchedByCode = ingredientMaster.reduce((bestMatch, ingredient) => {
@@ -1994,6 +2008,7 @@ function normalizeIngredientDraftPayload(ingredient, fallbackId = "") {
   return {
     ...createBlankIngredientRow(fallbackId),
     ...ingredient,
+    id: String(ingredient?.id || fallbackId || "").trim(),
     ingredient_name: toTitleCaseWords(ingredient?.ingredient_name),
     ingredient_item_code: String(ingredient?.ingredient_item_code || "").trim(),
     unit_cost: numberValue(ingredient?.unit_cost),
@@ -3063,6 +3078,7 @@ function parseCsv(text) {
 }
 
 function buildImportedIngredientRecord({
+  ingredientId = "",
   ingredientName = "",
   ingredientCode = "",
   unitCost = "",
@@ -3086,6 +3102,7 @@ function buildImportedIngredientRecord({
   const cleanedName = stripPackSizeFromText(ingredientName) || ingredientName;
 
   return {
+    id: String(ingredientId || "").trim(),
     ingredient_name: toTitleCaseWords(cleanedName),
     ingredient_item_code: String(ingredientCode || "").trim(),
     unit_cost: numberFromLooseText(unitCost),
@@ -3240,6 +3257,7 @@ function parseIngredientUploadMatrix(rows) {
       id: `ingredient-upload-${index + 1}`,
       sourceFormat: "normalized",
       source: {
+        ingredient_id: read(row, ["ingredient_id", "id"]),
         ingredient_name: read(row, "ingredient_name"),
         ingredient_item_code: read(row, "ingredient_item_code"),
         description: "",
@@ -3247,6 +3265,7 @@ function parseIngredientUploadMatrix(rows) {
         unit_cost: read(row, "unit_cost"),
       },
       ingredient: buildImportedIngredientRecord({
+        ingredientId: read(row, ["ingredient_id", "id"]),
         ingredientName: read(row, "ingredient_name"),
         ingredientCode: read(row, "ingredient_item_code"),
         unitCost: read(row, "unit_cost"),
@@ -3309,6 +3328,8 @@ function exportIngredientMaster(ingredients) {
       ingredient.ingredient_name,
       ingredient.ingredient_item_code,
       numberValue(ingredient.unit_cost),
+      ingredient.id || "",
+      normalizePurchaseVatRate(ingredient.purchase_vat_rate),
       ingredient.pack_size,
       ingredient.supplier,
       ingredient.category,
