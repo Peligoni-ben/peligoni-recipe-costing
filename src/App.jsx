@@ -2822,12 +2822,16 @@ function mergeSupabaseRecipesIntoCurrent(
   currentRecipes,
   sharedRecipes,
   ingredientMaster,
-  pendingRecipesById = new Map()
+  pendingRecipesById = new Map(),
+  pendingDeletedRecipeIds = new Set()
 ) {
   const currentById = new Map((currentRecipes || []).map((recipe) => [recipe.id, recipe]));
   const nextRecipesById = new Map();
 
   (sharedRecipes || []).forEach((recipe) => {
+    if (pendingDeletedRecipeIds.has(recipe.id)) {
+      return;
+    }
     const existing = currentById.get(recipe.id) || null;
     const pendingSnapshot = pendingRecipesById.get(recipe.id) || null;
 
@@ -2844,6 +2848,9 @@ function mergeSupabaseRecipesIntoCurrent(
   });
 
   currentById.forEach((recipe, recipeId) => {
+    if (pendingDeletedRecipeIds.has(recipeId)) {
+      return;
+    }
     if (!nextRecipesById.has(recipeId)) {
       if (pendingRecipesById.has(recipeId)) {
         nextRecipesById.set(recipeId, recipe);
@@ -4198,6 +4205,7 @@ function App() {
   const exportPreviewFrameRef = useRef(null);
   const previousActiveTabRef = useRef("recipes");
   const pendingRecipeSyncRef = useRef(new Map());
+  const pendingRecipeDeletionIdsRef = useRef(new Set());
   const savedRecipeSnapshotsRef = useRef(new Map());
   const pendingNavigationActionRef = useRef(null);
   const pendingDishIndexDecisionSyncRef = useRef(new Map());
@@ -4478,7 +4486,8 @@ function App() {
             current,
             sharedRecipes,
             hasPendingIngredientSync ? ingredientMaster : mappedIngredients || ingredientMaster,
-            pendingRecipeSyncRef.current
+            pendingRecipeSyncRef.current,
+            pendingRecipeDeletionIdsRef.current
           );
           return nextRecipes;
         });
@@ -8114,6 +8123,8 @@ function App() {
     );
     if (!confirmed) return;
 
+    pendingRecipeDeletionIdsRef.current.add(recipe.id);
+
     const nextIngredientMaster =
       recipe.recipeType === "batch"
         ? ingredientMaster.filter((ingredient) => ingredient.linked_recipe_id !== recipe.id)
@@ -8161,12 +8172,17 @@ function App() {
 
     await runOptionalSharedSync({
       sync: () => deleteRecipeFromSupabase(recipe),
-      onError: (error) =>
+      onError: (error) => {
+        pendingRecipeDeletionIdsRef.current.delete(recipe.id);
         setImportError(
           `Deleted recipe locally, but could not remove it from Supabase: ${error.message}`
-        ),
-      onSuccess: () =>
-        setImportMessage(`Deleted recipe ${recipe.name || recipe.id} locally and from Supabase.`),
+        );
+        void refreshSharedData();
+      },
+      onSuccess: () => {
+        pendingRecipeDeletionIdsRef.current.delete(recipe.id);
+        setImportMessage(`Deleted recipe ${recipe.name || recipe.id} locally and from Supabase.`);
+      },
     });
   };
 
