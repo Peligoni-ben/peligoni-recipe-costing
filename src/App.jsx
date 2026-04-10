@@ -18,6 +18,7 @@ import SetMenusTab from "./tabs/SetMenusTab";
 const INGREDIENT_MASTER_STORAGE_KEY = "peligoni-ingredient-master";
 const INGREDIENT_MASTER_PENDING_SYNC_STORAGE_KEY = "peligoni-ingredient-master-pending-sync";
 const DELETED_INGREDIENT_SIGNATURES_STORAGE_KEY = "peligoni-deleted-ingredient-signatures";
+const DISMISSED_DUPLICATE_INGREDIENT_GROUPS_STORAGE_KEY = "peligoni-dismissed-duplicate-ingredient-groups";
 const RECIPES_STORAGE_KEY = "peligoni-working-recipes";
 const MENUS_STORAGE_KEY = "peligoni-working-menus";
 const VENUES_STORAGE_KEY = "peligoni-working-venues";
@@ -4138,7 +4139,9 @@ function App() {
   const [ingredientEditLookup, setIngredientEditLookup] = useState("");
   const [ingredientEditLookupQuery, setIngredientEditLookupQuery] = useState("");
   const [ingredientEditLookupOpen, setIngredientEditLookupOpen] = useState(false);
-  const [dismissedDuplicateIngredientGroupIds, setDismissedDuplicateIngredientGroupIds] = useState([]);
+  const [dismissedDuplicateIngredientGroupIds, setDismissedDuplicateIngredientGroupIds] = useState(() =>
+    loadStoredCollection(DISMISSED_DUPLICATE_INGREDIENT_GROUPS_STORAGE_KEY).filter(Boolean)
+  );
   const [availabilitySearch, setAvailabilitySearch] = useState("");
   const [availabilityVenueFilter, setAvailabilityVenueFilter] = useState("all");
   const [selectedImportFormat, setSelectedImportFormat] = useState("flat-component-export");
@@ -4761,6 +4764,13 @@ function App() {
       JSON.stringify(deletedIngredientSignatures)
     );
   }, [deletedIngredientSignatures]);
+
+  useEffect(() => {
+    saveStoredCollection(
+      DISMISSED_DUPLICATE_INGREDIENT_GROUPS_STORAGE_KEY,
+      dismissedDuplicateIngredientGroupIds
+    );
+  }, [dismissedDuplicateIngredientGroupIds]);
 
   useEffect(() => {
     if (supabaseEnabled) return;
