@@ -2905,6 +2905,39 @@ function recipeSyncSnapshot(recipe) {
   });
 }
 
+function recipeEditSnapshot(recipe) {
+  return JSON.stringify({
+    id: recipe?.id || "",
+    restaurant: recipe?.restaurant || "",
+    availableVenues: Array.isArray(recipe?.availableVenues) ? recipe.availableVenues : [],
+    name: recipe?.name || "",
+    category: recipe?.category || "",
+    sellingItemCode: recipe?.sellingItemCode || "",
+    currentSalePrice: numberValue(recipe?.currentSalePrice),
+    roundup: numberValue(recipe?.roundup),
+    recipeType: recipe?.recipeType || "dish",
+    batchYield: numberValue(recipe?.batchYield),
+    batchYieldType: recipe?.batchYieldType || "",
+    portionCount: numberValue(recipe?.portionCount),
+    methodSteps: Array.isArray(recipe?.methodSteps) ? recipe.methodSteps : [],
+    presentationNotes: recipe?.presentationNotes || "",
+    recipeComplete: recipe?.recipeComplete || "",
+    pricingComplete: recipe?.pricingComplete || "",
+    isLive: Boolean(recipe?.isLive),
+    isLocked: Boolean(recipe?.isLocked),
+    workflowStage: recipe?.workflowStage || "",
+    components: (recipe?.components || []).map((component) => ({
+      id: component?.id || "",
+      sort: numberValue(component?.sort),
+      ingredient: component?.ingredient || "",
+      code: component?.code || "",
+      qty: numberValue(component?.qty),
+      sourceType: component?.sourceType || "",
+      sourceRecipeId: component?.sourceRecipeId || "",
+    })),
+  });
+}
+
 function hasDishIndexExplicitDecision(row) {
   return Boolean(row?.reviewState || row?.linkedRecipeId || row?.isArchived);
 }
@@ -4449,7 +4482,7 @@ function App() {
         });
         nextRecipes.forEach((recipe) => {
           if (!pendingRecipeSyncRef.current.has(recipe.id)) {
-            savedRecipeSnapshotsRef.current.set(recipe.id, recipeSyncSnapshot(recipe));
+            savedRecipeSnapshotsRef.current.set(recipe.id, recipeEditSnapshot(recipe));
           }
         });
         setRecipeAvailableVenues(() =>
@@ -5202,12 +5235,12 @@ function App() {
     if (activeTab !== "builder" || builderMode !== "edit" || !selectedRecipe) return false;
     const savedSnapshot = savedRecipeSnapshotsRef.current.get(selectedRecipe.id) || "";
     if (!savedSnapshot) return false;
-    return savedSnapshot !== recipeSyncSnapshot(selectedRecipe);
+    return savedSnapshot !== recipeEditSnapshot(selectedRecipe);
   }, [activeTab, builderMode, selectedRecipe]);
   useEffect(() => {
     if (!selectedRecipe) return;
     if (!savedRecipeSnapshotsRef.current.has(selectedRecipe.id)) {
-      savedRecipeSnapshotsRef.current.set(selectedRecipe.id, recipeSyncSnapshot(selectedRecipe));
+      savedRecipeSnapshotsRef.current.set(selectedRecipe.id, recipeEditSnapshot(selectedRecipe));
     }
   }, [selectedRecipe]);
   useEffect(() => {
@@ -7746,7 +7779,7 @@ function App() {
     );
     savedRecipeSnapshotsRef.current.set(
       syncedSelectedRecipe.id,
-      recipeSyncSnapshot(syncedSelectedRecipe)
+      recipeEditSnapshot(syncedSelectedRecipe)
     );
 
     if (syncedSelectedRecipe.recipeType === "batch") {
