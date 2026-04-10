@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import workbook from "./data/workbook-data.json";
 import { googleDriveConfigLocation } from "./imports/googleDriveConfig";
 import { listRecipeImportFormats, normalizeImportedRecipeSource } from "./imports";
-import { parseRecipeImportContents, parseRecipeImportFiles } from "./imports/parsers";
+import { parseRecipeImportContents, parseRecipeImportFiles, readXlsxWorkbookSheets } from "./imports/parsers";
 import { supportsGoogleSheetsImport, toGoogleSheetsCsvExportUrl } from "./imports/googleSheets";
 import { supabase, supabaseAnonKey, supabaseEnabled, supabaseUrl } from "./lib/supabase";
 import BuilderTab from "./tabs/BuilderTab";
@@ -16,6 +16,7 @@ import RecipesTab from "./tabs/RecipesTab";
 import SetMenusTab from "./tabs/SetMenusTab";
 
 const INGREDIENT_MASTER_STORAGE_KEY = "peligoni-ingredient-master";
+const INGREDIENT_MASTER_PENDING_SYNC_STORAGE_KEY = "peligoni-ingredient-master-pending-sync";
 const DELETED_INGREDIENT_SIGNATURES_STORAGE_KEY = "peligoni-deleted-ingredient-signatures";
 const RECIPES_STORAGE_KEY = "peligoni-working-recipes";
 const MENUS_STORAGE_KEY = "peligoni-working-menus";
@@ -183,6 +184,96 @@ function formatPackSize(value, unit) {
   const numericText = String(value || "").trim();
   if (!numericText) return "";
   return `${numericText}${unit || "g"}`;
+}
+
+function formatPackSizeNumber(value) {
+  const normalizedText = String(value || "")
+    .trim()
+    .replace(",", ".");
+  const numericValue = Number(normalizedText);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) return "";
+  return String(Number(numericValue.toFixed(3)))
+    .replace(/\.0+$/, "")
+    .replace(/(\.\d*?)0+$/, "$1");
+}
+
+function normalizePackSizeUnit(unit) {
+  const normalized = String(unit || "")
+    .trim()
+    .toLowerCase();
+
+  if (["g", "gr", "gram", "grams"].includes(normalized)) return "g";
+  if (["kg", "kilo", "kilos", "kilogram", "kilograms"].includes(normalized)) return "kg";
+  if (["ml", "millilitre", "millilitres", "milliliter", "milliliters"].includes(normalized)) return "ml";
+  if (["l", "lt", "ltr", "litre", "litres", "liter", "liters"].includes(normalized)) return "l";
+  return "";
+}
+
+function extractPackSizeFromText(...values) {
+  const text = values
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" ");
+  if (!text) return "";
+
+  const multiPackMatch = text.match(
+    /(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*(kg|g|gr|gram|grams|ml|l|lt|ltr|litre|liter|litres|liters)\b/i
+  );
+  if (multiPackMatch) {
+    const count = Number(multiPackMatch[1].replace(",", "."));
+    const size = Number(multiPackMatch[2].replace(",", "."));
+    const unit = normalizePackSizeUnit(multiPackMatch[3]);
+    const total = formatPackSizeNumber(count * size);
+    if (total && unit) {
+      return formatPackSize(total, unit);
+    }
+  }
+
+  const simpleMatch = text.match(
+    /(\d+(?:[.,]\d+)?)\s*(kg|g|gr|gram|grams|ml|l|lt|ltr|litre|liter|litres|liters)\b/i
+  );
+  if (!simpleMatch) return "";
+
+  const size = formatPackSizeNumber(simpleMatch[1]);
+  const unit = normalizePackSizeUnit(simpleMatch[2]);
+  if (!size || !unit) return "";
+  return formatPackSize(size, unit);
+}
+
+function stripPackSizeFromText(value) {
+  return String(value || "")
+    .replace(
+      /\b\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\s*(kg|g|gr|gram|grams|ml|l|lt|ltr|litre|liter|litres|liters)\b/gi,
+      " "
+    )
+    .replace(/\b\d+(?:[.,]\d+)?\s*(kg|g|gr|gram|grams|ml|l|lt|ltr|litre|liter|litres|liters)\b/gi, " ")
+    .replace(/\(\s*\)/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,/-])/g, "$1")
+    .replace(/([(/-])\s+/g, "$1")
+    .replace(/[,\-/]+$/g, "")
+    .trim();
+}
+
+function numberFromLooseText(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return 0;
+
+  const stripped = raw.replace(/[^0-9,.-]/g, "");
+  if (!stripped) return 0;
+
+  if (stripped.includes(",") && !stripped.includes(".")) {
+    return numberValue(stripped.replace(",", "."));
+  }
+
+  return numberValue(stripped.replace(/,/g, ""));
+}
+
+function normalizeIngredientUploadHeader(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0370-\u03ff]+/g, "");
 }
 
 function getIngredientPricingSource(ingredient) {
@@ -385,6 +476,135 @@ function findBestIngredientMatch(ingredientMaster, ingredientCode = "", ingredie
   }, null);
 
   return fuzzyNameMatch?.ingredient || null;
+}
+
+function getComparableIngredientName(value) {
+  const raw = String(value || "").trim();
+  return stripPackSizeFromText(raw) || raw;
+}
+
+function getPackSizeMatchScore(leftPackSize = "", rightPackSize = "") {
+  const leftParts = parsePackSizeParts(leftPackSize);
+  const rightParts = parsePackSizeParts(rightPackSize);
+  if (!leftParts.value || !rightParts.value) return 0;
+
+  if (leftParts.unit === rightParts.unit && leftParts.value === rightParts.value) {
+    return 15;
+  }
+
+  if (leftParts.unit === rightParts.unit) {
+    return 6;
+  }
+
+  return 0;
+}
+
+function findBestIngredientImportMatch(ingredientMaster, importedIngredient) {
+  const importedCode = normalizeCodeKey(importedIngredient?.ingredient_item_code);
+  const importedName = getComparableIngredientName(importedIngredient?.ingredient_name);
+  const importedNameKey = normalizeMatchKey(importedName);
+
+  if (importedCode) {
+    const matchedByCode = ingredientMaster.reduce((bestMatch, ingredient) => {
+      if (normalizeCodeKey(ingredient.ingredient_item_code) !== importedCode) return bestMatch;
+      return pickPreferredIngredientRecord(bestMatch, ingredient);
+    }, null);
+
+    if (matchedByCode) {
+      return {
+        ingredient: matchedByCode,
+        confidence: "high",
+        reason: "Matched existing item code",
+      };
+    }
+  }
+
+  if (importedNameKey) {
+    const matchedByName = ingredientMaster.reduce((bestMatch, ingredient) => {
+      if (normalizeMatchKey(getComparableIngredientName(ingredient.ingredient_name)) !== importedNameKey) {
+        return bestMatch;
+      }
+      return pickPreferredIngredientRecord(bestMatch, ingredient);
+    }, null);
+
+    if (matchedByName) {
+      return {
+        ingredient: matchedByName,
+        confidence: "high",
+        reason: "Matched existing ingredient name",
+      };
+    }
+  }
+
+  const fuzzyMatch = ingredientMaster.reduce((bestMatch, ingredient) => {
+    const score =
+      scoreIngredientSuggestion(
+        {
+          ingredient_name: getComparableIngredientName(ingredient.ingredient_name),
+          ingredient_item_code: ingredient.ingredient_item_code,
+          category: ingredient.category,
+          supplier: ingredient.supplier,
+        },
+        importedName
+      ) + getPackSizeMatchScore(importedIngredient?.pack_size, ingredient.pack_size);
+
+    if (score < 45) return bestMatch;
+    if (!bestMatch || score > bestMatch.score) {
+      return { ingredient, score };
+    }
+    if (score === bestMatch.score) {
+      return {
+        ingredient: pickPreferredIngredientRecord(bestMatch.ingredient, ingredient),
+        score,
+      };
+    }
+    return bestMatch;
+  }, null);
+
+  if (!fuzzyMatch?.ingredient) {
+    return {
+      ingredient: null,
+      confidence: "none",
+      reason: "No strong existing match found",
+    };
+  }
+
+  return {
+    ingredient: fuzzyMatch.ingredient,
+    confidence:
+      fuzzyMatch.score >= 80 ? "high" : fuzzyMatch.score >= 65 ? "medium" : "low",
+    reason:
+      fuzzyMatch.score >= 65
+        ? "Suggested from name similarity"
+        : "Weak suggestion from name similarity",
+  };
+}
+
+function hasIngredientCodeConflict(ingredients, ingredientCode = "", excludedIds = []) {
+  const codeKey = normalizeCodeKey(ingredientCode);
+  if (!codeKey) return false;
+  const excludedIdSet = new Set((excludedIds || []).filter(Boolean));
+  return (ingredients || []).some((ingredient) => {
+    if (excludedIdSet.has(ingredient?.id)) return false;
+    return normalizeCodeKey(ingredient?.ingredient_item_code) === codeKey;
+  });
+}
+
+function suggestVariantIngredientCode(ingredientCode = "", ingredients = [], excludedIds = []) {
+  const baseCode = String(ingredientCode || "").trim();
+  if (!baseCode) return "";
+  if (!hasIngredientCodeConflict(ingredients, baseCode, excludedIds)) {
+    return baseCode;
+  }
+
+  for (let suffix = 2; suffix <= 999; suffix += 1) {
+    const candidate = `${baseCode}-${suffix}`;
+    if (!hasIngredientCodeConflict(ingredients, candidate, excludedIds)) {
+      return candidate;
+    }
+  }
+
+  return `${baseCode}-${Date.now()}`;
 }
 
 function getTodayDateString() {
@@ -1767,6 +1987,136 @@ function createBlankIngredientRow(nextId) {
   };
 }
 
+function normalizeIngredientDraftPayload(ingredient, fallbackId = "") {
+  const packParts = parsePackSizeParts(ingredient?.pack_size);
+
+  return {
+    ...createBlankIngredientRow(fallbackId),
+    ...ingredient,
+    ingredient_name: toTitleCaseWords(ingredient?.ingredient_name),
+    ingredient_item_code: String(ingredient?.ingredient_item_code || "").trim(),
+    unit_cost: numberValue(ingredient?.unit_cost),
+    purchase_vat_rate: normalizePurchaseVatRate(ingredient?.purchase_vat_rate),
+    pack_size:
+      packParts.value && packParts.unit
+        ? formatPackSize(packParts.value, packParts.unit)
+        : String(ingredient?.pack_size || "").trim(),
+    supplier: String(ingredient?.supplier || "").trim(),
+    category: String(ingredient?.category || "").trim(),
+    last_updated: String(ingredient?.last_updated || "").trim(),
+    entry_type: String(ingredient?.entry_type || "ingredient").trim() || "ingredient",
+    linked_recipe_id: String(ingredient?.linked_recipe_id || "").trim(),
+    is_locked: normalizeBooleanFlag(ingredient?.is_locked),
+  };
+}
+
+function buildIngredientImportDraft(importedIngredient, matchedIngredient = null) {
+  if (!matchedIngredient) {
+    return normalizeIngredientDraftPayload(importedIngredient);
+  }
+
+  return normalizeIngredientDraftPayload({
+    ...matchedIngredient,
+    ingredient_name: importedIngredient?.ingredient_name || matchedIngredient.ingredient_name,
+    ingredient_item_code:
+      importedIngredient?.ingredient_item_code || matchedIngredient.ingredient_item_code,
+    unit_cost:
+      numberValue(importedIngredient?.unit_cost) > 0
+        ? importedIngredient.unit_cost
+        : matchedIngredient.unit_cost,
+    pack_size: importedIngredient?.pack_size || matchedIngredient.pack_size,
+    supplier: importedIngredient?.supplier || matchedIngredient.supplier,
+    category: importedIngredient?.category || matchedIngredient.category,
+    last_updated: getTodayDateString(),
+    is_locked: matchedIngredient.is_locked,
+  });
+}
+
+function createIngredientImportSession(fileName, parsedRows, ingredientMaster) {
+  return {
+    fileName,
+    createdAt: new Date().toISOString(),
+    rows: parsedRows.map((row, index) => {
+      const match = findBestIngredientImportMatch(ingredientMaster, row.ingredient);
+      const matchedIngredient = match.ingredient || null;
+
+      return {
+        id: `${row.id}-${index + 1}`,
+        sourceFormat: row.sourceFormat,
+        source: row.source,
+        importedIngredient: normalizeIngredientDraftPayload(row.ingredient),
+        strategy: matchedIngredient ? "merge" : "create",
+        targetIngredientId: matchedIngredient?.id || "",
+        matchConfidence: match.confidence,
+        matchReason: match.reason,
+        draft: buildIngredientImportDraft(row.ingredient, matchedIngredient),
+      };
+    }),
+  };
+}
+
+function applyIngredientImportRowsToMaster(currentIngredientMaster, rowsToApply) {
+  const unresolvedMerge = rowsToApply.find(
+    (row) => row.strategy === "merge" && !row.targetIngredientId
+  );
+  if (unresolvedMerge) {
+    return {
+      error: "Every merge row needs an existing ingredient target before you apply the import.",
+      nextIngredients: currentIngredientMaster,
+      mergedCount: 0,
+      createdCount: 0,
+    };
+  }
+
+  let mergedCount = 0;
+  let createdCount = 0;
+  let nextIngredients = [...currentIngredientMaster];
+
+  rowsToApply.forEach((row, index) => {
+    const nextDraft = normalizeIngredientDraftPayload({
+      ...row.draft,
+      last_updated: getTodayDateString(),
+    });
+
+    if (row.strategy === "merge" && row.targetIngredientId) {
+      const targetIngredient = nextIngredients.find((ingredient) => ingredient.id === row.targetIngredientId);
+      if (!targetIngredient) {
+        return;
+      }
+
+      nextIngredients = nextIngredients.map((ingredient) =>
+        ingredient.id === row.targetIngredientId
+          ? {
+              ...ingredient,
+              ...nextDraft,
+              id: ingredient.id,
+              is_locked: ingredient.is_locked,
+            }
+          : ingredient
+      );
+      mergedCount += 1;
+      return;
+    }
+
+    createdCount += 1;
+    nextIngredients = [
+      {
+        ...nextDraft,
+        id: `imported-ingredient-${Date.now()}-${index + 1}`,
+        is_locked: false,
+      },
+      ...nextIngredients,
+    ];
+  });
+
+  return {
+    error: "",
+    nextIngredients,
+    mergedCount,
+    createdCount,
+  };
+}
+
 function isEmptyIngredientDraftRow(ingredient) {
   if (!ingredient) return false;
   return (
@@ -1877,8 +2227,8 @@ function validateIngredient(ingredient, duplicates, batchLink) {
   if (!FOOD_PURCHASE_VAT_OPTIONS.includes(normalizePurchaseVatRate(ingredient.purchase_vat_rate))) {
     issues.push("Missing purchase VAT");
   }
-  if (duplicates.code.has(ingredient.ingredient_item_code)) issues.push("Duplicate item code");
-  if (duplicates.name.has(ingredient.ingredient_name.trim().toLowerCase())) issues.push("Duplicate ingredient name");
+  if (duplicates.code.has(normalizeCodeKey(ingredient.ingredient_item_code))) issues.push("Duplicate item code");
+  if (duplicates.name.has(normalizeMatchKey(ingredient.ingredient_name))) issues.push("Duplicate ingredient name");
   if (ingredient.entry_type === "batch" && batchLink?.status === "missing") {
     issues.push("Missing batch recipe entity");
   }
@@ -2060,6 +2410,26 @@ function saveStoredCollection(storageKey, value) {
   }
 }
 
+function loadStoredFlag(storageKey) {
+  if (typeof window === "undefined") return false;
+
+  try {
+    return window.localStorage.getItem(storageKey) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function saveStoredFlag(storageKey, value) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(storageKey, value ? "true" : "false");
+  } catch {
+    // Ignore storage failures and leave the current in-memory state intact.
+  }
+}
+
 function toHex32(value) {
   return (value >>> 0).toString(16).padStart(8, "0");
 }
@@ -2095,8 +2465,8 @@ function normalizeSupabaseIngredientId(ingredient) {
     return id;
   }
   const key = id
-    || normalizeIngredientCode(ingredient?.ingredient_item_code)
-    || normalizeNameKey(ingredient?.ingredient_name)
+    || normalizeCodeKey(ingredient?.ingredient_item_code)
+    || normalizeMatchKey(ingredient?.ingredient_name)
     || `ingredient-${Date.now()}`;
   return buildStableUuid(key);
 }
@@ -2126,6 +2496,82 @@ function mapIngredientRowToSupabase(ingredient) {
     linked_recipe_id: ingredient.linked_recipe_id || null,
     is_locked: normalizeBooleanFlag(ingredient.is_locked),
   };
+}
+
+function listDuplicateIngredientCodes(ingredients) {
+  const rowsByCode = new Map();
+
+  (ingredients || []).forEach((ingredient) => {
+    const codeKey = normalizeCodeKey(ingredient?.ingredient_item_code);
+    if (!codeKey) return;
+    const currentRows = rowsByCode.get(codeKey) || [];
+    currentRows.push(ingredient);
+    rowsByCode.set(codeKey, currentRows);
+  });
+
+  return Array.from(rowsByCode.values())
+    .filter((rows) => rows.length > 1)
+    .map((rows) => rows[0]?.ingredient_item_code || rows[0]?.id || "Unknown code");
+}
+
+function reconcileIngredientRowsWithSupabaseIds(localRows, sharedRows) {
+  const sharedByCode = new Map();
+  const sharedByName = new Map();
+
+  (sharedRows || []).forEach((row) => {
+    const codeKey = normalizeCodeKey(row?.ingredient_item_code);
+    const nameKey = normalizeMatchKey(row?.ingredient_name);
+    if (codeKey && !sharedByCode.has(codeKey)) {
+      sharedByCode.set(codeKey, row);
+    }
+    if (nameKey && !sharedByName.has(nameKey)) {
+      sharedByName.set(nameKey, row);
+    }
+  });
+
+  return (localRows || []).map((row) => {
+    const codeKey = normalizeCodeKey(row?.ingredient_item_code);
+    const nameKey = normalizeMatchKey(row?.ingredient_name);
+    const matchedSharedRow =
+      (codeKey && sharedByCode.get(codeKey)) ||
+      (!codeKey && nameKey ? sharedByName.get(nameKey) : null) ||
+      null;
+
+    if (!matchedSharedRow?.id || matchedSharedRow.id === row.id) {
+      return row;
+    }
+
+    return {
+      ...row,
+      id: matchedSharedRow.id,
+    };
+  });
+}
+
+function consolidateIngredientRowsForSupabase(ingredients) {
+  const groupedByTargetId = new Map();
+
+  (ingredients || []).forEach((ingredient) => {
+    const targetId = normalizeSupabaseIngredientId(ingredient);
+    const currentGroup = groupedByTargetId.get(targetId) || [];
+    currentGroup.push(ingredient);
+    groupedByTargetId.set(targetId, currentGroup);
+  });
+
+  return Array.from(groupedByTargetId.values()).map((group) => {
+    if (group.length === 1) {
+      return group[0];
+    }
+
+    const primaryIngredient = pickPrimaryIngredientForMerge(group);
+    const duplicateIngredients = group.filter((ingredient) => ingredient.id !== primaryIngredient?.id);
+    const mergedIngredient = mergeIngredientRecords(primaryIngredient, duplicateIngredients);
+
+    return {
+      ...mergedIngredient,
+      id: normalizeSupabaseIngredientId(primaryIngredient),
+    };
+  });
 }
 
 function mapSupabaseIngredientRow(row) {
@@ -2573,76 +3019,220 @@ function parseCsv(text) {
   return rows;
 }
 
-function normalizeIngredientMaster(csvText) {
-  const rows = parseCsv(csvText);
+function buildImportedIngredientRecord({
+  ingredientName = "",
+  ingredientCode = "",
+  unitCost = "",
+  purchaseVatRate = "",
+  packSize = "",
+  unit = "",
+  supplier = "",
+  category = "",
+  description = "",
+  lastUpdated = "",
+  entryType = "ingredient",
+  linkedRecipeId = "",
+  isLocked = false,
+} = {}) {
+  const normalizedUnit = normalizePackSizeUnit(unit);
+  const extractedPackSize = extractPackSizeFromText(ingredientName, description, category);
+  const normalizedPackSize =
+    String(packSize || "").trim() ||
+    extractedPackSize ||
+    (normalizedUnit ? formatPackSize("1", normalizedUnit) : "");
+  const cleanedName = stripPackSizeFromText(ingredientName) || ingredientName;
+
+  return {
+    ingredient_name: toTitleCaseWords(cleanedName),
+    ingredient_item_code: String(ingredientCode || "").trim(),
+    unit_cost: numberFromLooseText(unitCost),
+    purchase_vat_rate:
+      purchaseVatRate === "" || purchaseVatRate === null || purchaseVatRate === undefined
+        ? FOOD_PURCHASE_VAT_OPTIONS[0]
+        : normalizePurchaseVatRate(purchaseVatRate),
+    pack_size: normalizedPackSize,
+    supplier: String(supplier || "").trim(),
+    category: String(category || description || "").trim(),
+    last_updated: String(lastUpdated || "").trim(),
+    entry_type: String(entryType || "ingredient").trim() || "ingredient",
+    linked_recipe_id: String(linkedRecipeId || "").trim(),
+    is_locked: normalizeBooleanFlag(isLocked),
+  };
+}
+
+function findIngredientUploadHeaderRow(rows) {
+  return rows.findIndex((row) => {
+    const normalizedHeaders = row.map((header) => normalizeIngredientUploadHeader(header));
+
+    const hasNormalizedImportHeaders =
+      normalizedHeaders.includes("ingredientname") &&
+      normalizedHeaders.includes("ingredientitemcode") &&
+      normalizedHeaders.includes("unitcost");
+    const hasRawPricingHeaders =
+      normalizedHeaders.includes("ingredientname") &&
+      normalizedHeaders.includes("plucode") &&
+      normalizedHeaders.includes("description") &&
+      normalizedHeaders.includes("gramsmililitre") &&
+      normalizedHeaders.includes("costperkilo");
+    const hasSoft1CostHeaders =
+      normalizedHeaders.includes("ingrsoft1code") &&
+      normalizedHeaders.includes("description") &&
+      normalizedHeaders.includes("productcategory") &&
+      normalizedHeaders.includes("unit") &&
+      normalizedHeaders.includes("averageprice");
+
+    return hasNormalizedImportHeaders || hasRawPricingHeaders || hasSoft1CostHeaders;
+  });
+}
+
+function parseIngredientUploadMatrix(rows) {
   if (!rows.length) {
     throw new Error("The ingredient upload file is empty.");
   }
 
-  const headers = rows[0].map((header) => header.trim());
-  const rawPricingFormatHeaders = [
-    "Ingredient name",
-    "PLU Code",
-    "Description",
-    "Grams. / Mililitre",
-    "Cost per kilo",
-  ];
-  const isRawPricingSheet = rawPricingFormatHeaders.every((header) => headers.includes(header));
-
-  if (isRawPricingSheet) {
-    const headerIndex = new Map(headers.map((header, index) => [header, index]));
-    return rows
-      .slice(1)
-      .map((row, index) => {
-        const getValue = (column) => (row[headerIndex.get(column)] || "").trim();
-        const rawCost = getValue("Cost per kilo").replace(/[^\d.-]/g, "");
-        return {
-          id: `${getValue("PLU Code") || "ingredient"}-${index + 1}`,
-          ingredient_name: getValue("Ingredient name"),
-          ingredient_item_code: getValue("PLU Code"),
-          unit_cost: numberValue(rawCost),
-          purchase_vat_rate: FOOD_PURCHASE_VAT_OPTIONS[0],
-          pack_size: getValue("Grams. / Mililitre"),
-          supplier: "",
-          category: getValue("Description"),
-          last_updated: "",
-          entry_type: "ingredient",
-          linked_recipe_id: "",
-          is_locked: false,
-        };
-      })
-      .filter((ingredient) => ingredient.ingredient_name && ingredient.ingredient_item_code);
-  }
-
-  const missingColumns = REQUIRED_INGREDIENT_COLUMNS.filter((header) => !headers.includes(header));
-  if (missingColumns.length) {
+  const headerRowIndex = findIngredientUploadHeaderRow(rows);
+  if (headerRowIndex === -1) {
     throw new Error(
-      `Missing required columns: ${missingColumns.join(", ")}. Or upload the raw pricing format with headers: ${rawPricingFormatHeaders.join(", ")}`
+      "Could not find a supported ingredient upload header row. Expected the app template, the raw pricing export, or the Soft1 Ingredients Cost export."
     );
   }
 
-  const headerIndex = new Map(headers.map((header, index) => [header, index]));
-  const ingredients = rows.slice(1).map((row, index) => {
-    const getValue = (column) => (row[headerIndex.get(column)] || "").trim();
+  const headers = rows[headerRowIndex].map((header) => String(header || "").trim());
+  const dataRows = rows
+    .slice(headerRowIndex + 1)
+    .filter((row) => row.some((value) => String(value || "").trim()));
+  const normalizedHeaders = headers.map((header) => normalizeIngredientUploadHeader(header));
+  const headerIndex = new Map(normalizedHeaders.map((header, index) => [header, index]));
+  const read = (row, aliases) => {
+    const aliasList = Array.isArray(aliases) ? aliases : [aliases];
+    const matchIndex = aliasList
+      .map((alias) => headerIndex.get(normalizeIngredientUploadHeader(alias)))
+      .find((index) => index !== undefined);
+    return matchIndex === undefined ? "" : String(row[matchIndex] || "").trim();
+  };
+
+  const isRawPricingSheet =
+    headerIndex.has("ingredientname") &&
+    headerIndex.has("plucode") &&
+    headerIndex.has("description") &&
+    headerIndex.has("gramsmililitre") &&
+    headerIndex.has("costperkilo");
+  const isSoft1CostSheet =
+    headerIndex.has("ingrsoft1code") &&
+    headerIndex.has("description") &&
+    headerIndex.has("productcategory") &&
+    headerIndex.has("unit") &&
+    headerIndex.has("averageprice");
+
+  if (isRawPricingSheet) {
+    return dataRows
+      .map((row, index) => {
+        return {
+          id: `ingredient-upload-${index + 1}`,
+          sourceFormat: "raw-pricing",
+          source: {
+            ingredient_name: read(row, "Ingredient name"),
+            ingredient_item_code: read(row, "PLU Code"),
+            description: read(row, "Description"),
+            pack_size: read(row, "Grams. / Mililitre"),
+            unit_cost: read(row, "Cost per kilo"),
+          },
+          ingredient: buildImportedIngredientRecord({
+            ingredientName: read(row, "Ingredient name"),
+            ingredientCode: read(row, "PLU Code"),
+            unitCost: read(row, "Cost per kilo"),
+            packSize: read(row, "Grams. / Mililitre"),
+            description: read(row, "Description"),
+            category: read(row, "Description"),
+          }),
+        };
+      })
+      .filter(
+        ({ ingredient }) =>
+          ingredient.ingredient_name?.trim() || ingredient.ingredient_item_code?.trim()
+      );
+  }
+
+  if (isSoft1CostSheet) {
+    return dataRows
+      .map((row, index) => {
+        const unit = read(row, "Unit");
+        return {
+          id: `ingredient-upload-${index + 1}`,
+          sourceFormat: "soft1-ingredients-cost",
+          source: {
+            ingredient_name: read(row, "Description"),
+            ingredient_item_code: read(row, "Ingr. Soft1 Code"),
+            description: read(row, "Description"),
+            pack_size: unit,
+            unit_cost: read(row, "Average Price"),
+          },
+          ingredient: buildImportedIngredientRecord({
+            ingredientName: read(row, "Description"),
+            ingredientCode: read(row, "Ingr. Soft1 Code"),
+            unitCost: read(row, "Average Price"),
+            unit,
+            description: read(row, "Description"),
+            category: read(row, ["Εμπορ. κατηγορία", "Product Category"]),
+          }),
+        };
+      })
+      .filter(
+        ({ ingredient }) =>
+          ingredient.ingredient_name?.trim() || ingredient.ingredient_item_code?.trim()
+      );
+  }
+
+  const missingColumns = REQUIRED_INGREDIENT_COLUMNS.filter(
+    (header) => !headerIndex.has(normalizeIngredientUploadHeader(header))
+  );
+  if (missingColumns.length) {
+    throw new Error(
+      `Missing required columns: ${missingColumns.join(", ")}. Or upload the raw pricing export, or the Soft1 Ingredients Cost export.`
+    );
+  }
+
+  const ingredients = dataRows.map((row, index) => {
     return {
-      id: `${getValue("ingredient_item_code") || "ingredient"}-${index + 1}`,
-      ingredient_name: getValue("ingredient_name"),
-      ingredient_item_code: getValue("ingredient_item_code"),
-      unit_cost: numberValue(getValue("unit_cost")),
-      purchase_vat_rate: normalizePurchaseVatRate(getValue("purchase_vat_rate")),
-      pack_size: getValue("pack_size"),
-      supplier: getValue("supplier"),
-      category: getValue("category"),
-      last_updated: getValue("last_updated"),
-      entry_type: getValue("entry_type") || "ingredient",
-      linked_recipe_id: getValue("linked_recipe_id"),
-      is_locked: normalizeBooleanFlag(getValue("is_locked")),
+      id: `ingredient-upload-${index + 1}`,
+      sourceFormat: "normalized",
+      source: {
+        ingredient_name: read(row, "ingredient_name"),
+        ingredient_item_code: read(row, "ingredient_item_code"),
+        description: "",
+        pack_size: read(row, "pack_size"),
+        unit_cost: read(row, "unit_cost"),
+      },
+      ingredient: buildImportedIngredientRecord({
+        ingredientName: read(row, "ingredient_name"),
+        ingredientCode: read(row, "ingredient_item_code"),
+        unitCost: read(row, "unit_cost"),
+        purchaseVatRate: read(row, "purchase_vat_rate"),
+        packSize: read(row, "pack_size"),
+        supplier: read(row, "supplier"),
+        category: read(row, "category"),
+        lastUpdated: read(row, "last_updated"),
+        entryType: read(row, "entry_type") || "ingredient",
+        linkedRecipeId: read(row, "linked_recipe_id"),
+        isLocked: read(row, "is_locked"),
+      }),
     };
   });
 
   return ingredients.filter(
-    (ingredient) => ingredient.ingredient_name && ingredient.ingredient_item_code
+    ({ ingredient }) => ingredient.ingredient_name?.trim() || ingredient.ingredient_item_code?.trim()
   );
+}
+
+function parseIngredientUploadRows(csvText) {
+  return parseIngredientUploadMatrix(parseCsv(csvText));
+}
+
+function normalizeIngredientMaster(csvText) {
+  return parseIngredientUploadRows(csvText).map(({ ingredient }, index) => ({
+    id: `${ingredient.ingredient_item_code || "ingredient"}-${index + 1}`,
+    ...ingredient,
+  }));
 }
 
 function downloadIngredientTemplate() {
@@ -3488,7 +4078,8 @@ function App() {
   const [search, setSearch] = useState("");
   const [restaurant, setRestaurant] = useState("all");
   const [selectedRecipeId, setSelectedRecipeId] = useState(recipes[0]?.id || null);
-  const [ingredientMaster, setIngredientMaster] = useState(() => (supabaseEnabled ? [] : loadIngredientMaster()));
+  const [ingredientMaster, setIngredientMaster] = useState(() => loadIngredientMaster());
+  const [ingredientImportSession, setIngredientImportSession] = useState(null);
   const [ingredientUploadMessage, setIngredientUploadMessage] = useState("");
   const [ingredientUploadError, setIngredientUploadError] = useState("");
   const [ingredientReturnTarget, setIngredientReturnTarget] = useState(null);
@@ -3505,6 +4096,7 @@ function App() {
   const [ingredientEditLookup, setIngredientEditLookup] = useState("");
   const [ingredientEditLookupQuery, setIngredientEditLookupQuery] = useState("");
   const [ingredientEditLookupOpen, setIngredientEditLookupOpen] = useState(false);
+  const [dismissedDuplicateIngredientGroupIds, setDismissedDuplicateIngredientGroupIds] = useState([]);
   const [availabilitySearch, setAvailabilitySearch] = useState("");
   const [availabilityVenueFilter, setAvailabilityVenueFilter] = useState("all");
   const [selectedImportFormat, setSelectedImportFormat] = useState("flat-component-export");
@@ -3679,7 +4271,6 @@ function App() {
   };
 
   useEffect(() => {
-    if (supabaseEnabled) return;
     window.localStorage.setItem(INGREDIENT_MASTER_STORAGE_KEY, JSON.stringify(ingredientMaster));
   }, [ingredientMaster]);
 
@@ -3826,6 +4417,7 @@ function App() {
         setVenues(Array.from(new Set([...DEFAULT_VENUES, ...venueRows.map((row) => String(row.name || "").trim()).filter(Boolean)])));
       }
 
+      const hasPendingIngredientSync = loadStoredFlag(INGREDIENT_MASTER_PENDING_SYNC_STORAGE_KEY);
       const mappedIngredients = Array.isArray(ingredientRows) && ingredientRows.length
         ? sanitizeIngredientMasterRows(ingredientRows.map(mapSupabaseIngredientRow))
         : null;
@@ -3833,22 +4425,24 @@ function App() {
       const baselineMenus = getBaselineMenus(baselineRecipes);
 
       if (Array.isArray(ingredientRows) && ingredientRows.length) {
-        setIngredientMaster(mappedIngredients);
-        setRecipes((current) => syncIngredientReferences(current, mappedIngredients));
+        if (!hasPendingIngredientSync) {
+          setIngredientMaster(mappedIngredients);
+          setRecipes((current) => syncIngredientReferences(current, mappedIngredients));
+        }
       }
 
       if (Array.isArray(recipeRows) && recipeRows.length) {
         const sharedRecipes = hydrateSupabaseRecipes(
           recipeRows,
           componentRows || [],
-          mappedIngredients || ingredientMaster
+          hasPendingIngredientSync ? ingredientMaster : mappedIngredients || ingredientMaster
         );
         let nextRecipes = [];
         setRecipes((current) => {
           nextRecipes = mergeSupabaseRecipesIntoCurrent(
             current,
             sharedRecipes,
-            mappedIngredients || ingredientMaster,
+            hasPendingIngredientSync ? ingredientMaster : mappedIngredients || ingredientMaster,
             pendingRecipeSyncRef.current
           );
           return nextRecipes;
@@ -4929,7 +5523,7 @@ function App() {
 
     ingredientMaster.forEach((ingredient) => {
       const code = normalizeCodeKey(ingredient.ingredient_item_code);
-      const name = ingredient.ingredient_name?.trim().toLowerCase();
+      const name = normalizeMatchKey(ingredient.ingredient_name);
       if (code) codeCounts.set(code, (codeCounts.get(code) || 0) + 1);
       if (name) nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
     });
@@ -5086,6 +5680,7 @@ function App() {
         };
       })
       .filter(Boolean)
+      .filter((group) => !dismissedDuplicateIngredientGroupIds.includes(group.id))
       .sort((left, right) => {
         if (right.ingredients.length !== left.ingredients.length) {
           return right.ingredients.length - left.ingredients.length;
@@ -5095,7 +5690,7 @@ function App() {
           sensitivity: "base",
         });
       });
-  }, [ingredientCatalog]);
+  }, [dismissedDuplicateIngredientGroupIds, ingredientCatalog]);
   const batchCatalog = useMemo(
     () =>
       recipes
@@ -5341,6 +5936,47 @@ function App() {
     }),
     [combinedIngredientCatalog]
   );
+  const ingredientImportTargetOptions = useMemo(
+    () =>
+      ingredientCatalog
+        .map((ingredient) => ({
+          id: ingredient.id,
+          label: `${ingredient.ingredient_name || "Unnamed ingredient"}${
+            ingredient.ingredient_item_code ? ` (${ingredient.ingredient_item_code})` : ""
+          }${ingredient.pack_size ? ` · ${ingredient.pack_size}` : ""}`,
+        }))
+        .sort((left, right) =>
+          left.label.localeCompare(right.label, undefined, {
+            numeric: true,
+            sensitivity: "base",
+          })
+        ),
+    [ingredientCatalog]
+  );
+  const ingredientImportSummary = useMemo(() => {
+    if (!ingredientImportSession?.rows?.length) return null;
+
+    const mergeTargets = ingredientImportSession.rows
+      .filter((row) => row.strategy === "merge" && row.targetIngredientId)
+      .map((row) => row.targetIngredientId);
+    const targetCounts = mergeTargets.reduce((counts, targetId) => {
+      counts.set(targetId, (counts.get(targetId) || 0) + 1);
+      return counts;
+    }, new Map());
+
+    return {
+      total: ingredientImportSession.rows.length,
+      mergeCount: ingredientImportSession.rows.filter((row) => row.strategy === "merge").length,
+      createCount: ingredientImportSession.rows.filter((row) => row.strategy === "create").length,
+      attentionCount: ingredientImportSession.rows.filter(
+        (row) =>
+          (row.strategy === "merge" && !row.targetIngredientId) ||
+          row.matchConfidence === "low" ||
+          row.matchConfidence === "none"
+      ).length,
+      duplicateTargetCount: Array.from(targetCounts.values()).filter((count) => count > 1).length,
+    };
+  }, [ingredientImportSession]);
   const filteredIngredientCatalog = useMemo(() => {
     const q = search.trim().toLowerCase();
     const filteredRows = combinedIngredientCatalog.filter((row) => {
@@ -6508,26 +7144,207 @@ function App() {
   };
 
   const handleIngredientUpload = async (event) => {
+    if (requireEditAccess()) return;
     const file = event.target.files?.[0];
     if (!file) return;
 
     try {
-      const text = await file.text();
-      const ingredients = normalizeIngredientMaster(text);
-      if (!ingredients.length) {
+      let parsedRows = [];
+      if (file.name.toLowerCase().endsWith(".xlsx")) {
+        const workbookSheets = await readXlsxWorkbookSheets(file);
+        const firstSheetWithData =
+          workbookSheets.find((sheet) =>
+            (sheet.rows || []).some((row) => row.some((value) => String(value || "").trim()))
+          ) || workbookSheets[0];
+        parsedRows = parseIngredientUploadMatrix(firstSheetWithData?.rows || []);
+      } else {
+        const text = await file.text();
+        parsedRows = parseIngredientUploadRows(text);
+      }
+      if (!parsedRows.length) {
         throw new Error("No ingredient rows were found after validation.");
       }
-      setIngredientMaster(ingredients);
+      setIngredientImportSession(createIngredientImportSession(file.name, parsedRows, ingredientMaster));
       setIngredientUploadError("");
       setIngredientUploadMessage(
-        `Loaded ${ingredients.length} ingredients. Lookup is now available in recipe components, alongside batch recipes.`
+        `Loaded ${parsedRows.length} uploaded row${parsedRows.length === 1 ? "" : "s"} from ${
+          file.name
+        }. Review the mapping below, then apply the merge when it looks right.`
       );
     } catch (error) {
+      setIngredientImportSession(null);
       setIngredientUploadMessage("");
       setIngredientUploadError(error.message || "Ingredient upload failed.");
     } finally {
       event.target.value = "";
     }
+  };
+
+  const updateIngredientImportRow = (rowId, updater) => {
+    setIngredientImportSession((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        rows: current.rows.map((row) => (row.id === rowId ? updater(row) : row)),
+      };
+    });
+  };
+
+  const clearIngredientImportSession = () => {
+    setIngredientImportSession(null);
+    setIngredientUploadError("");
+    setIngredientUploadMessage("Cleared the current ingredient import review.");
+  };
+
+  const setIngredientImportStrategy = (rowId, strategy) => {
+    updateIngredientImportRow(rowId, (row) => {
+      if (strategy === "create") {
+        return {
+          ...row,
+          strategy: "create",
+          targetIngredientId: "",
+          matchReason: "This row will create a new ingredient",
+          draft: buildIngredientImportDraft(row.importedIngredient),
+        };
+      }
+
+      const suggestedMatch = findBestIngredientImportMatch(ingredientMaster, row.importedIngredient);
+      const targetIngredientId = row.targetIngredientId || suggestedMatch.ingredient?.id || "";
+      const matchedIngredient =
+        ingredientMaster.find((ingredient) => ingredient.id === targetIngredientId) || null;
+
+      return {
+        ...row,
+        strategy: "merge",
+        targetIngredientId,
+        matchConfidence: matchedIngredient ? suggestedMatch.confidence : "none",
+        matchReason: matchedIngredient
+          ? suggestedMatch.reason
+          : "Choose an existing ingredient to merge into",
+        draft: buildIngredientImportDraft(row.importedIngredient, matchedIngredient),
+      };
+    });
+  };
+
+  const setIngredientImportTarget = (rowId, targetIngredientId) => {
+    updateIngredientImportRow(rowId, (row) => {
+      const matchedIngredient =
+        ingredientMaster.find((ingredient) => ingredient.id === targetIngredientId) || null;
+
+      return {
+        ...row,
+        strategy: matchedIngredient ? "merge" : "create",
+        targetIngredientId: matchedIngredient?.id || "",
+        matchConfidence: matchedIngredient ? "manual" : "none",
+        matchReason: matchedIngredient
+          ? "Manually mapped to an existing ingredient"
+          : "This row will create a new ingredient",
+        draft: buildIngredientImportDraft(row.importedIngredient, matchedIngredient),
+      };
+    });
+  };
+
+  const updateIngredientImportDraftField = (rowId, field, value) => {
+    updateIngredientImportRow(rowId, (row) => ({
+      ...row,
+      draft: normalizeIngredientDraftPayload({
+        ...row.draft,
+        [field]:
+          field === "ingredient_name"
+            ? toTitleCaseWords(value)
+            : field === "purchase_vat_rate"
+              ? normalizePurchaseVatRate(value)
+              : value,
+      }),
+    }));
+  };
+
+  const updateIngredientImportDraftPackSize = (rowId, part, value) => {
+    updateIngredientImportRow(rowId, (row) => {
+      const packParts = parsePackSizeParts(row.draft.pack_size);
+      const nextValue = part === "value" ? value : packParts.value;
+      const nextUnit = part === "unit" ? value : packParts.unit;
+
+      return {
+        ...row,
+        draft: normalizeIngredientDraftPayload({
+          ...row.draft,
+          pack_size: formatPackSize(nextValue, nextUnit),
+        }),
+      };
+    });
+  };
+
+  const getIngredientImportCodeConflict = (row) => {
+    if (!row?.draft?.ingredient_item_code?.trim()) return false;
+    const excludedIds = row.strategy === "merge" && row.targetIngredientId ? [row.targetIngredientId] : [];
+    return hasIngredientCodeConflict(ingredientMaster, row.draft.ingredient_item_code, excludedIds);
+  };
+
+  const suggestIngredientImportCodeVariant = (rowId) => {
+    updateIngredientImportRow(rowId, (row) => {
+      const excludedIds = row.strategy === "merge" && row.targetIngredientId ? [row.targetIngredientId] : [];
+      const nextCode = suggestVariantIngredientCode(row.draft.ingredient_item_code, ingredientMaster, excludedIds);
+      return {
+        ...row,
+        draft: normalizeIngredientDraftPayload({
+          ...row.draft,
+          ingredient_item_code: nextCode,
+        }),
+      };
+    });
+  };
+
+  const applyIngredientImportRows = async (rowIds) => {
+    if (requireEditAccess()) return;
+    if (!ingredientImportSession?.rows?.length) return;
+
+    const rowsToApply = ingredientImportSession.rows.filter((row) => rowIds.includes(row.id));
+    if (!rowsToApply.length) return;
+
+    const result = applyIngredientImportRowsToMaster(ingredientMaster, rowsToApply);
+    if (result.error) {
+      setIngredientUploadError(result.error);
+      setIngredientUploadMessage("");
+      return;
+    }
+
+    const appliedIds = new Set(rowsToApply.map((row) => row.id));
+    const remainingRows = ingredientImportSession.rows.filter((row) => !appliedIds.has(row.id));
+
+    setIngredientMaster(result.nextIngredients);
+    setIngredientImportSession(
+      remainingRows.length
+        ? {
+            ...ingredientImportSession,
+            rows: remainingRows,
+          }
+        : null
+    );
+    await persistIngredientMaster(result.nextIngredients, {
+      localMessage: `Applied ${rowsToApply.length} reviewed row${rowsToApply.length === 1 ? "" : "s"}: merged ${
+        result.mergedCount
+      } and created ${result.createdCount}. ${
+        remainingRows.length
+          ? `${remainingRows.length} row${remainingRows.length === 1 ? "" : "s"} still waiting in review.`
+          : "Review queue is clear."
+      }`,
+      sharedMessage: `Applied and saved ${rowsToApply.length} reviewed row${rowsToApply.length === 1 ? "" : "s"} to the shared ingredient master. ${
+        remainingRows.length
+          ? `${remainingRows.length} row${remainingRows.length === 1 ? "" : "s"} still waiting in review.`
+          : "Review queue is clear."
+      }`,
+      syncErrorPrefix: "Applied locally, but could not sync ingredient changes to Supabase",
+    });
+  };
+
+  const applySingleIngredientImportRow = async (rowId) => {
+    await applyIngredientImportRows([rowId]);
+  };
+
+  const applyIngredientImportSession = async () => {
+    if (!ingredientImportSession?.rows?.length) return;
+    await applyIngredientImportRows(ingredientImportSession.rows.map((row) => row.id));
   };
 
   const handlePresentationImageUpload = async (recipeId, event) => {
@@ -6706,26 +7523,76 @@ function App() {
     });
   };
 
-  const saveIngredientMasterChanges = async () => {
-    if (requireEditAccess()) return;
-    if (!supabaseEnabled) {
-      saveStoredCollection(INGREDIENT_MASTER_STORAGE_KEY, ingredientMaster);
-    }
-    setRecipes((current) => syncIngredientReferences(current, ingredientMaster));
+  const persistIngredientMaster = async (
+    nextIngredientMaster,
+    {
+      localMessage = "",
+      sharedMessage = "",
+      syncErrorPrefix = "Saved locally, but could not sync ingredients to Supabase",
+    } = {}
+  ) => {
+    let syncedIngredientMaster = nextIngredientMaster;
+
+    saveStoredCollection(INGREDIENT_MASTER_STORAGE_KEY, syncedIngredientMaster);
+    saveStoredFlag(INGREDIENT_MASTER_PENDING_SYNC_STORAGE_KEY, supabaseEnabled);
+
+    setRecipes((current) => syncIngredientReferences(current, syncedIngredientMaster));
     setIngredientUploadError("");
-    setIngredientUploadMessage(`Saved ${ingredientMaster.length} ingredient rows and refreshed linked recipe costs.`);
+    setIngredientUploadMessage(
+      localMessage || `Saved ${syncedIngredientMaster.length} ingredient rows and refreshed linked recipe costs.`
+    );
+
+    if (supabaseEnabled && supabase) {
+      const duplicateCodes = listDuplicateIngredientCodes(syncedIngredientMaster);
+      if (duplicateCodes.length) {
+        setIngredientUploadError(
+          `${syncErrorPrefix}: duplicate ingredient codes are still present (${duplicateCodes
+            .slice(0, 6)
+            .join(", ")}${duplicateCodes.length > 6 ? "..." : ""}).`
+        );
+        return;
+      }
+
+      const { data: sharedIngredientRows, error: sharedIngredientError } = await supabase
+        .from("ingredients")
+        .select("id, ingredient_item_code, ingredient_name");
+
+      if (sharedIngredientError) {
+        setIngredientUploadError(`${syncErrorPrefix}: ${sharedIngredientError.message}`);
+        return;
+      }
+
+      syncedIngredientMaster = reconcileIngredientRowsWithSupabaseIds(
+        syncedIngredientMaster,
+        Array.isArray(sharedIngredientRows) ? sharedIngredientRows : []
+      );
+      syncedIngredientMaster = consolidateIngredientRowsForSupabase(syncedIngredientMaster);
+
+      setIngredientMaster(syncedIngredientMaster);
+      setRecipes((current) => syncIngredientReferences(current, syncedIngredientMaster));
+    }
 
     await runOptionalSharedSync({
       sync: () =>
         supabase
           .from("ingredients")
-          .upsert(ingredientMaster.map(mapIngredientRowToSupabase), { onConflict: "id" }),
+          .upsert(syncedIngredientMaster.map(mapIngredientRowToSupabase), { onConflict: "id" }),
       onError: (error) =>
-        setIngredientUploadError(`Saved locally, but could not sync ingredients to Supabase: ${error.message}`),
-      onSuccess: () =>
+        setIngredientUploadError(`${syncErrorPrefix}: ${error.message}`),
+      onSuccess: () => {
+        saveStoredFlag(INGREDIENT_MASTER_PENDING_SYNC_STORAGE_KEY, false);
         setIngredientUploadMessage(
-          `Saved ${ingredientMaster.length} ingredient rows locally and to Supabase.`
-        ),
+          sharedMessage || `Saved ${syncedIngredientMaster.length} ingredient rows locally and to Supabase.`
+        );
+      },
+    });
+  };
+
+  const saveIngredientMasterChanges = async () => {
+    if (requireEditAccess()) return;
+    await persistIngredientMaster(ingredientMaster, {
+      localMessage: `Saved ${ingredientMaster.length} ingredient rows and refreshed linked recipe costs.`,
+      sharedMessage: `Saved ${ingredientMaster.length} ingredient rows locally and to Supabase.`,
     });
   };
 
@@ -7163,6 +8030,15 @@ function App() {
     setIngredientUploadMessage(
       `Merged ${group.ingredients.length} duplicate rows into ${group.primaryIngredient.ingredient_name || "one ingredient"}.`
     );
+  };
+
+  const dismissDuplicateIngredientGroup = (groupId) => {
+    if (!groupId) return;
+    setDismissedDuplicateIngredientGroupIds((current) =>
+      current.includes(groupId) ? current : [...current, groupId]
+    );
+    setIngredientUploadError("");
+    setIngredientUploadMessage("Kept that duplicate group separate for now.");
   };
 
   const deleteRecipe = (recipe) => {
@@ -9813,14 +10689,30 @@ function App() {
               openIngredientQuickPanel={openIngredientQuickPanel}
               activeIngredientDraft={activeIngredientDraft}
               money={money}
+              parsePackSizeParts={parsePackSizeParts}
+              purchaseVatOptions={FOOD_PURCHASE_VAT_OPTIONS}
+              percentFromRate={percentFromRate}
               getValidationIssueText={getValidationIssueText}
               ingredientUploadMessage={ingredientUploadMessage}
               ingredientUploadError={ingredientUploadError}
+              ingredientImportSession={ingredientImportSession}
+              ingredientImportSummary={ingredientImportSummary}
+              ingredientImportTargetOptions={ingredientImportTargetOptions}
               duplicateIngredientGroups={duplicateIngredientGroups}
               mergeDuplicateIngredientGroup={mergeDuplicateIngredientGroup}
+              dismissDuplicateIngredientGroup={dismissDuplicateIngredientGroup}
               ingredientReturnTarget={ingredientReturnTarget}
               returnToIngredientSourceRecipe={returnToIngredientSourceRecipe}
               handleIngredientUpload={handleIngredientUpload}
+              clearIngredientImportSession={clearIngredientImportSession}
+              setIngredientImportStrategy={setIngredientImportStrategy}
+              setIngredientImportTarget={setIngredientImportTarget}
+              updateIngredientImportDraftField={updateIngredientImportDraftField}
+              updateIngredientImportDraftPackSize={updateIngredientImportDraftPackSize}
+              getIngredientImportCodeConflict={getIngredientImportCodeConflict}
+              suggestIngredientImportCodeVariant={suggestIngredientImportCodeVariant}
+              applySingleIngredientImportRow={applySingleIngredientImportRow}
+              applyIngredientImportSession={applyIngredientImportSession}
               saveIngredientMasterChanges={saveIngredientMasterChanges}
               ingredientMaster={ingredientMaster}
               normalizeExistingNames={normalizeExistingNames}
@@ -9836,6 +10728,7 @@ function App() {
               renderIngredientSortHeader={renderIngredientSortHeader}
               filteredIngredientCatalog={filteredIngredientCatalog}
               renderIngredientCatalogRow={renderIngredientCatalogRow}
+              deleteIngredientRow={deleteIngredientRow}
             />
           </TabErrorBoundary>
         )}

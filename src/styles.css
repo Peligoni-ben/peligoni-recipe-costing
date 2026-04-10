@@ -1250,6 +1250,13 @@ th {
   color: #64748b;
 }
 
+.duplicate-ingredient-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
 .image-upload-card {
   display: grid;
   gap: 12px;
@@ -1352,6 +1359,36 @@ th {
   border-radius: 18px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
+}
+
+.ingredient-import-review {
+  margin-top: 16px;
+}
+
+.ingredient-import-list {
+  display: grid;
+  gap: 12px;
+}
+
+.ingredient-import-card {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.ingredient-import-controls {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: end;
+}
+
+.ingredient-import-controls .form-field {
+  flex: 1 1 240px;
+}
+
+.ingredient-import-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .form-field {
@@ -1734,6 +1771,10 @@ th {
 
   .ingredient-pack-size-field {
     grid-column: auto;
+  }
+
+  .ingredient-import-grid {
+    grid-template-columns: 1fr;
   }
 
   .ingredients-sidebar {

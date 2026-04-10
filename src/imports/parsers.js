@@ -447,7 +447,7 @@ async function parseBatchWorkbookXlsx(file) {
   return batchRows.filter((row) => row.name || row.selling_item_code);
 }
 
-async function readXlsxWorkbookSheets(file) {
+export async function readXlsxWorkbookSheets(file) {
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const sharedStringsXml = await zip.file("xl/sharedStrings.xml")?.async("string");
   const workbookXml = await zip.file("xl/workbook.xml")?.async("string");
