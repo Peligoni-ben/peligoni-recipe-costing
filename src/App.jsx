@@ -32,7 +32,6 @@ const REQUIRED_INGREDIENT_COLUMNS = [
   "unit_cost",
 ];
 const OPTIONAL_INGREDIENT_COLUMNS = [
-  "ingredient_id",
   "purchase_vat_rate",
   "pack_size",
   "supplier",
@@ -41,6 +40,7 @@ const OPTIONAL_INGREDIENT_COLUMNS = [
   "entry_type",
   "linked_recipe_id",
   "is_locked",
+  "ingredient_id",
 ];
 const MENU_COURSE_PRESETS = ["Starter", "Main", "Dessert", "Side", "Small plates", "Large plates"];
 const FOOD_SALE_VAT_RATE = 0.13;
@@ -3328,7 +3328,6 @@ function exportIngredientMaster(ingredients) {
       ingredient.ingredient_name,
       ingredient.ingredient_item_code,
       numberValue(ingredient.unit_cost),
-      ingredient.id || "",
       normalizePurchaseVatRate(ingredient.purchase_vat_rate),
       ingredient.pack_size,
       ingredient.supplier,
@@ -3337,6 +3336,7 @@ function exportIngredientMaster(ingredients) {
       ingredient.entry_type || "ingredient",
       ingredient.linked_recipe_id || "",
       ingredient.is_locked ? "true" : "false",
+      ingredient.id || "",
     ]
       .map(escapeCsv)
       .join(",")
