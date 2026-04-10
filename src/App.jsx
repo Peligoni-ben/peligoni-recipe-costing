@@ -8622,7 +8622,11 @@ function App() {
           type="button"
           className="secondary-button table-action-button"
           disabled={recipe.isLocked}
-          onClick={() => deleteRecipe(recipe)}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            deleteRecipe(recipe);
+          }}
         >
           Delete
         </button>
