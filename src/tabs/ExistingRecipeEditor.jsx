@@ -69,6 +69,7 @@ export default function ExistingRecipeEditor({
   shouldAutoCostComponent,
   getComponentSourceRouteLabel,
   batchUsage,
+  setRecipeLockState,
 }) {
   const buildRecipePillHandlers = (action, disabled = false) => {
     if (disabled) {
@@ -333,7 +334,9 @@ export default function ExistingRecipeEditor({
               <button
                 type="button"
                 className={`recipe-pill ${selectedRecipeLocked ? "active" : ""}`}
-                {...buildRecipePillHandlers(() => updateRecipeField(selectedRecipe.id, "isLocked", !selectedRecipeLocked))}
+                {...buildRecipePillHandlers(() => {
+                  void setRecipeLockState(selectedRecipe.id, !selectedRecipeLocked);
+                })}
               >
                 {selectedRecipeLocked ? "Recipe locked" : "Lock recipe"}
               </button>

@@ -6228,6 +6228,50 @@ function App() {
     );
   };
 
+  const setRecipeLockState = async (recipeId, isLocked) => {
+    if (requireEditAccess()) return;
+
+    let syncedRecipes = [];
+    let syncedRecipe = null;
+    setRecipes((current) => {
+      syncedRecipes = current.map((recipe) =>
+        recipe.id === recipeId ? { ...recipe, isLocked: Boolean(isLocked) } : recipe
+      );
+      syncedRecipe = syncedRecipes.find((recipe) => recipe.id === recipeId) || null;
+      return syncedRecipes;
+    });
+
+    if (!syncedRecipe) return;
+
+    if (!supabaseEnabled) {
+      saveStoredCollection(RECIPES_STORAGE_KEY, syncedRecipes);
+    }
+
+    pendingRecipeSyncRef.current.set(
+      syncedRecipe.id,
+      recipeSyncSnapshot(syncedRecipe)
+    );
+    savedRecipeSnapshotsRef.current.set(
+      syncedRecipe.id,
+      recipeEditSnapshot(syncedRecipe)
+    );
+
+    setImportError("");
+    setImportMessage(`${isLocked ? "Locked" : "Unlocked"} recipe ${syncedRecipe.name || syncedRecipe.id}.`);
+
+    await runOptionalSharedSync({
+      sync: () => syncRecipeToSupabase(syncedRecipe),
+      onError: (error) =>
+        setImportError(
+          `${isLocked ? "Locked" : "Unlocked"} recipe locally, but could not sync to Supabase: ${error.message}`
+        ),
+      onSuccess: () =>
+        setImportMessage(
+          `${isLocked ? "Locked" : "Unlocked"} recipe ${syncedRecipe.name || syncedRecipe.id} locally and to Supabase.`
+        ),
+    });
+  };
+
   const openRecipeInBuilder = (recipeId) => {
     const recipe = recipes.find((item) => item.id === recipeId) || null;
     setSelectedRecipeId(recipeId);
@@ -8673,9 +8717,11 @@ function App() {
           <input
             type="checkbox"
             checked={Boolean(recipe.isLocked)}
-            onChange={(event) =>
-              updateRecipeField(recipe.id, "isLocked", event.target.checked)
-            }
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => {
+              event.stopPropagation();
+              void setRecipeLockState(recipe.id, event.target.checked);
+            }}
           />
         </label>
       </td>
@@ -10613,6 +10659,7 @@ function App() {
                 openRecipeCostSheetForRecipe={openRecipeCostSheetForRecipe}
                 openChefSheetPreviewForRecipe={openChefSheetPreviewForRecipe}
                 deleteRecipe={deleteRecipe}
+                setRecipeLockState={setRecipeLockState}
                 selectedRecipeLocked={selectedRecipeLocked}
                 updateRecipeField={updateRecipeField}
                 selectedRecipeResolved={selectedRecipeResolved}
