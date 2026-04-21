@@ -39,6 +39,49 @@ textarea {
   padding: 14px;
 }
 
+.v2-auth-shell {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.v2-auth-main {
+  width: min(100%, 560px);
+}
+
+.v2-auth-panel {
+  min-height: auto;
+  height: auto;
+  overflow: visible;
+}
+
+.v2-auth-card {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: 12px;
+  padding: 36px 32px;
+}
+
+.v2-auth-card .v2-eyebrow,
+.v2-auth-card h3,
+.v2-auth-card p {
+  max-width: 420px;
+}
+
+.v2-auth-form {
+  width: min(100%, 420px);
+}
+
+.v2-auth-form .v2-field {
+  text-align: left;
+}
+
+.v2-auth-form .v2-link-list {
+  justify-content: center;
+}
+
 .v2-sidebar {
   min-height: 0;
   overflow: auto;

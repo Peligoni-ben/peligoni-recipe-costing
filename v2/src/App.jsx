@@ -21577,15 +21577,15 @@ function SharedDataAuthScreen({
   drinksLink = "",
 }) {
   return (
-    <div className="v2-app">
-      <main className="v2-main">
-        <section className="v2-panel v2-detail-panel">
-          <div className="v2-empty-state">
+    <div className="v2-auth-shell">
+      <main className="v2-auth-main">
+        <section className="v2-panel v2-auth-panel">
+          <div className="v2-empty-state v2-auth-card">
             <div className="v2-eyebrow">Peligoni internal tool</div>
             <h3>{title}</h3>
             <p>{message}</p>
             {typeof onSubmit === "function" ? (
-              <div className="v2-stack" style={{ maxWidth: 420, width: "100%" }}>
+              <div className="v2-stack v2-auth-form">
                 <label className="v2-field">
                   <span>Email</span>
                   <input value={email} onChange={(event) => setEmail?.(event.target.value)} />
