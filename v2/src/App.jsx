@@ -12338,6 +12338,20 @@ function App() {
       const confirmed = window.confirm("Publish this component to the ingredient list?");
       if (!confirmed) return;
     }
+
+    if (supabaseEnabled && supabase) {
+      const batchSaved = await syncRecipeRecordToSharedData(
+        syncBatchRecord({
+          ...batch,
+          sharedDirty: true,
+        }),
+        "batch"
+      );
+      if (!batchSaved) {
+        return;
+      }
+    }
+
     const batchCostSource = getBatchCostSource(batch, recordMaps.ingredient);
 
     const existingPublishedIngredient = batch.publishedIngredientId
