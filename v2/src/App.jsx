@@ -40,6 +40,25 @@ const IGNORED_IMPORT_ROW_RULE_FIELD = "__ignored_import_row__";
 const RECIPE_REVIEW_FLAG_RULE_FIELD = "__recipe_review_flag__";
 const BATCH_REVIEW_FLAG_RULE_FIELD = "__batch_review_flag__";
 const EDIT_SESSION_STALE_MS = 90 * 1000;
+const SHARED_LOAD_TIMEOUT_MS = 15000;
+
+function withTimeout(promise, timeoutMs = SHARED_LOAD_TIMEOUT_MS, label = "Request") {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out.`));
+    }, timeoutMs);
+
+    Promise.resolve(promise)
+      .then((value) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      });
+  });
+}
 
 const initialIngredients = [
   {
@@ -8075,28 +8094,68 @@ function App() {
           { data: componentRows, error: componentError },
           { data: menuRows, error: menuError },
           { data: menuLineRows, error: menuLineError },
-          { data: ingredientWorkflowRows, error: ingredientWorkflowError },
-          profilesResult,
         ] = await Promise.all([
-          supabase.from("ingredients").select("*").order("ingredient_name"),
-          supabase.from("recipes").select("*").order("name"),
-          supabase.from("recipe_components").select("*").order("component_order"),
-          supabase.from("menus").select("*").order("name"),
-          supabase.from("menu_lines").select("*").order("line_order"),
-          supabase
-            .from("ingredient_naming_rules")
-            .select("*")
-            .in("rule_field", [
-              INGREDIENT_REVIEW_STATE_RULE_FIELD,
-              INGREDIENT_SUBSTITUTION_STATE_RULE_FIELD,
-              INGREDIENT_TRADE_CATEGORY_RULE_FIELD,
-              INGREDIENT_SOURCE_CODE_REDIRECT_RULE_FIELD,
-              IGNORED_IMPORT_ROW_RULE_FIELD,
-              RECIPE_REVIEW_FLAG_RULE_FIELD,
-              BATCH_REVIEW_FLAG_RULE_FIELD,
-            ]),
-          supabase.from("profiles").select("id,email,full_name,role").order("email"),
+          withTimeout(
+            supabase.from("ingredients").select("*").order("ingredient_name"),
+            SHARED_LOAD_TIMEOUT_MS,
+            "Shared ingredients"
+          ),
+          withTimeout(
+            supabase.from("recipes").select("*").order("name"),
+            SHARED_LOAD_TIMEOUT_MS,
+            "Shared recipes"
+          ),
+          withTimeout(
+            supabase.from("recipe_components").select("*").order("component_order"),
+            SHARED_LOAD_TIMEOUT_MS,
+            "Shared components"
+          ),
+          withTimeout(
+            supabase.from("menus").select("*").order("name"),
+            SHARED_LOAD_TIMEOUT_MS,
+            "Shared menus"
+          ),
+          withTimeout(
+            supabase.from("menu_lines").select("*").order("line_order"),
+            SHARED_LOAD_TIMEOUT_MS,
+            "Shared menu lines"
+          ),
         ]);
+
+        const [ingredientWorkflowResult, profilesResult] = await Promise.allSettled([
+          withTimeout(
+            supabase
+              .from("ingredient_naming_rules")
+              .select("*")
+              .in("rule_field", [
+                INGREDIENT_REVIEW_STATE_RULE_FIELD,
+                INGREDIENT_SUBSTITUTION_STATE_RULE_FIELD,
+                INGREDIENT_TRADE_CATEGORY_RULE_FIELD,
+                INGREDIENT_SOURCE_CODE_REDIRECT_RULE_FIELD,
+                IGNORED_IMPORT_ROW_RULE_FIELD,
+                RECIPE_REVIEW_FLAG_RULE_FIELD,
+                BATCH_REVIEW_FLAG_RULE_FIELD,
+              ]),
+            SHARED_LOAD_TIMEOUT_MS,
+            "Ingredient workflow sidecar"
+          ),
+          withTimeout(
+            supabase.from("profiles").select("id,email,full_name,role").order("email"),
+            SHARED_LOAD_TIMEOUT_MS,
+            "Shared users"
+          ),
+        ]);
+
+        const ingredientWorkflowData =
+          ingredientWorkflowResult.status === "fulfilled" ? ingredientWorkflowResult.value?.data || [] : [];
+        const ingredientWorkflowError =
+          ingredientWorkflowResult.status === "fulfilled"
+            ? ingredientWorkflowResult.value?.error || null
+            : ingredientWorkflowResult.reason || null;
+        const profileRows =
+          profilesResult.status === "fulfilled" && !profilesResult.value?.error ? profilesResult.value?.data || [] : [];
+        const profilesError =
+          profilesResult.status === "fulfilled" ? profilesResult.value?.error || null : profilesResult.reason || null;
 
         if (ingredientError) throw ingredientError;
         if (recipeError) throw recipeError;
@@ -8108,7 +8167,7 @@ function App() {
           ...(ingredientWorkflowError
             ? {}
             : parseSharedIngredientReviewStateRows(
-                (ingredientWorkflowRows || []).filter((row) => row.rule_field === INGREDIENT_REVIEW_STATE_RULE_FIELD)
+                ingredientWorkflowData.filter((row) => row.rule_field === INGREDIENT_REVIEW_STATE_RULE_FIELD)
               )),
         };
         const mergedIngredientSubstitutionState = {
@@ -8116,7 +8175,7 @@ function App() {
           ...(ingredientWorkflowError
             ? {}
             : parseSharedIngredientSubstitutionStateRows(
-                (ingredientWorkflowRows || []).filter((row) => row.rule_field === INGREDIENT_SUBSTITUTION_STATE_RULE_FIELD)
+                ingredientWorkflowData.filter((row) => row.rule_field === INGREDIENT_SUBSTITUTION_STATE_RULE_FIELD)
               )),
         };
         const mergedIngredientTradeCategoryState = {
@@ -8124,7 +8183,7 @@ function App() {
           ...(ingredientWorkflowError
             ? {}
             : parseSharedIngredientTradeCategoryRows(
-                (ingredientWorkflowRows || []).filter((row) => row.rule_field === INGREDIENT_TRADE_CATEGORY_RULE_FIELD)
+                ingredientWorkflowData.filter((row) => row.rule_field === INGREDIENT_TRADE_CATEGORY_RULE_FIELD)
               )),
         };
         const mergedIngredientSourceCodeRedirectState = {
@@ -8132,7 +8191,7 @@ function App() {
           ...(ingredientWorkflowError
             ? {}
             : parseSharedIngredientSourceCodeRedirectRows(
-                (ingredientWorkflowRows || []).filter((row) => row.rule_field === INGREDIENT_SOURCE_CODE_REDIRECT_RULE_FIELD)
+                ingredientWorkflowData.filter((row) => row.rule_field === INGREDIENT_SOURCE_CODE_REDIRECT_RULE_FIELD)
               )),
         };
         const mergedIgnoredImportRows = ingredientWorkflowError
@@ -8140,7 +8199,7 @@ function App() {
           : {
               ...ignoredImportRows,
               ...parseSharedFlagRows(
-                (ingredientWorkflowRows || []).filter((row) => row.rule_field === IGNORED_IMPORT_ROW_RULE_FIELD)
+                ingredientWorkflowData.filter((row) => row.rule_field === IGNORED_IMPORT_ROW_RULE_FIELD)
               ),
             };
         const mergedRecipeReviewFlagState = ingredientWorkflowError
@@ -8148,7 +8207,7 @@ function App() {
           : {
               ...recipeReviewFlagState,
               ...parseSharedFlagRows(
-                (ingredientWorkflowRows || []).filter((row) => row.rule_field === RECIPE_REVIEW_FLAG_RULE_FIELD)
+                ingredientWorkflowData.filter((row) => row.rule_field === RECIPE_REVIEW_FLAG_RULE_FIELD)
               ),
             };
         const mergedBatchReviewFlagState = ingredientWorkflowError
@@ -8156,7 +8215,7 @@ function App() {
           : {
               ...batchReviewFlagState,
               ...parseSharedFlagRows(
-                (ingredientWorkflowRows || []).filter((row) => row.rule_field === BATCH_REVIEW_FLAG_RULE_FIELD)
+                ingredientWorkflowData.filter((row) => row.rule_field === BATCH_REVIEW_FLAG_RULE_FIELD)
               ),
             };
 
@@ -8176,7 +8235,7 @@ function App() {
           componentRows: componentRows || [],
           menuRows: menuRows || [],
           menuLineRows: menuLineRows || [],
-          profileRows: profilesResult?.error ? [] : profilesResult?.data || [],
+          profileRows: profilesError ? [] : profileRows,
           ingredientReviewState: mergedIngredientReviewState,
           ingredientSubstitutionState: mergedIngredientSubstitutionState,
           ingredientTradeCategoryState: mergedIngredientTradeCategoryState,
@@ -8253,6 +8312,8 @@ function App() {
         setSharedDataStatus(
           `${ingredientWorkflowError
             ? "Loaded shared workspace, but could not load ingredient workflow sidecar. "
+            : ""}${profilesError
+            ? "Loaded shared workspace, but could not load shared users. "
             : ""}Loaded ${sharedData.ingredients.length} ingredients, ${sharedData.batches.length} components, ${sharedData.recipes.length} recipes, and ${sharedData.menus.length} menus from shared data.`
         );
       } catch (error) {
@@ -16115,6 +16176,9 @@ function IngredientsPanel({
           visibleArchivedRowIds={visibleArchivedRowIds}
           bulkDeleteArchivedIngredients={bulkDeleteArchivedIngredients}
           rows={rows}
+          rowNeedsManualReview={rowNeedsManualReview}
+          rowNeedsPriceReview={rowNeedsPriceReview}
+          rowNeedsRuleCatchup={rowNeedsRuleCatchup}
           learningRules={learningRules}
           soft1SourceRows={soft1SourceRows}
           ingredientRuleCatchupMap={ingredientRuleCatchupMap}
@@ -16485,6 +16549,9 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
   visibleArchivedRowIds,
   bulkDeleteArchivedIngredients,
   rows,
+  rowNeedsManualReview,
+  rowNeedsPriceReview,
+  rowNeedsRuleCatchup,
   learningRules,
   soft1SourceRows,
   ingredientRuleCatchupMap,
@@ -16608,10 +16675,9 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
             ingredientParsedIndexMap?.get(row.id) || getIngredientMasterParsedIndex(row, learningRules, soft1SourceRows);
           const catchupSuggestion = ingredientRuleCatchupMap?.get(row.id) || null;
           const componentIdentifier = getIngredientComponentIdentifier(row, batchMap);
-          const reviewAttentionReasons = getRowReviewAttentionReasons(row);
-          const needsManualReview = reviewAttentionReasons.includes("manual_review");
-          const needsRuleCatchup = reviewAttentionReasons.includes("rule_catchup");
-          const needsPriceReview = reviewAttentionReasons.includes("price_review");
+          const needsManualReview = rowNeedsManualReview?.(row) || false;
+          const needsRuleCatchup = rowNeedsRuleCatchup?.(row) || false;
+          const needsPriceReview = rowNeedsPriceReview?.(row) || false;
           const displayName = getIngredientCatalogueDisplayName(row, catchupSuggestion);
           return (
             <button
