@@ -15302,6 +15302,7 @@ function App() {
                 soft1SourceRows={soft1SourceRows}
                 soft1ImportState={soft1ImportState}
                 searchQuery={trimmedSearchQuery}
+                ingredientParsedIndexMap={ingredientParsedIndexMap}
               />
             ) : null}
             {activeSection === "substitutions" ? (
@@ -15831,6 +15832,7 @@ function IngredientsPanel({
   soft1SourceRows,
   soft1ImportState,
   searchQuery,
+  ingredientParsedIndexMap,
 }) {
   const [importStatusFilter, setImportStatusFilter] = useState("all");
   const importFileInputRef = useRef(null);
