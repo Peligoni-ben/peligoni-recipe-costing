@@ -26,6 +26,7 @@ const DISH_INDEX_STORAGE_KEY = "peligoni-dish-index";
 const BCH_AUDIT_STORAGE_KEY = "peligoni-bch-audit";
 const RECIPE_AVAILABLE_VENUES_STORAGE_KEY = "peligoni-recipe-available-venues";
 const EDIT_SESSION_STALE_MS = 90 * 1000;
+const V1_FORCE_READ_ONLY = true;
 const REQUIRED_INGREDIENT_COLUMNS = [
   "ingredient_name",
   "ingredient_item_code",
@@ -4238,7 +4239,9 @@ function App() {
   const currentUserRole =
     authProfile?.role
     || (String(authUser?.email || "").trim().toLowerCase() === "ben@peligoni.com" ? "manager" : "viewer");
-  const canEditSharedData = !supabaseEnabled || !authUser || ["manager", "editor"].includes(currentUserRole);
+  const canEditSharedData =
+    !V1_FORCE_READ_ONLY &&
+    (!supabaseEnabled || !authUser || ["manager", "editor"].includes(currentUserRole));
 
   const refreshAuthProfile = async (user, session = null) => {
     if (!user) {
@@ -4639,7 +4642,11 @@ function App() {
 
   const requireEditAccess = () => {
     if (canEditSharedData) return false;
-    setImportError("Your account is in viewer mode. You can review data, but only editors and managers can make changes.");
+    setImportError(
+      V1_FORCE_READ_ONLY
+        ? "V1 is currently read-only while live cleanup continues in v2. Review is still available here, but changes must be made in v2."
+        : "Your account is in viewer mode. You can review data, but only editors and managers can make changes."
+    );
     return true;
   };
 
@@ -10233,8 +10240,12 @@ function App() {
 
         {supabaseEnabled && authUser && !canEditSharedData ? (
           <div className="callout callout-default">
-            <strong>Viewer mode</strong>
-            <span>You can review data, but only editors and managers can make shared changes.</span>
+            <strong>{V1_FORCE_READ_ONLY ? "V1 read-only mode" : "Viewer mode"}</strong>
+            <span>
+              {V1_FORCE_READ_ONLY
+                ? "This app is temporarily locked for shared edits while live cleanup continues in v2. Please use v2 for any changes."
+                : "You can review data, but only editors and managers can make shared changes."}
+            </span>
           </div>
         ) : null}
 

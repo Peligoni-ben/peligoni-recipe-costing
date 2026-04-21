@@ -9,6 +9,7 @@ create table if not exists public.ingredients (
   id uuid primary key default gen_random_uuid(),
   ingredient_name text not null,
   ingredient_item_code text,
+  internal_code text,
   unit_cost numeric(12,4) not null default 0,
   purchase_vat_rate numeric(12,4) not null default 0.13,
   pack_size text,
@@ -28,6 +29,10 @@ alter table if exists public.ingredients
 create unique index if not exists ingredients_code_unique
   on public.ingredients ((upper(regexp_replace(coalesce(ingredient_item_code, ''), '\s+', '', 'g'))))
   where coalesce(ingredient_item_code, '') <> '';
+
+create unique index if not exists ingredients_internal_code_unique
+  on public.ingredients ((upper(regexp_replace(coalesce(internal_code, ''), '\s+', '', 'g'))))
+  where coalesce(internal_code, '') <> '';
 
 create table if not exists public.recipes (
   id text primary key,
@@ -148,3 +153,16 @@ create table if not exists public.edit_sessions (
 );
 
 create index if not exists edit_sessions_entity_idx on public.edit_sessions (entity_type, entity_id);
+
+create table if not exists public.ingredient_naming_rules (
+  id text primary key,
+  rule_field text not null,
+  rule_label text not null,
+  trigger_text text not null,
+  rule_value text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists ingredient_naming_rules_trigger_unique
+  on public.ingredient_naming_rules (rule_field, trigger_text);

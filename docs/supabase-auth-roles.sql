@@ -68,6 +68,7 @@ alter table public.menus enable row level security;
 alter table public.menu_lines enable row level security;
 alter table public.dish_index enable row level security;
 alter table public.bch_audit enable row level security;
+alter table public.ingredient_naming_rules enable row level security;
 
 drop policy if exists "venues_read_authenticated" on public.venues;
 create policy "venues_read_authenticated"
@@ -184,6 +185,21 @@ using (true);
 drop policy if exists "bch_audit_write_editor_manager" on public.bch_audit;
 create policy "bch_audit_write_editor_manager"
 on public.bch_audit
+for all
+to authenticated
+using (public.current_app_role() in ('manager', 'editor'))
+with check (public.current_app_role() in ('manager', 'editor'));
+
+drop policy if exists "ingredient_naming_rules_read_authenticated" on public.ingredient_naming_rules;
+create policy "ingredient_naming_rules_read_authenticated"
+on public.ingredient_naming_rules
+for select
+to authenticated
+using (true);
+
+drop policy if exists "ingredient_naming_rules_write_editor_manager" on public.ingredient_naming_rules;
+create policy "ingredient_naming_rules_write_editor_manager"
+on public.ingredient_naming_rules
 for all
 to authenticated
 using (public.current_app_role() in ('manager', 'editor'))
