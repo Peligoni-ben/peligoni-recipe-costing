@@ -6595,9 +6595,11 @@ function formatExportUnitLabel(unit = "") {
 function formatExportQuantity(value = 0, unit = "") {
   const numericValue = Number(value || 0);
   if (!numericValue) return "0";
-  if (unit === "kg") return `${numericValue.toFixed(3)} kg`;
-  if (unit === "l") return `${numericValue.toFixed(3)} L`;
-  if (unit === "g" || unit === "ml") return `${numericValue.toFixed(3)} ${unit}`;
+  const formatCompact = (amount, maximumDecimals = 2) =>
+    Number(amount.toFixed(maximumDecimals)).toString();
+  if (unit === "kg") return `${formatCompact(numericValue, 2)} kg`;
+  if (unit === "l") return `${formatCompact(numericValue, 2)} L`;
+  if (unit === "g" || unit === "ml") return `${formatCompact(numericValue, 2)} ${unit}`;
   if (unit === "portion") return `${numericValue.toFixed(0)} portion`;
   if (unit === "piece") return `${numericValue.toFixed(0)} pcs`;
   return `${numericValue} ${unit || ""}`.trim();
@@ -15050,6 +15052,9 @@ function App() {
 
   const recipeRows = recipeLibraryRows.filter((item) => {
     if (recipeStatusFilter === "all" || recipeStatusFilter === "archived") return true;
+    if (recipeStatusFilter === "needs_attention") {
+      return Boolean(item.needsReviewFlag || item.sharedMissingLineCount);
+    }
     return item.status === recipeStatusFilter;
   });
 
@@ -17153,6 +17158,7 @@ function RecipesPanel({
   const draftCount = activeRows.filter((row) => row.status === "draft").length;
   const liveCount = activeRows.filter((row) => row.status === "live").length;
   const reviewCount = activeRows.filter((row) => row.status === "review").length;
+  const needsAttentionCount = activeRows.filter((row) => Boolean(row.needsReviewFlag || row.sharedMissingLineCount)).length;
 
   return (
     <>
@@ -17167,7 +17173,7 @@ function RecipesPanel({
       </div>
       <div className="v2-summary-grid v2-summary-grid-library">
         <SummaryCard
-          label="Recipes"
+          label="All"
           value={String(activeRows.length)}
           tone="default"
           active={recipeStatusFilter === "all"}
@@ -17193,6 +17199,13 @@ function RecipesPanel({
           tone="good"
           active={recipeStatusFilter === "live"}
           onClick={() => setRecipeStatusFilter("live")}
+        />
+        <SummaryCard
+          label="Needs attention"
+          value={String(needsAttentionCount)}
+          tone="warn"
+          active={recipeStatusFilter === "needs_attention"}
+          onClick={() => setRecipeStatusFilter("needs_attention")}
         />
         <SummaryCard
           label="Archived"
@@ -17257,6 +17270,7 @@ function RecipesPanel({
                       <span className="v2-tag">{progress.completeCount}/{progress.total} steps ready</span>
                       <span className="v2-tag">Recipe cost {formatCurrency(pricing.recipeCost)}</span>
                       <span className="v2-tag">GP {formatPercent(pricing.grossProfit)}</span>
+                      {row.needsReviewFlag ? <span className="v2-tag">Needs attention</span> : null}
                       {row.sharedMissingLineCount ? (
                         <span className="v2-tag">Missing {row.sharedMissingLineCount} source line{row.sharedMissingLineCount === 1 ? "" : "s"}</span>
                       ) : null}
@@ -18784,7 +18798,7 @@ function RecipeWorkflowDetail({
       : record.status === "review"
         ? "Ready in library"
         : "Live";
-  const footerPrimaryDisabled = false;
+  const footerPrimaryDisabled = !nextStep && record.status !== "draft";
   const ingredientPickerResults = useMemo(() => {
     const query = deferredIngredientPickerQuery.trim();
     if (!query) return [];
@@ -19078,11 +19092,11 @@ function RecipeWorkflowDetail({
               <div className="v2-micro-note">No component lines yet.</div>
             )}
             <div className="v2-link-list">
-              <button type="button" className="v2-secondary-button" onClick={openBatchPicker}>
-                Add component
-              </button>
               <button type="button" className="v2-primary-button" onClick={openIngredientPicker}>
                 Add ingredient
+              </button>
+              <button type="button" className="v2-secondary-button" onClick={openBatchPicker}>
+                Add component
               </button>
             </div>
           </div>
@@ -19175,11 +19189,27 @@ function RecipeWorkflowDetail({
             <SummaryCard label="Stage" value={titleCaseWords(getRecipeStageLabel(record.status))} tone={record.status === "live" ? "good" : "review"} />
           </div>
           <div className="v2-editor-block">
-            <strong>Status and actions</strong>
+            <strong>Workflow</strong>
             <div className="v2-micro-note">
               {recipeReadyToPublish
                 ? "All recipe steps are complete and this dish can move through the publish flow."
                 : `${progress.completeCount}/${progress.total} steps are complete. Finish the remaining steps before marking this recipe ready.`}
+            </div>
+            <div className={`v2-inline-callout ${record.status === "live" ? "" : "warn"}`}>
+              <strong>
+                {record.status === "live"
+                  ? "This recipe is live"
+                  : record.status === "review"
+                    ? "This recipe is ready in the library"
+                    : "This recipe is still in draft"}
+              </strong>
+              <span>
+                {record.status === "live"
+                  ? "It is available as a live recipe and can be pulled back to ready or draft if you need to revise it."
+                  : record.status === "review"
+                    ? "Use the Ready filter in the recipe library when you want to publish it live."
+                    : "Finish the missing workflow steps, then use Mark ready to move it into the library's Ready stage."}
+              </span>
             </div>
             <div className={`v2-inline-callout ${recipeSaveState && recipeSaveState !== "saved" ? "warn" : ""}`}>
               <strong>
@@ -19202,9 +19232,6 @@ function RecipeWorkflowDetail({
               </span>
             </div>
             <div className="v2-link-list">
-              {record.status === "review" ? (
-                <span className="v2-tag">Publish from the Ready filter in the recipe library</span>
-              ) : null}
               <button
                 type="button"
                 className="v2-secondary-button"
