@@ -41,6 +41,10 @@ const RECIPE_REVIEW_FLAG_RULE_FIELD = "__recipe_review_flag__";
 const BATCH_REVIEW_FLAG_RULE_FIELD = "__batch_review_flag__";
 const EDIT_SESSION_STALE_MS = 90 * 1000;
 const SHARED_LOAD_TIMEOUT_MS = 15000;
+const LIVE_FOOD_APP_URL = "https://peligoni-recipe-costing.vercel.app/";
+const LIVE_DRINKS_APP_URL = "https://drinks-recipe-app.vercel.app/";
+const LOCAL_FOOD_APP_URL = "http://localhost:5174/";
+const LOCAL_DRINKS_APP_URL = "http://localhost:5173/";
 
 function withTimeout(promise, timeoutMs = SHARED_LOAD_TIMEOUT_MS, label = "Request") {
   return new Promise((resolve, reject) => {
@@ -58,6 +62,23 @@ function withTimeout(promise, timeoutMs = SHARED_LOAD_TIMEOUT_MS, label = "Reque
         reject(error);
       });
   });
+}
+
+function getAppSwitcherLinks() {
+  if (typeof window === "undefined") {
+    return {
+      food: LIVE_FOOD_APP_URL,
+      drinks: LIVE_DRINKS_APP_URL,
+    };
+  }
+
+  const hostname = window.location.hostname;
+  const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
+
+  return {
+    food: isLocalHost ? LOCAL_FOOD_APP_URL : LIVE_FOOD_APP_URL,
+    drinks: isLocalHost ? LOCAL_DRINKS_APP_URL : LIVE_DRINKS_APP_URL,
+  };
 }
 
 const initialIngredients = [
@@ -15053,6 +15074,7 @@ function App() {
       null;
     return matchedUser?.name || authUser.email || "User";
   }, [authUser, users]);
+  const appSwitcherLinks = useMemo(() => getAppSwitcherLinks(), []);
 
   const currentEditTarget = useMemo(() => {
     if (!supabaseEnabled || !supabase || !authUser) return null;
@@ -15197,6 +15219,7 @@ function App() {
       <SharedDataAuthScreen
         title="Checking shared session"
         message="V2 is set to use shared Supabase data. Checking whether you already have an active session."
+        drinksLink={appSwitcherLinks.drinks}
       />
     );
   }
@@ -15212,6 +15235,7 @@ function App() {
         setPassword={setAuthPassword}
         error={authError}
         onSubmit={signInToSharedData}
+        drinksLink={appSwitcherLinks.drinks}
       />
     );
   }
@@ -15221,6 +15245,7 @@ function App() {
       <SharedDataAuthScreen
         title="Loading shared workspace"
         message={sharedDataStatus}
+        drinksLink={appSwitcherLinks.drinks}
       />
     );
   }
@@ -15230,6 +15255,7 @@ function App() {
       <SharedDataAuthScreen
         title="Could not load shared workspace"
         message={sharedDataStatus}
+        drinksLink={appSwitcherLinks.drinks}
       />
     );
   }
@@ -15282,6 +15308,9 @@ function App() {
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search ingredients, recipes, components, menus"
             />
+            <a href={appSwitcherLinks.drinks} className="v2-secondary-button">
+              Drinks app
+            </a>
             {supabaseEnabled ? (
               <button type="button" className="v2-secondary-button" onClick={signOutOfSharedData}>
                 Sign out
@@ -21545,13 +21574,14 @@ function SharedDataAuthScreen({
   setPassword,
   error = "",
   onSubmit,
+  drinksLink = "",
 }) {
   return (
     <div className="v2-app">
       <main className="v2-main">
         <section className="v2-panel v2-detail-panel">
           <div className="v2-empty-state">
-            <div className="v2-eyebrow">Shared data</div>
+            <div className="v2-eyebrow">Peligoni internal tool</div>
             <h3>{title}</h3>
             <p>{message}</p>
             {typeof onSubmit === "function" ? (
@@ -21574,7 +21604,18 @@ function SharedDataAuthScreen({
                   >
                     Sign in
                   </button>
+                  {drinksLink ? (
+                    <a href={drinksLink} className="v2-secondary-button">
+                      Drinks app
+                    </a>
+                  ) : null}
                 </div>
+              </div>
+            ) : drinksLink ? (
+              <div className="v2-link-list">
+                <a href={drinksLink} className="v2-secondary-button">
+                  Drinks app
+                </a>
               </div>
             ) : null}
           </div>
