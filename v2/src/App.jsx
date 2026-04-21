@@ -666,6 +666,13 @@ function mapProfileRoleToV2(role = "") {
   return "Chef";
 }
 
+function mapV2RoleToProfileRole(role = "") {
+  const normalized = normalizeSharedKey(role);
+  if (normalized === "admin") return "manager";
+  if (normalized === "editor") return "editor";
+  return "viewer";
+}
+
 function buildRestaurantsFromSharedData(baseRestaurants = [], menus = [], recipes = []) {
   const knownByKey = new Map(baseRestaurants.map((restaurant) => [normalizeSharedKey(restaurant.name), restaurant]));
   const venueNames = new Set([
@@ -976,7 +983,8 @@ function hydrateSharedDataToV2({
     if (!ingredient.batchId) return;
     const linkedBatch = batchById.get(ingredient.batchId);
     if (!linkedBatch) return;
-    ingredient.status = linkedBatch.status === "draft" ? "draft" : linkedBatch.status === "review" ? "review" : "ready";
+    const isPublishedIngredient = String(linkedBatch.publishedIngredientId || "").trim() === String(ingredient.id || "").trim();
+    ingredient.status = isPublishedIngredient ? "ready" : linkedBatch.status === "draft" ? "draft" : linkedBatch.status === "review" ? "review" : "ready";
   });
   const dishRecipeRows = (recipeRows || []).filter((row) => String(row.recipe_type || "").trim() !== "batch");
 
@@ -993,25 +1001,14 @@ function hydrateSharedDataToV2({
     linkedComponents.forEach((component) => {
       const sourceRecipeId = String(component.source_recipe_id || "").trim();
       if (sourceRecipeId && batchById.has(sourceRecipeId)) {
-          const publishedIngredientId = batchPublishedIngredientByRecipeId.get(sourceRecipeId) || "";
-          if (publishedIngredientId) {
-            const ingredient = mappedIngredients.find((item) => item.id === publishedIngredientId) || null;
-            ingredientLines.push({
-              ingredientId: publishedIngredientId,
-              quantity: formatEditableQuantity(numberValue(component.qty)),
-              unit: resolveSharedIngredientLineUnit(component, ingredient),
-              estimatedCost: numberValue(component.cost),
-            });
-          } else {
-            const batch = batchById.get(sourceRecipeId);
-            batchLines.push({
-              batchId: sourceRecipeId,
-              quantity: formatEditableQuantity(numberValue(component.qty)),
-              unit: mapSharedSourceYieldTypeToLineUnit(component.source_yield_type, batch?.yieldUnit || "portion"),
-              estimatedCost: numberValue(component.cost),
-            });
-          }
-          return;
+        const batch = batchById.get(sourceRecipeId);
+        batchLines.push({
+          batchId: sourceRecipeId,
+          quantity: formatEditableQuantity(numberValue(component.qty)),
+          unit: mapSharedSourceYieldTypeToLineUnit(component.source_yield_type, batch?.yieldUnit || "portion"),
+          estimatedCost: numberValue(component.cost),
+        });
+        return;
       }
 
       if (sourceRecipeId && String(component.source_type || "").trim().toLowerCase() === "batch" && !batchById.has(sourceRecipeId)) {
@@ -1036,6 +1033,21 @@ function hydrateSharedDataToV2({
         const detail = buildMissingSharedSourceLineDetail(component);
         unmatchedLabels.push(detail.label);
         unmatchedDetails.push(detail);
+        return;
+      }
+
+      const linkedBatchId =
+        ingredient.batchId && batchById.has(ingredient.batchId)
+          ? ingredient.batchId
+          : "";
+      if (linkedBatchId) {
+        const batch = batchById.get(linkedBatchId);
+        batchLines.push({
+          batchId: linkedBatchId,
+          quantity: formatEditableQuantity(numberValue(component.qty)),
+          unit: mapSharedSourceYieldTypeToLineUnit(component.source_yield_type, batch?.yieldUnit || "portion"),
+          estimatedCost: numberValue(component.cost),
+        });
         return;
       }
 
@@ -1129,6 +1141,7 @@ function hydrateSharedDataToV2({
         email: String(profile.email || "").trim(),
         role: mapProfileRoleToV2(profile.role),
         status: "active",
+        isSharedProfile: true,
       }))
     : initialUsers;
 
@@ -6208,7 +6221,11 @@ function getMenuCourseLabel(item, recipe) {
 
 function downloadTextFile(filename, content, mimeType = "text/plain;charset=utf-8;") {
   if (typeof window === "undefined") return;
-  const blob = new Blob([content], { type: mimeType });
+  const isCsv = String(mimeType || "").toLowerCase().includes("text/csv");
+  const normalizedContent = isCsv
+    ? `\uFEFF${String(content ?? "").replace(/\r?\n/g, "\r\n")}`
+    : content;
+  const blob = new Blob([normalizedContent], { type: mimeType });
   const url = window.URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -6706,28 +6723,16 @@ function buildRecipeCostSheetRowsV2(recipe, ingredientMap = new Map(), batchMap 
 }
 
 function buildRecipeChefSheetRowsV2(recipe, ingredientMap = new Map(), batchMap = new Map()) {
-  const ingredientRows = (recipe.ingredientLines || []).flatMap((line) => {
+  const ingredientRows = (recipe.ingredientLines || []).map((line) => {
     const ingredient = ingredientMap.get(line.ingredientId);
     const ingredientCostSource = getIngredientCostSource(ingredient, ingredientMap, batchMap);
-    const expandedRows = buildExpandedPublishedIngredientRowsForRecipeExport(line, ingredient, ingredientMap, batchMap);
-    if (expandedRows.length) {
-      return expandedRows.map((row) => ({
-        ingredientCode: row.ingredientCode || "",
-        description: row.description || "",
-        unitOfMeasure: row.unitOfMeasure || "",
-        quantityUsed: row.quantityUsed || "",
-        cost: row.cost || 0,
-      }));
-    }
-    return [
-      {
-        ingredientCode: ingredient?.code || "",
-        description: ingredient?.name || "",
-        unitOfMeasure: formatExportUnitLabel(line.unit || ingredientCostSource?.costUnit || ""),
-        quantityUsed: formatExportQuantity(line.quantity, line.unit),
-        cost: calculateLineEstimatedCost(line, ingredientCostSource),
-      },
-    ];
+    return {
+      ingredientCode: ingredient?.code || "",
+      description: ingredient?.name || "",
+      unitOfMeasure: formatExportUnitLabel(line.unit || ingredientCostSource?.costUnit || ""),
+      quantityUsed: formatExportQuantity(line.quantity, line.unit),
+      cost: calculateLineEstimatedCost(line, ingredientCostSource),
+    };
   });
 
   const batchRows = (recipe.batchLines || []).map((line) => {
@@ -6766,7 +6771,7 @@ function buildBatchCostSheetRowsV2(batch, ingredientMap = new Map(), batchMap = 
 function buildCostSheetCsvBlock({ code = "", name = "", itemCode = "", totalCost = 0, componentRows = [] }) {
   const escapeCsv = (value) => {
     const text = String(value ?? "");
-    if (text.includes(",") || text.includes('"') || text.includes("\n")) {
+    if (text.includes(",") || text.includes('"') || text.includes("\n") || text.includes("\r")) {
       return `"${text.replace(/"/g, '""')}"`;
     }
     return text;
@@ -6788,7 +6793,7 @@ function buildCostSheetCsvBlock({ code = "", name = "", itemCode = "", totalCost
     ["Total", "", "", "", "Mixed units", csvMoney(totalCost)],
   ];
 
-  return rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
+  return ["sep=,", ...rows.map((row) => row.map(escapeCsv).join(","))].join("\r\n");
 }
 
 function buildCostSheetHtmlV2({ title, code = "", name = "", itemCode = "", totalCost = 0, roundup = "", componentRows = [] }) {
@@ -7972,6 +7977,8 @@ function App() {
   const [sharedDataStatus, setSharedDataStatus] = useState(
     supabaseEnabled ? "Checking shared session..." : "Running on prototype data."
   );
+  const [userSyncMessage, setUserSyncMessage] = useState("");
+  const [userSyncState, setUserSyncState] = useState("idle");
   const [ingredientWorkspaceView, setIngredientWorkspaceView] = useState("catalogue");
   const [recipeEditorStep, setRecipeEditorStep] = useState("basics");
   const [batchEditorStep, setBatchEditorStep] = useState("basics");
@@ -9373,12 +9380,45 @@ function App() {
   };
 
   const buildSharedRecipeComponentPayloads = (record = {}, recordType = "dish") => {
-    const ingredientRows = (record.ingredientLines || []).map((line, index) => {
+    const normalizedIngredientRows = [];
+    const normalizedBatchRowsFromIngredients = [];
+
+    (record.ingredientLines || []).forEach((line) => {
       const ingredient = recordMaps.ingredient.get(line.ingredientId) || null;
+      const linkedBatchId =
+        recordType === "dish" &&
+        ingredient?.batchId &&
+        recordMaps.batch.has(ingredient.batchId)
+          ? String(ingredient.batchId || "").trim()
+          : "";
+
+      if (linkedBatchId) {
+        const batch = recordMaps.batch.get(linkedBatchId) || null;
+        const batchCostSource = getBatchCostSource(batch, recordMaps.ingredient);
+        normalizedBatchRowsFromIngredients.push({
+          recipe_id: String(record.id || "").trim(),
+          ingredient_name: String(batch?.name || ingredient?.name || "").trim() || null,
+          ingredient_item_code: String(batch?.code || ingredient?.sourceCode || ingredient?.code || "").trim() || null,
+          qty: parseNumericQuantity(line.quantity),
+          cost: Number(
+            line.estimatedCost ||
+              calculateLineEstimatedCost(line, {
+                unitCost: batchCostSource?.unitCost,
+                costUnit: batchCostSource?.costUnit,
+              }) ||
+              0
+          ),
+          source_type: "batch",
+          source_recipe_id: linkedBatchId || null,
+          source_unit_cost: Number(batch?.unitCost || 0),
+          source_yield_type: String(line.unit || "").trim() || null,
+        });
+        return;
+      }
+
       const ingredientCostSource = getIngredientCostSource(ingredient, recordMaps.ingredient, recordMaps.batch);
-      return {
+      normalizedIngredientRows.push({
         recipe_id: String(record.id || "").trim(),
-        component_order: index,
         ingredient_name: String(ingredient?.name || "").trim() || null,
         ingredient_item_code: String(ingredient?.sourceCode || ingredient?.code || "").trim() || null,
         qty: parseNumericQuantity(line.quantity),
@@ -9387,16 +9427,20 @@ function App() {
         source_recipe_id: String(line.ingredientId || ingredient?.id || "").trim() || null,
         source_unit_cost: Number(ingredientCostSource?.unitCost || 0),
         source_yield_type: String(line.unit || "").trim() || null,
-      };
+      });
     });
+
+    const ingredientRows = normalizedIngredientRows.map((row, index) => ({
+      ...row,
+      component_order: index,
+    }));
 
     const batchRows =
       recordType === "dish"
-        ? (record.batchLines || []).map((line, index) => {
+        ? [...normalizedBatchRowsFromIngredients, ...(record.batchLines || []).map((line) => {
             const batch = recordMaps.batch.get(line.batchId) || null;
             return {
               recipe_id: String(record.id || "").trim(),
-              component_order: ingredientRows.length + index,
               ingredient_name: String(batch?.name || "").trim() || null,
               ingredient_item_code: String(batch?.code || "").trim() || null,
               qty: parseNumericQuantity(line.quantity),
@@ -9406,7 +9450,10 @@ function App() {
               source_unit_cost: Number(batch?.unitCost || 0),
               source_yield_type: String(line.unit || "").trim() || null,
             };
-          })
+          })].map((row, index) => ({
+            ...row,
+            component_order: ingredientRows.length + index,
+          }))
         : [];
 
     return [...ingredientRows, ...batchRows];
@@ -11882,6 +11929,13 @@ function App() {
 
   const toggleRecipeIngredientLink = (recipeId, ingredient) => {
     if (!ingredient) return;
+    if (ingredient.batchId && recordMaps.batch.has(ingredient.batchId)) {
+      const batch = recordMaps.batch.get(ingredient.batchId) || null;
+      if (batch) {
+        toggleRecipeBatchLink(recipeId, batch);
+      }
+      return;
+    }
 
     updateRecipe(recipeId, (recipe) => {
       const currentLines = recipe.ingredientLines || [];
@@ -12082,23 +12136,16 @@ function App() {
     const batch = batches.find((item) => item.id === batchId);
     const publishedIngredientId = String(batch?.publishedIngredientId || "").trim();
     if (!publishedIngredientId) return;
-    const publishedIngredient = ingredientMaster.find((item) => item.id === publishedIngredientId) || null;
 
     setIngredientMaster((current) =>
       current.map((ingredient) =>
         ingredient.id === publishedIngredientId
           ? {
               ...ingredient,
-              status: nextStatus,
+              status: "ready",
             }
           : ingredient
       )
-    );
-
-    syncRecipesForIngredientStatus(
-      publishedIngredientId,
-      nextStatus,
-      publishedIngredient?.name || batch?.name || publishedIngredientId
     );
   };
 
@@ -12276,7 +12323,7 @@ function App() {
     });
   };
 
-  const publishBatchToIngredient = (batchId) => {
+  const publishBatchToIngredient = async (batchId) => {
     const batch = batches.find((item) => item.id === batchId);
     if (!batch) return;
     if (!isBatchReadyToPublish(batch, recordMaps.ingredient)) {
@@ -12305,6 +12352,35 @@ function App() {
       ingredientMaster
     );
 
+    if (supabaseEnabled && supabase) {
+      const { data, error } = await runSharedIngredientMutation({
+        mode: existingPublishedIngredient?.sharedRecordId ? "update" : "insert",
+        ingredient: nextIngredient,
+        sharedRecordId: String(existingPublishedIngredient?.sharedRecordId || "").trim(),
+      });
+
+      if (error) {
+        if (typeof window !== "undefined") {
+          window.alert(error.message || `Could not publish "${batch.name}" to the shared ingredient list.`);
+        }
+        return;
+      }
+
+      nextIngredient.id = String(data?.id || nextIngredient.id);
+      nextIngredient.sharedRecordId = String(data?.id || existingPublishedIngredient?.sharedRecordId || "").trim();
+      nextIngredient.sharedUpdatedAt = String(data?.updated_at || data?.last_updated || "").trim();
+      nextIngredient.lastImportedAt = String(data?.last_updated || nextIngredient.lastImportedAt || "").trim();
+      nextIngredient.sharedDirty = false;
+      nextIngredient.archived = Boolean(data?.is_archived);
+      nextIngredient.code = String(
+        getSharedInternalIngredientCode(data) || getSharedSoft1Code(data) || nextIngredient.code
+      ).trim();
+      nextIngredient.packSize = String(data?.pack_size || nextIngredient.packSize).trim();
+      nextIngredient.category = String(data?.category || nextIngredient.category || "").trim();
+      nextIngredient.supplier = String(data?.supplier || nextIngredient.supplier || "").trim();
+      nextIngredient.purchaseVatRate = normalizeVatPercent(data?.purchase_vat_rate, nextIngredient.purchaseVatRate ?? 13);
+    }
+
     setIngredientMaster((current) => {
       const exists = current.some((ingredient) => ingredient.id === nextIngredient.id);
       if (!exists) {
@@ -12321,10 +12397,18 @@ function App() {
               ...item,
               publishedIngredientId: nextIngredient.id,
               status: "ready",
+              sharedDirty: true,
             }
           : item
       )
     );
+
+    if (nextIngredient.id) {
+      setIngredientSharedSyncState((current) => ({
+        ...current,
+        [nextIngredient.id]: "saved",
+      }));
+    }
   };
 
   const publishReadyBatches = () => {
@@ -12749,13 +12833,83 @@ function App() {
       email: String(draft?.email || "").trim(),
       role: String(draft?.role || "Chef").trim() || "Chef",
       status: String(draft?.status || "active").trim() || "active",
+      isSharedProfile: false,
     };
     if (!(nextUser.name && nextUser.email)) return false;
     setUsers((current) => [nextUser, ...current]);
     return true;
   };
 
-  const updateUser = (userId, field, value) => {
+  const persistSharedUserRole = async (userId, nextRole) => {
+    const previousUser = users.find((user) => user.id === userId) || null;
+    if (!previousUser?.isSharedProfile) {
+      setUserSyncState("error");
+      setUserSyncMessage(
+        "This user is local-only, not a real shared login. Create them in Supabase Authentication first before assigning real edit rights."
+      );
+      return false;
+    }
+    if (!supabaseEnabled || !supabase) {
+      setUserSyncState("idle");
+      setUserSyncMessage("User roles are only saved locally while shared data is disabled.");
+      return false;
+    }
+    if (currentUserRole !== "Admin") {
+      setUserSyncState("error");
+      setUserSyncMessage("Only Admin users can change shared user rights.");
+      return false;
+    }
+
+    setUserSyncState("syncing");
+    setUserSyncMessage("Saving user role...");
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .update({
+        role: mapV2RoleToProfileRole(nextRole),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", userId)
+      .select("id,email,full_name,role")
+      .single();
+
+    if (error) {
+      setUserSyncState("error");
+      setUserSyncMessage(error.message || "Could not save the user role.");
+      return false;
+    }
+
+    const mappedUser = {
+      id: String(data?.id || userId),
+      name: String(data?.full_name || previousUser?.name || data?.email || "User").trim(),
+      email: String(data?.email || "").trim(),
+      role: mapProfileRoleToV2(data?.role),
+      status: "active",
+      isSharedProfile: true,
+    };
+
+    setUsers((current) =>
+      current.map((user) => (user.id === mappedUser.id ? { ...user, ...mappedUser } : user))
+    );
+
+    if (String(authUser?.id || "").trim() === mappedUser.id) {
+      setAuthProfile((current) => ({
+        ...(current || {}),
+        id: mappedUser.id,
+        email: mappedUser.email,
+        full_name: mappedUser.name,
+        role: mapV2RoleToProfileRole(mappedUser.role),
+        profileError: "",
+      }));
+    }
+
+    setUserSyncState("saved");
+    setUserSyncMessage(`Saved ${mappedUser.name || mappedUser.email || "user"} as ${mappedUser.role}.`);
+    return true;
+  };
+
+  const updateUser = async (userId, field, value) => {
+    const previousUser = users.find((user) => user.id === userId) || null;
     setUsers((current) =>
       current.map((user) =>
         user.id === userId
@@ -12766,6 +12920,23 @@ function App() {
           : user
       )
     );
+
+    if (field !== "role") return true;
+
+    const didPersist = await persistSharedUserRole(userId, value);
+    if (!didPersist && previousUser) {
+      setUsers((current) =>
+        current.map((user) =>
+          user.id === userId
+            ? {
+                ...user,
+                role: previousUser.role,
+              }
+            : user
+        )
+      );
+    }
+    return didPersist;
   };
 
   const toggleUserStatus = (userId) => {
@@ -15066,14 +15237,21 @@ function App() {
     return [activeSection, selectedRecord.type, selectedData.name || selectedData.restaurant || selectedData.code];
   }, [activeSection, ingredientWorkspaceView, selectedData, selectedImportRow, selectedRecord.type]);
 
-  const currentUserName = useMemo(() => {
-    if (!authUser) return "";
-    const matchedUser =
+  const currentUserRecord = useMemo(() => {
+    if (!authUser) return null;
+    return (
       users.find((user) => String(user.id || "").trim() === String(authUser.id || "").trim()) ||
       users.find((user) => String(user.email || "").trim().toLowerCase() === String(authUser.email || "").trim().toLowerCase()) ||
-      null;
-    return matchedUser?.name || authUser.email || "User";
+      null
+    );
   }, [authUser, users]);
+  const currentUserName = useMemo(() => {
+    if (!authUser) return "";
+    return currentUserRecord?.name || authUser.email || "User";
+  }, [authUser, currentUserRecord]);
+  const currentUserRole = useMemo(() => {
+    return currentUserRecord?.role || "Chef";
+  }, [currentUserRecord]);
   const appSwitcherLinks = useMemo(() => getAppSwitcherLinks(), []);
 
   const currentEditTarget = useMemo(() => {
@@ -15474,6 +15652,9 @@ function App() {
                 addUser={addUser}
                 updateUser={updateUser}
                 toggleUserStatus={toggleUserStatus}
+                userSyncState={userSyncState}
+                userSyncMessage={userSyncMessage}
+                currentUserRole={currentUserRole}
               />
             ) : null}
           </section>
@@ -17588,6 +17769,9 @@ function SettingsPanel({
   addUser,
   updateUser,
   toggleUserStatus,
+  userSyncState,
+  userSyncMessage,
+  currentUserRole,
 }) {
   const userRoles = [
     {
@@ -17761,6 +17945,15 @@ function SettingsPanel({
               <SummaryCard label="Active" value={String(activeUserCount)} tone="good" />
               <SummaryCard label="Admins" value={String(adminUserCount)} tone="warn" />
             </div>
+            <div className={`v2-inline-callout ${userSyncState === "error" ? "warn" : ""}`}>
+              <strong>User sync: {userSyncState}</strong>
+              <span>
+                {userSyncMessage ||
+                  (currentUserRole === "Admin"
+                    ? "Role changes save back to the shared user profile immediately."
+                    : "Only Admin users can change shared user rights.")}
+              </span>
+            </div>
             <div className="v2-info-card">
               <strong>User roles</strong>
               <span>Keep roles simple for now, then add deeper workspace permissions later if we need them.</span>
@@ -17777,6 +17970,9 @@ function SettingsPanel({
             </div>
             <div className="v2-info-card">
               <strong>Add user</strong>
+              <span>
+                This currently creates a local placeholder row in v2 only. To give someone real sign-in and edit rights, they must also exist in Supabase Authentication with a matching shared profile.
+              </span>
               <div className="v2-form-grid">
                 <label className="v2-field">
                   <span>Name</span>
@@ -17824,7 +18020,11 @@ function SettingsPanel({
                       </label>
                       <label className="v2-field">
                         <span>Role</span>
-                        <select value={user.role} onChange={(event) => updateUser(user.id, "role", event.target.value)}>
+                        <select
+                          value={user.role}
+                          onChange={(event) => updateUser(user.id, "role", event.target.value)}
+                          disabled={currentUserRole !== "Admin" || !user.isSharedProfile}
+                        >
                           {userRoles.map((role) => (
                             <option key={role.name} value={role.name}>
                               {role.name}
@@ -17835,6 +18035,7 @@ function SettingsPanel({
                     </div>
                     <div className="v2-link-list">
                       <span className="v2-tag">{user.status === "active" ? "Active" : "Inactive"}</span>
+                      <span className="v2-tag">{user.isSharedProfile ? "Shared login" : "Local only"}</span>
                       <button type="button" className="v2-secondary-button" onClick={() => toggleUserStatus(user.id)}>
                         {user.status === "active" ? "Deactivate" : "Reactivate"}
                       </button>
@@ -18809,6 +19010,63 @@ function RecipeWorkflowDetail({
               <div className="v2-micro-note">No ingredient lines yet.</div>
             )}
             <div className="v2-link-list">
+              <button type="button" className="v2-primary-button" onClick={openIngredientPicker}>
+                Add ingredient
+              </button>
+              <button type="button" className="v2-secondary-button" onClick={openBatchPicker}>
+                Add component
+              </button>
+            </div>
+          </div>
+
+          <div className="v2-editor-block">
+            <strong>Component lines</strong>
+            {batchLinks.length ? (
+              <div className="v2-stack">
+                {batchLinks.map((line) => (
+                  <div key={line.batchId} className="v2-line-card">
+                    <div>
+                      <strong>{line.batch.name}</strong>
+                      <span>{line.batch.code} · {line.batch.yieldLabel}</span>
+                    </div>
+                    <div className="v2-form-grid compact">
+                      <label className="v2-field">
+                        <span>Qty</span>
+                        <input value={line.quantity} onChange={(event) => updateRecipeBatchLine(record.id, line.batchId, "quantity", event.target.value)} />
+                      </label>
+                      <label className="v2-field">
+                        <span>Unit</span>
+                        <select value={line.unit} onChange={(event) => updateRecipeBatchLine(record.id, line.batchId, "unit", event.target.value)}>
+                          {measurementUnitOptions.map((unit) => (
+                            <option key={unit} value={unit}>
+                              {unit}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="v2-field">
+                        <span>Estimated cost</span>
+                        <input value={formatCurrency(line.estimatedCost)} readOnly />
+                      </label>
+                    </div>
+                    <div className="v2-link-list">
+                      <button type="button" className="v2-secondary-button" onClick={() => openRecord("batch", line.batchId)}>
+                        Open component
+                      </button>
+                      <button type="button" className="v2-secondary-button" onClick={() => toggleRecipeBatchLink(record.id, line.batch)}>
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="v2-micro-note">No component lines yet.</div>
+            )}
+            <div className="v2-link-list">
+              <button type="button" className="v2-secondary-button" onClick={openBatchPicker}>
+                Add component
+              </button>
               <button type="button" className="v2-primary-button" onClick={openIngredientPicker}>
                 Add ingredient
               </button>
