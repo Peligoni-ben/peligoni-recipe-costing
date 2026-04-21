@@ -1,0 +1,418 @@
+{
+  "source_workbook": "new ngredients Cost.xlsx",
+  "source_sheet": "Εκτύπωση",
+  "row_count": 50,
+  "category_summary": {
+    "NON PERISHABLE FOODS": 18,
+    "PERISHABLE FOODS": 12,
+    "ICE CREAMS": 4,
+    "FROZEN MEATS": 6,
+    "PASTRY PRODUCTS": 3,
+    "FROZEN FISH-SEA FOODS": 3,
+    "FROZEN FRUITS-VEGETABLES": 2,
+    "OILS-VINEGAR-OLIVES": 1,
+    "PASTRIES": 1
+  },
+  "rows": [
+    {
+      "source_code": "107.GLFRE1",
+      "description": "Papadopoulos gluten-free bread 300g",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1052  GLUTEN FREE PRODUCTS",
+      "unit": "kg",
+      "average_price": "2.7301796"
+    },
+    {
+      "source_code": "107.GLFRE2",
+      "description": "Grecian living toast bread gl.free 300gr",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1052  GLUTEN FREE PRODUCTS",
+      "unit": "Pc",
+      "average_price": "2.0806060999999998"
+    },
+    {
+      "source_code": "107.GLFRE3",
+      "description": "La mosilana gl.free penne rigate 400gr",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1052  GLUTEN FREE PRODUCTS",
+      "unit": "kg",
+      "average_price": "2.0816667"
+    },
+    {
+      "source_code": "107.GLFRE5",
+      "description": "Schar choriatiko bread slices gl.free 240g",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1052  GLUTEN FREE PRODUCTS",
+      "unit": "kg",
+      "average_price": "2.3959090999999999"
+    },
+    {
+      "source_code": "107.GLFRE7",
+      "description": "Schar slices bread pan blanco gl.free 250gr",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1052  GLUTEN FREE PRODUCTS",
+      "unit": "Pc",
+      "average_price": "1.76"
+    },
+    {
+      "source_code": "107.FLO4",
+      "description": "Caputo blue flour 1kg",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1029 FLOURS",
+      "unit": "kg",
+      "average_price": "3.2879486999999998"
+    },
+    {
+      "source_code": "107.FLO5",
+      "description": "Corn flour 1.5 kg",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1029 FLOURS",
+      "unit": "kg",
+      "average_price": "5.4621428999999999"
+    },
+    {
+      "source_code": "107.FLO6",
+      "description": "Dry yeast 500gr",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1029 FLOURS",
+      "unit": "kg",
+      "average_price": "4.0222221999999999"
+    },
+    {
+      "source_code": "106.CHE46",
+      "description": "Planteese vegan cheese 180gr",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1027 CHEESES",
+      "unit": "kg",
+      "average_price": "1.0900000000000001"
+    },
+    {
+      "source_code": "104.ICEC14",
+      "description": "Cdo sel vegan Vanilla 2.4L",
+      "product_category": "ICE CREAMS",
+      "trade_category": "1016  ICE CREAMS",
+      "unit": "L",
+      "average_price": "13.04"
+    },
+    {
+      "source_code": "107.BUT20",
+      "description": "Almond butter 210gr",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1021 BUTTERS",
+      "unit": "kg",
+      "average_price": "6.7039999999999997"
+    },
+    {
+      "source_code": "107.ASPR2",
+      "description": "Chili paste 500g",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1031 ASIAN PRODUCTS",
+      "unit": "kg",
+      "average_price": "4"
+    },
+    {
+      "source_code": "107.ASPR38",
+      "description": "Pickles ginger takahiro 1.5kg",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1031 ASIAN PRODUCTS",
+      "unit": "kg",
+      "average_price": "5.2750000000000004"
+    },
+    {
+      "source_code": "107.CER18",
+      "description": "Oat flakes 1kg",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1032 CEREALS",
+      "unit": "kg",
+      "average_price": "2.0634020999999998"
+    },
+    {
+      "source_code": "107.PAST13",
+      "description": "De cecco linguine",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1034 PASTA",
+      "unit": "kg",
+      "average_price": "6.2091358000000003"
+    },
+    {
+      "source_code": "107.CAN16",
+      "description": "Polpa tomato mutti bag",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1037 CANS",
+      "unit": "kg",
+      "average_price": "9.2561569000000006"
+    },
+    {
+      "source_code": "107.SPIC7",
+      "description": "Carry paste green 400gr",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1040 SPICES",
+      "unit": "kg",
+      "average_price": "3.7957143000000002"
+    },
+    {
+      "source_code": "107.NUT10",
+      "description": "Chia seeds 500gr",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1042 NUTS",
+      "unit": "kg",
+      "average_price": "5.1106249999999998"
+    },
+    {
+      "source_code": "107.RIC1",
+      "description": "Agrino exotic basmati",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1047 RICES",
+      "unit": "Pc",
+      "average_price": "5.2563636000000002"
+    },
+    {
+      "source_code": "107.BRE34",
+      "description": "Bread crumbs",
+      "product_category": "NON PERISHABLE FOODS",
+      "trade_category": "1051 BREADS",
+      "unit": "kg",
+      "average_price": "14.31"
+    },
+    {
+      "source_code": "101.REMA6",
+      "description": "Stuffed zucchini",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1013 READY-MADE PRODUCTS",
+      "unit": "Kg",
+      "average_price": "14.04"
+    },
+    {
+      "source_code": "106.EGG1",
+      "description": "Egg yolk 1kg",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1020 EGGS",
+      "unit": "kg",
+      "average_price": "8.82"
+    },
+    {
+      "source_code": "106.MILK8",
+      "description": "Delta milk full fat 1.5L",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1022 MILKS",
+      "unit": "Pc",
+      "average_price": "2.1401064999999999"
+    },
+    {
+      "source_code": "106.FRVEG2",
+      "description": "Agata' net potatoes",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1025 FRESH VEGETABLES",
+      "unit": "kg",
+      "average_price": "2.1507431000000001"
+    },
+    {
+      "source_code": "106.FRVEG17",
+      "description": "Domestic leeks / kilo",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1025 FRESH VEGETABLES",
+      "unit": "kg",
+      "average_price": "2.3389319999999998"
+    },
+    {
+      "source_code": "106.FRVEG102",
+      "description": "Horseradish intake",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1025 FRESH VEGETABLES",
+      "unit": "kg",
+      "average_price": "10.5441296"
+    },
+    {
+      "source_code": "106.FRVEG40",
+      "description": "Net potatoes / kilo",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1025 FRESH VEGETABLES",
+      "unit": "kg",
+      "average_price": "1.9025437000000001"
+    },
+    {
+      "source_code": "106.FRVEG54",
+      "description": "White cabbage / kilo",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1025 FRESH VEGETABLES",
+      "unit": "kg",
+      "average_price": "1.1082464000000001"
+    },
+    {
+      "source_code": "106.CHE11",
+      "description": "Cutting gouda /kg",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1027 CHEESES",
+      "unit": "kg",
+      "average_price": "6.2509407000000001"
+    },
+    {
+      "source_code": "106.CHE42",
+      "description": "Pack Edam slices 1 kg",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1027 CHEESES",
+      "unit": "kg",
+      "average_price": "6.9377049"
+    },
+    {
+      "source_code": "106.FRFRU29",
+      "description": "Domestic white grapes",
+      "product_category": "PERISHABLE FOODS",
+      "trade_category": "1028 FRESH FRUITS",
+      "unit": "kg",
+      "average_price": "4.7527555000000001"
+    },
+    {
+      "source_code": "101.LAM2",
+      "description": "Fresh leg of lamb / kilo",
+      "product_category": "FROZEN MEATS",
+      "trade_category": "1000 LAMB",
+      "unit": "Kg",
+      "average_price": "14.357886300000001"
+    },
+    {
+      "source_code": "101.BEEF23",
+      "description": "Argentinian beef flank steak / kilo",
+      "product_category": "FROZEN MEATS",
+      "trade_category": "1001 BEEFS",
+      "unit": "Kg",
+      "average_price": "21.795468100000001"
+    },
+    {
+      "source_code": "101.BEEF25",
+      "description": "Flank steak black angus",
+      "product_category": "FROZEN MEATS",
+      "trade_category": "1001 BEEFS",
+      "unit": "Kg",
+      "average_price": "29.9150657"
+    },
+    {
+      "source_code": "101.CHI18",
+      "description": "Chicken leg A/O fresh fillet",
+      "product_category": "FROZEN MEATS",
+      "trade_category": "1004 CHICKENS",
+      "unit": "Kg",
+      "average_price": "3.8672073"
+    },
+    {
+      "source_code": "101.PREP2",
+      "description": "Beyondmeat burger",
+      "product_category": "FROZEN MEATS",
+      "trade_category": "1006 PREPARATIONS",
+      "unit": "Kg",
+      "average_price": "11.5"
+    },
+    {
+      "source_code": "101.PORK4",
+      "description": "Pork fillet frozen",
+      "product_category": "FROZEN MEATS",
+      "trade_category": "1007 PORK",
+      "unit": "Kg",
+      "average_price": "7.7000893000000001"
+    },
+    {
+      "source_code": "104.ICEC47",
+      "description": " real raspberry strawberry sorbet",
+      "product_category": "ICE CREAMS",
+      "trade_category": "1016  ICE CREAMS",
+      "unit": "Pc",
+      "average_price": "2.2000000000000002"
+    },
+    {
+      "source_code": "104.ICEC8",
+      "description": "Cdo sel Sorbet strawberry 5L",
+      "product_category": "ICE CREAMS",
+      "trade_category": "1016  ICE CREAMS",
+      "unit": "L",
+      "average_price": "24.6"
+    },
+    {
+      "source_code": "104.ICEC16",
+      "description": "Magic classic ice cream 110ml",
+      "product_category": "ICE CREAMS",
+      "trade_category": "1016  ICE CREAMS",
+      "unit": "L",
+      "average_price": "43.2575"
+    },
+    {
+      "source_code": "108.SCEN4",
+      "description": "Vanilla essence",
+      "product_category": "PASTRY PRODUCTS",
+      "trade_category": "1053 SCENTS-COLORS",
+      "unit": "L",
+      "average_price": "7.1931342999999996"
+    },
+    {
+      "source_code": "108.VARPA13",
+      "description": "Maple syrup",
+      "product_category": "PASTRY PRODUCTS",
+      "trade_category": "1058 VARIOUS PASTRY PRODUCTS",
+      "unit": "kg",
+      "average_price": "23.018181800000001"
+    },
+    {
+      "source_code": "108.CHO16",
+      "description": "Cocoa ION 1kg",
+      "product_category": "PASTRY PRODUCTS",
+      "trade_category": "1061 CHOCOLATE PRODUCTS",
+      "unit": "kg",
+      "average_price": "29.72625"
+    },
+    {
+      "source_code": "102.SEA1",
+      "description": "Anchovy /kilo",
+      "product_category": "FROZEN FISH-SEA FOODS",
+      "trade_category": "1008 SEA FOODS",
+      "unit": "Kg",
+      "average_price": "16.9047619"
+    },
+    {
+      "source_code": "102.SEA31",
+      "description": "Octopus T2 FAO34",
+      "product_category": "FROZEN FISH-SEA FOODS",
+      "trade_category": "1008 SEA FOODS",
+      "unit": "Kg",
+      "average_price": "15.995927399999999"
+    },
+    {
+      "source_code": "102.SEA18",
+      "description": "Swordfish /kilo",
+      "product_category": "FROZEN FISH-SEA FOODS",
+      "trade_category": "1008 SEA FOODS",
+      "unit": "Kg",
+      "average_price": "15"
+    },
+    {
+      "source_code": "102.REMA2",
+      "description": "Baked falafel 30pcs 1kg",
+      "product_category": "FROZEN FRUITS-VEGETABLES",
+      "trade_category": "1013 READY-MADE PRODUCTS",
+      "unit": "Kg",
+      "average_price": "6.2168421"
+    },
+    {
+      "source_code": "103.VEG8",
+      "description": "St. Nicolas breakfast beans 2.72kg",
+      "product_category": "FROZEN FRUITS-VEGETABLES",
+      "trade_category": "1014 VEGETABLES",
+      "unit": "Kg",
+      "average_price": "5.0999999999999996"
+    },
+    {
+      "source_code": "109.OIL1",
+      "description": "Extra virgin olive oil Zakynthian 500",
+      "product_category": "OILS-VINEGAR-OLIVES",
+      "trade_category": "1064 OILS",
+      "unit": "Pc",
+      "average_price": "5.2811111000000004"
+    },
+    {
+      "source_code": "105.PAS17",
+      "description": "Apple strudel",
+      "product_category": "PASTRIES",
+      "trade_category": "1017 PASTRIES-PIES",
+      "unit": "kg",
+      "average_price": "1.04"
+    }
+  ]
+}

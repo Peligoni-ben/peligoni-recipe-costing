@@ -1,0 +1,11 @@
+{
+  "name": "peligoni-food-ops-v2",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "../node_modules/.bin/vite",
+    "build": "../node_modules/.bin/vite build",
+    "preview": "../node_modules/.bin/vite preview"
+  }
+}
