@@ -7599,6 +7599,35 @@ function buildPublishedIngredientFromBatch(batch = {}, existingIngredient = null
   );
 }
 
+function findPublishedIngredientForBatch(batch = {}, ingredientSource = []) {
+  if (!batch) return null;
+  const batchId = String(batch.id || "").trim();
+  const publishedIngredientId = String(batch.publishedIngredientId || "").trim();
+  const ingredientList =
+    ingredientSource instanceof Map
+      ? Array.from(ingredientSource.values())
+      : Array.isArray(ingredientSource)
+        ? ingredientSource
+        : [];
+
+  if (publishedIngredientId) {
+    if (ingredientSource instanceof Map) {
+      const directMatch = ingredientSource.get(publishedIngredientId) || null;
+      if (directMatch) return directMatch;
+    } else {
+      const directMatch = ingredientList.find((ingredient) => ingredient.id === publishedIngredientId) || null;
+      if (directMatch) return directMatch;
+    }
+  }
+
+  if (!batchId) return null;
+  return (
+    ingredientList.find((ingredient) => String(ingredient.batchId || "").trim() === batchId && !ingredient.archived) ||
+    ingredientList.find((ingredient) => String(ingredient.batchId || "").trim() === batchId) ||
+    null
+  );
+}
+
 function statusTone(status) {
   if (status === "live" || status === "ready") return "good";
   if (status === "review") return "warn";
