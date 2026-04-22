@@ -32,6 +32,7 @@ const PENDING_INGREDIENT_DELETION_STORAGE_KEY = "peligoni-v2-pending-ingredient-
 const DELETED_INGREDIENT_TOMBSTONE_STORAGE_KEY = "peligoni-v2-deleted-ingredient-tombstones";
 const SOFT1_SOURCE_ROWS_STORAGE_KEY = "peligoni-v2-soft1-source-rows";
 const SOFT1_SOURCE_META_STORAGE_KEY = "peligoni-v2-soft1-source-meta";
+const CUSTOM_RESTAURANTS_STORAGE_KEY = "peligoni-v2-custom-restaurants";
 const INGREDIENT_REVIEW_STATE_RULE_FIELD = "__ingredient_review_state__";
 const INGREDIENT_SUBSTITUTION_STATE_RULE_FIELD = "__ingredient_substitution_state__";
 const INGREDIENT_TRADE_CATEGORY_RULE_FIELD = "__ingredient_trade_category__";
@@ -693,6 +694,28 @@ function buildRestaurantsFromSharedData(baseRestaurants = [], menus = [], recipe
     }));
 
   return [...baseRestaurants, ...generatedRestaurants];
+}
+
+function mergeRestaurantCollections(baseRestaurants = [], additionalRestaurants = []) {
+  const mergedByName = new Map();
+
+  [...(baseRestaurants || []), ...(additionalRestaurants || [])].forEach((restaurant) => {
+    const name = String(restaurant?.name || "").trim();
+    const key = normalizeSharedKey(name || restaurant?.id || "");
+    if (!key) return;
+
+    mergedByName.set(key, {
+      ...restaurant,
+      name,
+      venueType: String(restaurant?.venueType || "Restaurant").trim() || "Restaurant",
+      servicePattern: String(restaurant?.servicePattern || "").trim(),
+      primaryServices: dedupeTextList(restaurant?.primaryServices || []),
+      secondaryServices: dedupeTextList(restaurant?.secondaryServices || []),
+      eventUses: dedupeTextList(restaurant?.eventUses || []),
+    });
+  });
+
+  return Array.from(mergedByName.values());
 }
 
 function hydrateSharedDataToV2({
@@ -1537,6 +1560,19 @@ function loadStoredIngredientMasterReviewState() {
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch (error) {
     return {};
+  }
+}
+
+function loadStoredCustomRestaurants() {
+  if (typeof window === "undefined") return [];
+
+  try {
+    const stored = window.localStorage.getItem(CUSTOM_RESTAURANTS_STORAGE_KEY);
+    if (!stored) return [];
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
   }
 }
 
@@ -8091,7 +8127,10 @@ function App() {
   );
   const [pendingRecipeDeletionIds, setPendingRecipeDeletionIds] = useState([]);
   const [pendingBatchDeletionIds, setPendingBatchDeletionIds] = useState([]);
-  const [restaurants, setRestaurants] = useState(initialRestaurants);
+  const [customRestaurants, setCustomRestaurants] = useState(() => loadStoredCustomRestaurants());
+  const [restaurants, setRestaurants] = useState(() =>
+    mergeRestaurantCollections(initialRestaurants, loadStoredCustomRestaurants())
+  );
   const [menus, setMenus] = useState(initialMenus.map((menu) => syncMenuRecord(menu)));
   const [pendingMenuDeletionIds, setPendingMenuDeletionIds] = useState([]);
   const [users, setUsers] = useState(initialUsers);
@@ -8183,6 +8222,7 @@ function App() {
   const ingredientMasterRef = useRef(ingredientMaster);
   const recipesRef = useRef(recipes);
   const batchesRef = useRef(batches);
+  const customRestaurantsRef = useRef(customRestaurants);
   const [history, setHistory] = useState([]);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
@@ -8427,7 +8467,7 @@ function App() {
         setIngredientImportRows(nextImportQueueRows);
         setRecipes(sharedData.recipes);
         setBatches(sharedData.batches);
-        setRestaurants(sharedData.restaurants);
+        setRestaurants(mergeRestaurantCollections(sharedData.restaurants, customRestaurantsRef.current));
         setMenus(sharedData.menus);
         setUsers(sharedData.users);
         setIngredientWorkspaceView((current) => {
@@ -8996,6 +9036,12 @@ function App() {
   useEffect(() => {
     batchesRef.current = batches;
   }, [batches]);
+
+  useEffect(() => {
+    customRestaurantsRef.current = customRestaurants;
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(CUSTOM_RESTAURANTS_STORAGE_KEY, JSON.stringify(customRestaurants));
+  }, [customRestaurants]);
 
   const pushCurrentLocationToHistory = () => {
     setHistory((current) => {
@@ -12966,6 +13012,34 @@ function App() {
     });
   };
 
+  const addRestaurant = (draft = {}) => {
+    const name = String(draft.name || "").trim();
+    if (!name) return false;
+
+    const nameKey = normalizeSharedKey(name);
+    const existingMatch = restaurants.find((restaurant) => normalizeSharedKey(restaurant.name) === nameKey);
+    if (existingMatch) {
+      if (typeof window !== "undefined") {
+        window.alert(`"${name}" already exists in the restaurant structure.`);
+      }
+      return false;
+    }
+
+    const nextRestaurant = {
+      id: `rest-${slugifyLabel(name)}-${Date.now()}`,
+      name,
+      venueType: String(draft.venueType || "Restaurant").trim() || "Restaurant",
+      servicePattern: String(draft.servicePattern || "").trim(),
+      primaryServices: dedupeTextList(draft.primaryServices || []),
+      secondaryServices: dedupeTextList(draft.secondaryServices || []),
+      eventUses: dedupeTextList(draft.eventUses || []),
+    };
+
+    setCustomRestaurants((current) => mergeRestaurantCollections(current, [nextRestaurant]));
+    setRestaurants((current) => mergeRestaurantCollections(current, [nextRestaurant]));
+    return true;
+  };
+
   const saveMenuMaker = () => {
     const nextMenu = menuMakerModal.draft ? syncMenuRecord(menuMakerModal.draft) : null;
     if (!nextMenu) return;
@@ -15901,6 +15975,8 @@ function App() {
             ) : null}
             {activeSection === "settings" ? (
               <SettingsPanel
+                restaurants={restaurants}
+                addRestaurant={addRestaurant}
                 learningRules={learningRules}
                 exportLearningRules={exportLearningRules}
                 learningRulesSyncState={learningRulesSyncState}
@@ -18027,6 +18103,8 @@ function ExportDetail({
 }
 
 function SettingsPanel({
+  restaurants,
+  addRestaurant,
   learningRules,
   exportLearningRules,
   learningRulesSyncState,
@@ -18062,10 +18140,19 @@ function SettingsPanel({
     role: "Chef",
     status: "active",
   });
+  const [restaurantDraft, setRestaurantDraft] = useState({
+    name: "",
+    venueType: "Restaurant",
+    servicePattern: "",
+    primaryServices: "",
+    secondaryServices: "",
+    eventUses: "",
+  });
   const [editingRuleId, setEditingRuleId] = useState("");
   const [ruleDrafts, setRuleDrafts] = useState({});
   const activeUserCount = users.filter((user) => user.status === "active").length;
   const adminUserCount = users.filter((user) => user.role === "Admin").length;
+  const restaurantCount = restaurants.length;
   const reviewedLearningRules = (learningRules || []).map((rule) => ({
     ...rule,
     risk: getLearningRuleRisk(rule),
@@ -18136,6 +18223,32 @@ function SettingsPanel({
     });
   };
 
+  const parseRestaurantListField = (value = "") =>
+    String(value || "")
+      .split(/\n|,/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+
+  const handleCreateRestaurant = () => {
+    const didAdd = addRestaurant({
+      name: restaurantDraft.name,
+      venueType: restaurantDraft.venueType,
+      servicePattern: restaurantDraft.servicePattern,
+      primaryServices: parseRestaurantListField(restaurantDraft.primaryServices),
+      secondaryServices: parseRestaurantListField(restaurantDraft.secondaryServices),
+      eventUses: parseRestaurantListField(restaurantDraft.eventUses),
+    });
+    if (!didAdd) return;
+    setRestaurantDraft({
+      name: "",
+      venueType: "Restaurant",
+      servicePattern: "",
+      primaryServices: "",
+      secondaryServices: "",
+      eventUses: "",
+    });
+  };
+
   return (
     <>
       <div className="v2-panel-header">
@@ -18152,9 +18265,104 @@ function SettingsPanel({
       <div className="v2-stack">
         {settingsView === "structure" ? (
           <>
+            <div className="v2-summary-grid v2-summary-grid-library">
+              <SummaryCard label="Restaurants" value={String(restaurantCount)} tone="default" />
+              <SummaryCard
+                label="Primary services"
+                value={String(restaurants.reduce((count, restaurant) => count + (restaurant.primaryServices || []).length, 0))}
+                tone="good"
+              />
+              <SummaryCard
+                label="Event uses"
+                value={String(restaurants.reduce((count, restaurant) => count + (restaurant.eventUses || []).length, 0))}
+                tone="warn"
+              />
+            </div>
             <div className="v2-info-card">
               <strong>Restaurants and services</strong>
               <span>Use settings for the overall restaurant and service framework, then build the operational menus in the main Menus workspace.</span>
+            </div>
+            <div className="v2-info-card">
+              <strong>Add restaurant</strong>
+              <span>Create a new venue here, then build menus for it from the Menus workspace.</span>
+              <div className="v2-form-grid">
+                <label className="v2-field">
+                  <span>Name</span>
+                  <input value={restaurantDraft.name} onChange={(event) => setRestaurantDraft((current) => ({ ...current, name: event.target.value }))} />
+                </label>
+                <label className="v2-field">
+                  <span>Venue type</span>
+                  <input value={restaurantDraft.venueType} onChange={(event) => setRestaurantDraft((current) => ({ ...current, venueType: event.target.value }))} />
+                </label>
+                <label className="v2-field">
+                  <span>Service pattern</span>
+                  <textarea value={restaurantDraft.servicePattern} onChange={(event) => setRestaurantDraft((current) => ({ ...current, servicePattern: event.target.value }))} />
+                </label>
+                <label className="v2-field">
+                  <span>Primary services</span>
+                  <input
+                    value={restaurantDraft.primaryServices}
+                    onChange={(event) => setRestaurantDraft((current) => ({ ...current, primaryServices: event.target.value }))}
+                    placeholder="Breakfast, Lunch"
+                  />
+                </label>
+                <label className="v2-field">
+                  <span>Secondary services</span>
+                  <input
+                    value={restaurantDraft.secondaryServices}
+                    onChange={(event) => setRestaurantDraft((current) => ({ ...current, secondaryServices: event.target.value }))}
+                    placeholder="Dinner, Events"
+                  />
+                </label>
+                <label className="v2-field">
+                  <span>Event uses</span>
+                  <input
+                    value={restaurantDraft.eventUses}
+                    onChange={(event) => setRestaurantDraft((current) => ({ ...current, eventUses: event.target.value }))}
+                    placeholder="Wedding receptions"
+                  />
+                </label>
+              </div>
+              <div className="v2-link-list">
+                <button
+                  type="button"
+                  className="v2-primary-button"
+                  onClick={handleCreateRestaurant}
+                  disabled={!String(restaurantDraft.name || "").trim()}
+                >
+                  Add restaurant
+                </button>
+              </div>
+            </div>
+            <div className="v2-info-card">
+              <strong>Current restaurants</strong>
+              <div className="v2-rule-list">
+                {restaurants.map((restaurant) => (
+                  <div key={restaurant.id} className="v2-rule-card">
+                    <div>
+                      <strong>{restaurant.name}</strong>
+                      <span>{restaurant.venueType}</span>
+                    </div>
+                    <div className="v2-tag-row">
+                      {(restaurant.primaryServices || []).map((service) => (
+                        <span key={`${restaurant.id}-primary-${service}`} className="v2-tag">
+                          Primary: {service}
+                        </span>
+                      ))}
+                      {(restaurant.secondaryServices || []).map((service) => (
+                        <span key={`${restaurant.id}-secondary-${service}`} className="v2-tag">
+                          Also: {service}
+                        </span>
+                      ))}
+                      {(restaurant.eventUses || []).map((eventUse) => (
+                        <span key={`${restaurant.id}-event-${eventUse}`} className="v2-tag">
+                          Event: {eventUse}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="v2-info-card">
               <strong>Categories and types</strong>
@@ -19241,11 +19449,6 @@ function RecipeWorkflowDetail({
                 <strong>Recipe lines</strong>
                 <span>Add simple ingredients or reusable components into one recipe line list.</span>
               </div>
-              <div className="v2-link-list">
-                <button type="button" className="v2-primary-button" onClick={openIngredientPicker}>
-                  Add ingredient
-                </button>
-              </div>
             </div>
             {ingredientLinks.length || batchLinks.length ? (
               <div className="v2-stack">
@@ -19298,6 +19501,11 @@ function RecipeWorkflowDetail({
                 </span>
               </div>
             ) : null}
+            <div className="v2-link-list">
+              <button type="button" className="v2-primary-button" onClick={openIngredientPicker}>
+                Add ingredient
+              </button>
+            </div>
           </div>
 
         </DetailSection>
