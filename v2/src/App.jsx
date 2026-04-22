@@ -7489,8 +7489,10 @@ function getMeasurementUnitFamily(unit = "") {
 function mapSharedSourceYieldTypeToLineUnit(sourceYieldType = "", fallbackLabel = "") {
   const normalized = String(sourceYieldType || "").trim().toLowerCase();
   const normalizedFallback = String(fallbackLabel || "").trim().toLowerCase();
-  if (normalized === "kg" || normalized === "g") return "g";
-  if (normalized === "l" || normalized === "ml") return "ml";
+  if (normalized === "kg") return "kg";
+  if (normalized === "g") return "g";
+  if (normalized === "l") return "l";
+  if (normalized === "ml") return "ml";
   if (normalized === "portion") return "portion";
   if (normalized === "tray") return "tray";
   if (normalized === "jar") return "jar";
