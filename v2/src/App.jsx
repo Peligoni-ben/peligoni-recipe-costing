@@ -6019,8 +6019,8 @@ function syncMenuRecord(menu) {
   const items = (menu.items || []).map((item, index) => ({
     id: item.id || `menu-item-${menu.id}-${index + 1}`,
     recipeId: item.recipeId || "",
-    dishName: String(item.dishName || "").trim(),
-    description: String(item.description || "").trim(),
+    dishName: String(item.dishName || ""),
+    description: String(item.description || ""),
   }));
   const recipeIds = dedupeTextList(items.map((item) => item.recipeId).filter(Boolean));
 
