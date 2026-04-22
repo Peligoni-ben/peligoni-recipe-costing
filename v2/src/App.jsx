@@ -708,7 +708,7 @@ function hydrateSharedDataToV2({
   recipeReviewFlagState = {},
   batchReviewFlagState = {},
 }) {
-  const mappedIngredients = (ingredientRows || []).map((row) => {
+  let mappedIngredients = (ingredientRows || []).map((row) => {
     const sharedRecordId = String(row.id || "").trim();
     const sharedUpdatedAt = String(row.updated_at || row.last_updated || "").trim();
     const isPublishedComponent = String(row.entry_type || "").trim() === "batch";
@@ -765,15 +765,6 @@ function hydrateSharedDataToV2({
     };
   });
 
-  const ingredientsByCode = new Map();
-  const ingredientsByName = new Map();
-  mappedIngredients.forEach((ingredient) => {
-    const codeKey = normalizeSharedKey(ingredient.code || ingredient.sourceCode);
-    const nameKey = normalizeSharedKey(ingredient.name);
-    if (codeKey && !ingredientsByCode.has(codeKey)) ingredientsByCode.set(codeKey, ingredient);
-    if (nameKey && !ingredientsByName.has(nameKey)) ingredientsByName.set(nameKey, ingredient);
-  });
-
   const componentsByRecipeId = new Map();
   (componentRows || []).forEach((component) => {
     const recipeId = String(component.recipe_id || "").trim();
@@ -785,6 +776,38 @@ function hydrateSharedDataToV2({
 
   const batchRecipeRows = (recipeRows || []).filter((row) => String(row.recipe_type || "").trim() === "batch");
   const batchRecipeRowsById = new Map(batchRecipeRows.map((row) => [String(row.id), row]));
+  const batchRecipeRowsByCode = new Map();
+  const batchRecipeRowsByName = new Map();
+  batchRecipeRows.forEach((row) => {
+    const codeKey = normalizeSharedKey(String(row.selling_item_code || row.id || "").trim());
+    const nameKey = normalizeSharedKey(String(row.name || "").trim());
+    if (codeKey && !batchRecipeRowsByCode.has(codeKey)) batchRecipeRowsByCode.set(codeKey, String(row.id));
+    if (nameKey && !batchRecipeRowsByName.has(nameKey)) batchRecipeRowsByName.set(nameKey, String(row.id));
+  });
+  mappedIngredients = mappedIngredients.map((ingredient) => {
+    if (String(ingredient.batchId || "").trim()) return ingredient;
+    if (String(ingredient.sourceRecordLabel || "").trim() !== "Published from component") return ingredient;
+
+    const batchIdFromCode = batchRecipeRowsByCode.get(normalizeSharedKey(String(ingredient.code || "").trim())) || "";
+    const batchIdFromName = batchRecipeRowsByName.get(normalizeSharedKey(String(ingredient.name || "").trim())) || "";
+    const fallbackBatchId = batchIdFromCode || batchIdFromName;
+    if (!fallbackBatchId) return ingredient;
+
+    return {
+      ...ingredient,
+      batchId: fallbackBatchId,
+    };
+  });
+
+  const ingredientsByCode = new Map();
+  const ingredientsByName = new Map();
+  mappedIngredients.forEach((ingredient) => {
+    const codeKey = normalizeSharedKey(ingredient.code || ingredient.sourceCode);
+    const nameKey = normalizeSharedKey(ingredient.name);
+    if (codeKey && !ingredientsByCode.has(codeKey)) ingredientsByCode.set(codeKey, ingredient);
+    if (nameKey && !ingredientsByName.has(nameKey)) ingredientsByName.set(nameKey, ingredient);
+  });
+
   const mappedIngredientsById = new Map(mappedIngredients.map((ingredient) => [ingredient.id, ingredient]));
   const batchPublishedIngredientByRecipeId = new Map(
     mappedIngredients
@@ -1002,12 +1025,25 @@ function hydrateSharedDataToV2({
       const sourceRecipeId = String(component.source_recipe_id || "").trim();
       if (sourceRecipeId && batchById.has(sourceRecipeId)) {
         const batch = batchById.get(sourceRecipeId);
-        batchLines.push({
-          batchId: sourceRecipeId,
-          quantity: formatEditableQuantity(numberValue(component.qty)),
-          unit: mapSharedSourceYieldTypeToLineUnit(component.source_yield_type, batch?.yieldUnit || "portion"),
-          estimatedCost: numberValue(component.cost),
-        });
+        const publishedIngredient = findPublishedIngredientForBatch(batch, mappedIngredients);
+        if (publishedIngredient?.id) {
+          ingredientLines.push({
+            ingredientId: publishedIngredient.id,
+            quantity: formatEditableQuantity(numberValue(component.qty)),
+            unit: mapSharedSourceYieldTypeToLineUnit(
+              component.source_yield_type,
+              batch?.yieldUnit || publishedIngredient.costUnit || "portion"
+            ),
+            estimatedCost: numberValue(component.cost),
+          });
+        } else {
+          batchLines.push({
+            batchId: sourceRecipeId,
+            quantity: formatEditableQuantity(numberValue(component.qty)),
+            unit: mapSharedSourceYieldTypeToLineUnit(component.source_yield_type, batch?.yieldUnit || "portion"),
+            estimatedCost: numberValue(component.cost),
+          });
+        }
         return;
       }
 
@@ -1042,10 +1078,10 @@ function hydrateSharedDataToV2({
           : "";
       if (linkedBatchId) {
         const batch = batchById.get(linkedBatchId);
-        batchLines.push({
-          batchId: linkedBatchId,
+        ingredientLines.push({
+          ingredientId: ingredient.id,
           quantity: formatEditableQuantity(numberValue(component.qty)),
-          unit: mapSharedSourceYieldTypeToLineUnit(component.source_yield_type, batch?.yieldUnit || "portion"),
+          unit: resolveSharedIngredientLineUnit(component, ingredient),
           estimatedCost: numberValue(component.cost),
         });
         return;
@@ -1062,33 +1098,42 @@ function hydrateSharedDataToV2({
     const workflowStage = String(row.workflow_stage || "").trim().toLowerCase();
     const status = Boolean(row.is_live) ? "live" : workflowStage === "review" ? "review" : "draft";
 
-    return syncRecipeRelations(syncRecipeStatusFromIngredientState({
-      id: String(row.id),
-      name: String(row.name || "").trim() || "Untitled recipe",
-      code: String(row.selling_item_code || row.id || "").trim(),
-      status,
-      needsReviewFlag: Boolean(recipeReviewFlagState[String(row.id)]?.flagged),
-      sharedDirty: false,
-      sharedPersisted: true,
-      category: String(row.category || "").trim() || "Main",
-      menuDescription: "",
-      methodSteps,
-      prepNotes: "",
-      platingNotes: String(row.presentation_notes || "").trim(),
-      chefNotes: "",
-      portions: Math.max(1, numberValue(row.portion_count, 1)),
-      salePrice: numberValue(row.current_sale_price),
-      serviceSuitability: dedupeTextList(Array.isArray(row.service_suitability) ? row.service_suitability : []),
-      ingredientLines,
-      batchLines,
-      sharedMissingLineCount: unmatchedLabels.length,
-      sharedMissingLineLabels: dedupeTextList(unmatchedLabels.filter(Boolean)),
-      sharedMissingLineDetails: unmatchedDetails,
-      ingredientIds: ingredientLines.map((line) => line.ingredientId),
-      batchIds: batchLines.map((line) => line.batchId),
-      menuIds: [],
-      archived: false,
-    }, mappedIngredientsById));
+    return normalizeRecipePublishedComponentLines(
+      syncRecipeRelations(
+        syncRecipeStatusFromIngredientState(
+          {
+            id: String(row.id),
+            name: String(row.name || "").trim() || "Untitled recipe",
+            code: String(row.selling_item_code || row.id || "").trim(),
+            status,
+            needsReviewFlag: Boolean(recipeReviewFlagState[String(row.id)]?.flagged),
+            sharedDirty: false,
+            sharedPersisted: true,
+            category: String(row.category || "").trim() || "Main",
+            menuDescription: "",
+            methodSteps,
+            prepNotes: "",
+            platingNotes: String(row.presentation_notes || "").trim(),
+            chefNotes: "",
+            portions: Math.max(1, numberValue(row.portion_count, 1)),
+            salePrice: numberValue(row.current_sale_price),
+            serviceSuitability: dedupeTextList(Array.isArray(row.service_suitability) ? row.service_suitability : []),
+            ingredientLines,
+            batchLines,
+            sharedMissingLineCount: unmatchedLabels.length,
+            sharedMissingLineLabels: dedupeTextList(unmatchedLabels.filter(Boolean)),
+            sharedMissingLineDetails: unmatchedDetails,
+            ingredientIds: ingredientLines.map((line) => line.ingredientId),
+            batchIds: batchLines.map((line) => line.batchId),
+            menuIds: [],
+            archived: false,
+          },
+          mappedIngredientsById
+        )
+      ),
+      mappedIngredientsById,
+      batchById
+    );
   });
 
   const restaurants = buildRestaurantsFromSharedData(initialRestaurants, menuRows, dishRecipeRows.map((row) => ({
@@ -5919,6 +5964,57 @@ function syncRecipeRelations(recipe) {
   };
 }
 
+function normalizeRecipePublishedComponentLines(recipe, ingredientMap = new Map(), batchMap = new Map()) {
+  const ingredientLines = Array.isArray(recipe?.ingredientLines) ? [...recipe.ingredientLines] : [];
+  const batchLines = Array.isArray(recipe?.batchLines) ? recipe.batchLines : [];
+  if (!batchLines.length) return recipe;
+
+  const remainingBatchLines = [];
+
+  batchLines.forEach((line) => {
+    const batch = batchMap.get(line.batchId) || null;
+    const publishedIngredient = findPublishedIngredientForBatch(batch, ingredientMap);
+    if (!publishedIngredient?.id) {
+      remainingBatchLines.push(line);
+      return;
+    }
+
+    const normalizedLine = {
+      ingredientId: publishedIngredient.id,
+      quantity: String(line.quantity || "").trim() || "1",
+      unit:
+        String(line.unit || "").trim() ||
+        inferMeasurementUnit(publishedIngredient.packSize) ||
+        String(publishedIngredient.costUnit || "").trim() ||
+        "g",
+      estimatedCost: Number(
+        line.estimatedCost ||
+          calculateLineEstimatedCost(line, getIngredientCostSource(publishedIngredient, ingredientMap, batchMap)) ||
+          0
+      ),
+    };
+
+    const existingIndex = ingredientLines.findIndex((existingLine) => existingLine.ingredientId === publishedIngredient.id);
+    if (existingIndex >= 0) {
+      ingredientLines[existingIndex] = {
+        ...ingredientLines[existingIndex],
+        ...normalizedLine,
+      };
+      return;
+    }
+
+    ingredientLines.push(normalizedLine);
+  });
+
+  if (remainingBatchLines.length === batchLines.length) return recipe;
+
+  return {
+    ...recipe,
+    ingredientLines,
+    batchLines: remainingBatchLines,
+  };
+}
+
 function syncMenuRecord(menu) {
   const items = (menu.items || []).map((item, index) => ({
     id: item.id || `menu-item-${menu.id}-${index + 1}`,
@@ -6135,9 +6231,9 @@ function getRecipeWorkflowProgress(recipe) {
   const methodSteps = Array.isArray(recipe?.methodSteps) ? recipe.methodSteps : [];
   const menuIds = Array.isArray(recipe?.menuIds) ? recipe.menuIds : [];
   const checks = [
-    Boolean(recipe.name && recipe.code && recipe.category && recipe.menuDescription),
+    Boolean(recipe.name && recipe.code && recipe.category),
     Boolean(ingredientLines.length || batchLines.length),
-    Boolean(methodSteps.some((step) => String(step || "").trim()) && recipe.platingNotes),
+    Boolean(methodSteps.some((step) => String(step || "").trim())),
     Boolean(Number(recipe.portions || 0) > 0 && Number(recipe.salePrice || 0) > 0),
     Boolean(menuIds.length),
   ];
@@ -6161,13 +6257,13 @@ function getRecipeWorkflowMissingItems(recipe) {
   const menuIds = Array.isArray(recipe?.menuIds) ? recipe.menuIds : [];
   const missing = [];
 
-  if (!(recipe.name && recipe.code && recipe.category && recipe.menuDescription)) {
+  if (!(recipe.name && recipe.code && recipe.category)) {
     missing.push("basics");
   }
   if (!(ingredientLines.length || batchLines.length)) {
     missing.push("ingredients");
   }
-  if (!(methodSteps.some((step) => String(step || "").trim()) && recipe.platingNotes)) {
+  if (!methodSteps.some((step) => String(step || "").trim())) {
     missing.push("method");
   }
   if (!(Number(recipe.portions || 0) > 0 && Number(recipe.salePrice || 0) > 0)) {
@@ -9405,10 +9501,8 @@ function App() {
               record.name &&
               record.code &&
               record.category &&
-              record.menuDescription &&
               ((record.ingredientLines || []).length || (record.batchLines || []).length) &&
-              (record.methodSteps || []).some((step) => String(step || "").trim()) &&
-              record.platingNotes
+              (record.methodSteps || []).some((step) => String(step || "").trim())
             ),
       pricing_complete:
         recordType === "batch"
@@ -11900,10 +11994,14 @@ function App() {
     setRecipes((current) =>
       current.map((recipe) =>
         recipe.id === recipeId
-          ? syncRecipeRelations({
-              ...updater(recipe),
-              sharedDirty: true,
-            })
+          ? normalizeRecipePublishedComponentLines(
+              syncRecipeRelations({
+                ...updater(recipe),
+                sharedDirty: true,
+              }),
+              recordMaps.ingredient,
+              recordMaps.batch
+            )
           : recipe
       )
     );
@@ -18921,10 +19019,6 @@ function RecipeWorkflowDetail({
     closePicker();
   };
 
-  const chooseBatchFromPicker = (batch) => {
-    toggleRecipeBatchLink(record.id, batch);
-    closePicker();
-  };
   const createIngredientFromPicker = () => {
     closePicker();
     openIngredientMaker({ attachToRecipeId: record.id, openRecordAfterSave: false });
@@ -19058,7 +19152,17 @@ function RecipeWorkflowDetail({
       {recipeEditorStep === "components" ? (
         <DetailSection title="Ingredients">
           <div className="v2-editor-block">
-            <strong>Recipe lines</strong>
+            <div className="v2-detail-toolbar">
+              <div>
+                <strong>Recipe lines</strong>
+                <span>Add simple ingredients or reusable components into one recipe line list.</span>
+              </div>
+              <div className="v2-link-list">
+                <button type="button" className="v2-primary-button" onClick={openIngredientPicker}>
+                  Add ingredient
+                </button>
+              </div>
+            </div>
             {ingredientLinks.length || batchLinks.length ? (
               <div className="v2-stack">
                 {ingredientLinks.map((line) => (
@@ -19097,54 +19201,19 @@ function RecipeWorkflowDetail({
                     </div>
                   </div>
                 ))}
-                {batchLinks.map((line) => (
-                  <div key={line.batchId} className="v2-line-card">
-                    <div>
-                      <strong>{line.batch.name}</strong>
-                      <span>{line.batch.code} · {line.batch.yieldLabel}</span>
-                    </div>
-                    <div className="v2-form-grid compact">
-                      <label className="v2-field">
-                        <span>Qty</span>
-                        <input value={line.quantity} onChange={(event) => updateRecipeBatchLine(record.id, line.batchId, "quantity", event.target.value)} />
-                      </label>
-                      <label className="v2-field">
-                        <span>Unit</span>
-                        <select value={line.unit} onChange={(event) => updateRecipeBatchLine(record.id, line.batchId, "unit", event.target.value)}>
-                          {measurementUnitOptions.map((unit) => (
-                            <option key={unit} value={unit}>
-                              {unit}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="v2-field">
-                        <span>Estimated cost</span>
-                        <input value={formatCurrency(line.estimatedCost)} readOnly />
-                      </label>
-                    </div>
-                    <div className="v2-link-list">
-                      <button type="button" className="v2-secondary-button" onClick={() => openRecord("batch", line.batchId)}>
-                        Open component
-                      </button>
-                      <button type="button" className="v2-secondary-button" onClick={() => toggleRecipeBatchLink(record.id, line.batch)}>
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                ))}
               </div>
             ) : (
               <div className="v2-micro-note">No ingredient or component lines yet.</div>
             )}
-            <div className="v2-link-list">
-              <button type="button" className="v2-primary-button" onClick={openIngredientPicker}>
-                Add ingredient
-              </button>
-              <button type="button" className="v2-secondary-button" onClick={openBatchPicker}>
-                Add component
-              </button>
-            </div>
+            {batchLinks.length ? (
+              <div className="v2-inline-callout warn">
+                <strong>Legacy direct component links still need repair.</strong>
+                <span>
+                  This recipe still has {batchLinks.length} direct component link{batchLinks.length === 1 ? "" : "s"}. Publish those
+                  components into the ingredient master, then re-add them as ingredients so the recipe matches the ingredient-only workflow.
+                </span>
+              </div>
+            ) : null}
           </div>
 
         </DetailSection>
@@ -19428,51 +19497,6 @@ function RecipeWorkflowDetail({
         </aside>
       ) : null}
 
-      {activePicker === "batch" ? (
-        <aside className="v2-picker-panel v2-picker-panel-inline">
-          <div className="v2-panel-header">
-            <div>
-              <div className="v2-eyebrow">Component picker</div>
-              <h3>Add component</h3>
-            </div>
-            <button type="button" className="v2-secondary-button" onClick={closePicker}>
-              Close
-            </button>
-          </div>
-          <label className="v2-field">
-            <span>Search components</span>
-            <input
-              value={batchPickerQuery}
-              onChange={(event) => setBatchPickerQuery(event.target.value)}
-              placeholder="Start with something broad like yoghurt, dressing, or sauce"
-            />
-          </label>
-          {!batchPickerQuery.trim() ? null : batchPickerResults.length ? (
-            <div className="v2-select-list v2-picker-list">
-              {batchPickerResults.map(({ batch, score }) => {
-                const isActive = (record.batchIds || []).includes(batch.id);
-                const batchCostSource = getBatchCostSource(batch, maps.ingredient);
-                return (
-                  <button
-                    key={batch.id}
-                    type="button"
-                    className={`v2-select-row ${isActive ? "active" : ""}`}
-                    onClick={() => chooseBatchFromPicker(batch)}
-                  >
-                    <strong>{batch.name}</strong>
-                    <span>{batch.code} · {batch.yieldLabel}</span>
-                    <span>{batch.productType ? `Type ${batch.productType}` : "No product type set yet"}</span>
-                    <span>{isActive ? "Already added to this recipe" : `Estimated cost ${formatCurrency(batchCostSource.portionCostHint)}`}</span>
-                    <span>Search confidence {Math.round(score)}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="v2-micro-note">No components match that search.</div>
-          )}
-        </aside>
-      ) : null}
     </div>
   );
 }
@@ -19816,7 +19840,17 @@ function BatchWorkflowDetail({
       {batchEditorStep === "components" ? (
         <DetailSection title="Ingredients">
           <div className="v2-editor-block">
-            <strong>Ingredient lines</strong>
+            <div className="v2-detail-toolbar">
+              <div>
+                <strong>Ingredient lines</strong>
+                <span>Build this component from ingredient lines before publishing it into the ingredient library.</span>
+              </div>
+              <div className="v2-link-list">
+                <button type="button" className="v2-primary-button" onClick={() => setPickerOpen(true)}>
+                  Add ingredient
+                </button>
+              </div>
+            </div>
             {ingredientLinks.length ? (
               <div className="v2-stack">
                 {ingredientLinks.map((line) => (
@@ -19859,11 +19893,6 @@ function BatchWorkflowDetail({
             ) : (
               <div className="v2-micro-note">No ingredient lines linked yet.</div>
             )}
-            <div className="v2-link-list">
-              <button type="button" className="v2-primary-button" onClick={() => setPickerOpen(true)}>
-                Add ingredient
-              </button>
-            </div>
           </div>
         </DetailSection>
       ) : null}
