@@ -9522,41 +9522,9 @@ function App() {
 
   const buildSharedRecipeComponentPayloads = (record = {}, recordType = "dish") => {
     const normalizedIngredientRows = [];
-    const normalizedBatchRowsFromIngredients = [];
 
     (record.ingredientLines || []).forEach((line) => {
       const ingredient = recordMaps.ingredient.get(line.ingredientId) || null;
-      const linkedBatchId =
-        recordType === "dish" &&
-        ingredient?.batchId &&
-        recordMaps.batch.has(ingredient.batchId)
-          ? String(ingredient.batchId || "").trim()
-          : "";
-
-      if (linkedBatchId) {
-        const batch = recordMaps.batch.get(linkedBatchId) || null;
-        const batchCostSource = getBatchCostSource(batch, recordMaps.ingredient);
-        normalizedBatchRowsFromIngredients.push({
-          recipe_id: String(record.id || "").trim(),
-          ingredient_name: String(batch?.name || ingredient?.name || "").trim() || null,
-          ingredient_item_code: String(batch?.code || ingredient?.sourceCode || ingredient?.code || "").trim() || null,
-          qty: parseNumericQuantity(line.quantity),
-          cost: Number(
-            line.estimatedCost ||
-              calculateLineEstimatedCost(line, {
-                unitCost: batchCostSource?.unitCost,
-                costUnit: batchCostSource?.costUnit,
-              }) ||
-              0
-          ),
-          source_type: "batch",
-          source_recipe_id: linkedBatchId || null,
-          source_unit_cost: Number(batch?.unitCost || 0),
-          source_yield_type: String(line.unit || "").trim() || null,
-        });
-        return;
-      }
-
       const ingredientCostSource = getIngredientCostSource(ingredient, recordMaps.ingredient, recordMaps.batch);
       normalizedIngredientRows.push({
         recipe_id: String(record.id || "").trim(),
@@ -9565,7 +9533,7 @@ function App() {
         qty: parseNumericQuantity(line.quantity),
         cost: Number(line.estimatedCost || calculateLineEstimatedCost(line, ingredientCostSource) || 0),
         source_type: "ingredient",
-        source_recipe_id: String(line.ingredientId || ingredient?.id || "").trim() || null,
+        source_recipe_id: String(ingredient?.sharedRecordId || ingredient?.id || line.ingredientId || "").trim() || null,
         source_unit_cost: Number(ingredientCostSource?.unitCost || 0),
         source_yield_type: String(line.unit || "").trim() || null,
       });
@@ -9578,20 +9546,40 @@ function App() {
 
     const batchRows =
       recordType === "dish"
-        ? [...normalizedBatchRowsFromIngredients, ...(record.batchLines || []).map((line) => {
+        ? (record.batchLines || []).flatMap((line) => {
             const batch = recordMaps.batch.get(line.batchId) || null;
-            return {
-              recipe_id: String(record.id || "").trim(),
-              ingredient_name: String(batch?.name || "").trim() || null,
-              ingredient_item_code: String(batch?.code || "").trim() || null,
-              qty: parseNumericQuantity(line.quantity),
-              cost: Number(line.estimatedCost || 0),
-              source_type: "batch",
-              source_recipe_id: String(line.batchId || "").trim() || null,
-              source_unit_cost: Number(batch?.unitCost || 0),
-              source_yield_type: String(line.unit || "").trim() || null,
-            };
-          })].map((row, index) => ({
+            const publishedIngredient = findPublishedIngredientForBatch(batch, recordMaps.ingredient);
+            if (publishedIngredient?.id) {
+              const ingredientCostSource = getIngredientCostSource(publishedIngredient, recordMaps.ingredient, recordMaps.batch);
+              return [
+                {
+                  recipe_id: String(record.id || "").trim(),
+                  ingredient_name: String(publishedIngredient.name || batch?.name || "").trim() || null,
+                  ingredient_item_code: String(publishedIngredient.sourceCode || publishedIngredient.code || batch?.code || "").trim() || null,
+                  qty: parseNumericQuantity(line.quantity),
+                  cost: Number(line.estimatedCost || calculateLineEstimatedCost(line, ingredientCostSource) || 0),
+                  source_type: "ingredient",
+                  source_recipe_id: String(publishedIngredient.sharedRecordId || publishedIngredient.id || "").trim() || null,
+                  source_unit_cost: Number(ingredientCostSource?.unitCost || 0),
+                  source_yield_type: String(line.unit || "").trim() || null,
+                },
+              ];
+            }
+
+            return [
+              {
+                recipe_id: String(record.id || "").trim(),
+                ingredient_name: String(batch?.name || "").trim() || null,
+                ingredient_item_code: String(batch?.code || "").trim() || null,
+                qty: parseNumericQuantity(line.quantity),
+                cost: Number(line.estimatedCost || 0),
+                source_type: "batch",
+                source_recipe_id: String(line.batchId || "").trim() || null,
+                source_unit_cost: Number(batch?.unitCost || 0),
+                source_yield_type: String(line.unit || "").trim() || null,
+              },
+            ];
+          }).map((row, index) => ({
             ...row,
             component_order: ingredientRows.length + index,
           }))
@@ -12087,13 +12075,6 @@ function App() {
 
   const toggleRecipeIngredientLink = (recipeId, ingredient) => {
     if (!ingredient) return;
-    if (ingredient.batchId && recordMaps.batch.has(ingredient.batchId)) {
-      const batch = recordMaps.batch.get(ingredient.batchId) || null;
-      if (batch) {
-        toggleRecipeBatchLink(recipeId, batch);
-      }
-      return;
-    }
 
     updateRecipe(recipeId, (recipe) => {
       const currentLines = recipe.ingredientLines || [];
