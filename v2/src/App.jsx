@@ -8180,6 +8180,9 @@ function App() {
   const [selectedImportRowId, setSelectedImportRowId] = useState(() => loadStoredSoft1SourceRows()[0]?.id || "");
   const selectedRecordRef = useRef(selectedRecord);
   const activeSectionRef = useRef(activeSection);
+  const ingredientMasterRef = useRef(ingredientMaster);
+  const recipesRef = useRef(recipes);
+  const batchesRef = useRef(batches);
   const [history, setHistory] = useState([]);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
@@ -8982,6 +8985,18 @@ function App() {
     activeSectionRef.current = activeSection;
   }, [activeSection]);
 
+  useEffect(() => {
+    ingredientMasterRef.current = ingredientMaster;
+  }, [ingredientMaster]);
+
+  useEffect(() => {
+    recipesRef.current = recipes;
+  }, [recipes]);
+
+  useEffect(() => {
+    batchesRef.current = batches;
+  }, [batches]);
+
   const pushCurrentLocationToHistory = () => {
     setHistory((current) => {
       if (!currentLocation) return current;
@@ -9178,7 +9193,7 @@ function App() {
     const previewId = recordPreviewModal.id;
 
     if (previewType === "recipe") {
-      const recipe = recipes.find((item) => item.id === previewId);
+      const recipe = recipesRef.current.find((item) => item.id === previewId);
       if (recipe?.sharedDirty && saveRecipeToSharedData) {
         const saved = await saveRecipeToSharedData(previewId, { quiet: true });
         if (!saved) return;
@@ -9186,7 +9201,7 @@ function App() {
     }
 
     if (previewType === "batch") {
-      const batch = batches.find((item) => item.id === previewId);
+      const batch = batchesRef.current.find((item) => item.id === previewId);
       if (batch?.sharedDirty && saveBatchToSharedData) {
         const saved = await saveBatchToSharedData(previewId, { quiet: true });
         if (!saved) return;
@@ -9660,7 +9675,10 @@ function App() {
     const referencedIngredientIds = dedupeTextList((record.ingredientLines || []).map((line) => line.ingredientId).filter(Boolean));
 
     for (const ingredientId of referencedIngredientIds) {
-      const referencedIngredient = ingredientSourceForSync.get(ingredientId) || ingredientMaster.find((item) => item.id === ingredientId) || null;
+      const referencedIngredient =
+        ingredientSourceForSync.get(ingredientId) ||
+        ingredientMasterRef.current.find((item) => item.id === ingredientId) ||
+        null;
       if (!referencedIngredient || referencedIngredient.archived) continue;
       if (!referencedIngredient.sharedDirty && referencedIngredient.sharedRecordId) continue;
 
@@ -9817,7 +9835,7 @@ function App() {
   };
 
   const saveBatchToSharedData = async (batchId, { quiet = false } = {}) => {
-    const batch = batches.find((item) => item.id === batchId);
+    const batch = batchesRef.current.find((item) => item.id === batchId);
     if (!batch) return false;
     const saved = await syncRecipeRecordToSharedData(batch, "batch");
     if (!saved && quiet) {
@@ -9827,7 +9845,7 @@ function App() {
   };
 
   const saveRecipeToSharedData = async (recipeId, { quiet = false } = {}) => {
-    const recipe = recipes.find((item) => item.id === recipeId);
+    const recipe = recipesRef.current.find((item) => item.id === recipeId);
     if (!recipe) return false;
     const saved = await syncRecipeRecordToSharedData(recipe, "dish");
     if (!saved && quiet) {
@@ -9847,7 +9865,7 @@ function App() {
   };
 
   const markIngredientMasterReviewed = (ingredientId, nextStatus = "ready") => {
-    const ingredient = ingredientMaster.find((item) => item.id === ingredientId);
+    const ingredient = ingredientMasterRef.current.find((item) => item.id === ingredientId);
     if (!ingredient) return;
     const sharedRecordId = ingredient.sharedRecordId || ingredient.id;
     const sharedUpdatedAt = ingredient.sharedUpdatedAt || ingredient.lastImportedAt || "";
