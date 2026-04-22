@@ -787,18 +787,19 @@ textarea {
 
 .v2-recipe-shell {
   position: relative;
+  display: grid;
 }
 
 .v2-recipe-main {
+  grid-area: 1 / 1;
   position: relative;
   z-index: 1;
-  transition: transform 180ms ease, opacity 180ms ease;
+  min-width: 0;
+  transition: opacity 180ms ease;
 }
 
 .v2-recipe-shell.picker-open .v2-recipe-main {
-  transform: translateX(-24px);
-  opacity: 0.38;
-  pointer-events: none;
+  opacity: 1;
 }
 
 .v2-picker-backdrop {
@@ -821,6 +822,20 @@ textarea {
   border: 1px solid rgba(117, 89, 60, 0.12);
   box-shadow: 0 24px 80px rgba(52, 34, 20, 0.18);
   overflow: auto;
+}
+
+.v2-picker-panel-inline {
+  grid-area: 1 / 1;
+  position: sticky;
+  top: 24px;
+  right: auto;
+  bottom: auto;
+  justify-self: end;
+  align-self: start;
+  z-index: 12;
+  width: min(520px, calc(100% - 32px));
+  max-height: calc(100vh - 120px);
+  margin: 12px 0 12px 12px;
 }
 
 .v2-modal-shell {
@@ -1296,6 +1311,12 @@ textarea {
     right: 12px;
     bottom: 12px;
     width: calc(100vw - 24px);
+  }
+
+  .v2-picker-panel-inline {
+    width: calc(100% - 16px);
+    max-height: calc(100vh - 88px);
+    margin: 8px 0 8px 8px;
   }
 
   .v2-restaurant-row {

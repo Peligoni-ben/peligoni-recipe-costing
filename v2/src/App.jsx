@@ -18854,9 +18854,11 @@ function RecipeWorkflowDetail({
     : record.status === "draft"
       ? "Mark ready"
       : record.status === "review"
-        ? "Ready in library"
+        ? recipeReadyToPublish
+          ? "Publish live"
+          : "Needs work"
         : "Live";
-  const footerPrimaryDisabled = !nextStep && record.status !== "draft";
+  const footerPrimaryDisabled = !nextStep && (record.status === "live" || (record.status === "review" && !recipeReadyToPublish));
   const ingredientPickerResults = useMemo(() => {
     const query = deferredIngredientPickerQuery.trim();
     if (!query) return [];
@@ -18951,12 +18953,16 @@ function RecipeWorkflowDetail({
 
     if (record.status === "draft") {
       markRecipeReady(record.id);
+      return;
+    }
+
+    if (record.status === "review" && recipeReadyToPublish) {
+      publishRecipeLive(record.id);
     }
   };
 
   return (
     <div className={`v2-recipe-shell ${activePicker ? "picker-open" : ""}`}>
-      {activePicker ? <button type="button" className="v2-picker-backdrop" onClick={closePicker} aria-label="Close picker" /> : null}
       <div className="v2-recipe-main">
       <DetailHeader title={record.name} subtitle={`${record.code} · ${record.category}`} status={record.status} statusLabel={getRecipeStageLabel(record.status)} />
       <div className="v2-detail-grid">
@@ -19239,15 +19245,19 @@ function RecipeWorkflowDetail({
               <strong>
                 {record.status === "live"
                   ? "This recipe is live"
-                  : record.status === "review"
+                  : record.status === "review" && recipeReadyToPublish
                     ? "This recipe is ready in the library"
+                    : record.status === "review"
+                      ? "This recipe needs attention before it can stay ready"
                     : "This recipe is still in draft"}
               </strong>
               <span>
                 {record.status === "live"
                   ? "It is available as a live recipe and can be pulled back to ready or draft if you need to revise it."
-                  : record.status === "review"
-                    ? "Use the Ready filter in the recipe library when you want to publish it live."
+                  : record.status === "review" && recipeReadyToPublish
+                    ? "Use Publish live below, or open the Ready filter in the recipe library if you want to publish several dishes together."
+                    : record.status === "review"
+                      ? `${progress.completeCount}/${progress.total} steps are complete. Finish the remaining steps or move this recipe back to draft so the workflow status matches the work left to do.`
                     : "Finish the missing workflow steps, then use Mark ready to move it into the library's Ready stage."}
               </span>
             </div>
@@ -19272,6 +19282,16 @@ function RecipeWorkflowDetail({
               </span>
             </div>
             <div className="v2-link-list">
+              {record.status === "draft" && recipeReadyToPublish ? (
+                <button type="button" className="v2-primary-button" onClick={() => markRecipeReady(record.id)}>
+                  Mark ready
+                </button>
+              ) : null}
+              {record.status === "review" && recipeReadyToPublish ? (
+                <button type="button" className="v2-primary-button" onClick={() => publishRecipeLive(record.id)}>
+                  Publish live
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="v2-secondary-button"
@@ -19347,7 +19367,7 @@ function RecipeWorkflowDetail({
       </div>
 
       {activePicker === "ingredient" ? (
-        <aside className="v2-picker-panel">
+        <aside className="v2-picker-panel v2-picker-panel-inline">
           <div className="v2-panel-header">
             <div>
               <div className="v2-eyebrow">Ingredient Picker</div>
@@ -19409,7 +19429,7 @@ function RecipeWorkflowDetail({
       ) : null}
 
       {activePicker === "batch" ? (
-        <aside className="v2-picker-panel">
+        <aside className="v2-picker-panel v2-picker-panel-inline">
           <div className="v2-panel-header">
             <div>
               <div className="v2-eyebrow">Component picker</div>
@@ -19682,7 +19702,6 @@ function BatchWorkflowDetail({
 
   return (
     <div className={`v2-recipe-shell ${pickerOpen ? "picker-open" : ""}`}>
-      {pickerOpen ? <button type="button" className="v2-picker-backdrop" onClick={closePicker} aria-label="Close picker" /> : null}
       <div className="v2-recipe-main">
       <DetailHeader title={record.name} subtitle={`${record.code} · ${record.yieldLabel || "No yield set"}`} status={record.status} statusLabel={getBatchStageLabel(record.status)} />
       <div className="v2-detail-grid">
@@ -20163,7 +20182,7 @@ function BatchWorkflowDetail({
       </div>
 
       {pickerOpen ? (
-        <aside className="v2-picker-panel">
+        <aside className="v2-picker-panel v2-picker-panel-inline">
           <div className="v2-panel-header">
             <div>
               <div className="v2-eyebrow">Ingredient Picker</div>
