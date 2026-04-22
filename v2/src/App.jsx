@@ -696,6 +696,19 @@ function buildRestaurantsFromSharedData(baseRestaurants = [], menus = [], recipe
   return [...baseRestaurants, ...generatedRestaurants];
 }
 
+function mapVenueRowToRestaurant(row = {}) {
+  const name = String(row.name || "").trim();
+  return {
+    id: String(row.id || `rest-${slugifyLabel(name)}`),
+    name,
+    venueType: String(row.venue_type || "Restaurant").trim() || "Restaurant",
+    servicePattern: String(row.service_pattern || "").trim(),
+    primaryServices: dedupeTextList(Array.isArray(row.primary_services) ? row.primary_services : []),
+    secondaryServices: dedupeTextList(Array.isArray(row.secondary_services) ? row.secondary_services : []),
+    eventUses: dedupeTextList(Array.isArray(row.event_uses) ? row.event_uses : []),
+  };
+}
+
 function mergeRestaurantCollections(baseRestaurants = [], additionalRestaurants = []) {
   const mergedByName = new Map();
 
@@ -724,6 +737,7 @@ function hydrateSharedDataToV2({
   componentRows = [],
   menuRows = [],
   menuLineRows = [],
+  venueRows = [],
   profileRows = [],
   ingredientReviewState = {},
   ingredientSubstitutionState = {},
@@ -1159,7 +1173,8 @@ function hydrateSharedDataToV2({
     );
   });
 
-  const restaurants = buildRestaurantsFromSharedData(initialRestaurants, menuRows, dishRecipeRows.map((row) => ({
+  const sharedRestaurants = (venueRows || []).map((row) => mapVenueRowToRestaurant(row));
+  const restaurants = buildRestaurantsFromSharedData(mergeRestaurantCollections(initialRestaurants, sharedRestaurants), menuRows, dishRecipeRows.map((row) => ({
     restaurantName: String(row.restaurant || "").trim(),
   })));
   const restaurantsByName = new Map(restaurants.map((restaurant) => [normalizeSharedKey(restaurant.name), restaurant]));
@@ -8207,6 +8222,7 @@ function App() {
   const [ingredientArchiveColumnAvailable, setIngredientArchiveColumnAvailable] = useState(true);
   const [recipeServiceSuitabilityColumnAvailable, setRecipeServiceSuitabilityColumnAvailable] = useState(true);
   const [menuLineDescriptionColumnAvailable, setMenuLineDescriptionColumnAvailable] = useState(true);
+  const [venueExtendedColumnsAvailable, setVenueExtendedColumnsAvailable] = useState(true);
   const [ingredientTradeCategoryState, setIngredientTradeCategoryState] = useState(() =>
     loadStoredFlagState(INGREDIENT_TRADE_CATEGORY_STORAGE_KEY)
   );
@@ -8288,7 +8304,7 @@ function App() {
       try {
         setSharedDataLoading(true);
         setSharedDataLoadFailed(false);
-        setSharedDataStatus("Loading shared ingredients, components, recipes, menus, and users...");
+        setSharedDataStatus("Loading shared ingredients, components, recipes, menus, venues, and users...");
 
         const [
           { data: ingredientRows, error: ingredientError },
@@ -8296,6 +8312,7 @@ function App() {
           { data: componentRows, error: componentError },
           { data: menuRows, error: menuError },
           { data: menuLineRows, error: menuLineError },
+          { data: venueRows, error: venueError },
         ] = await Promise.all([
           withTimeout(
             supabase.from("ingredients").select("*").order("ingredient_name"),
@@ -8321,6 +8338,11 @@ function App() {
             supabase.from("menu_lines").select("*").order("line_order"),
             SHARED_LOAD_TIMEOUT_MS,
             "Shared menu lines"
+          ),
+          withTimeout(
+            supabase.from("venues").select("*").order("name"),
+            SHARED_LOAD_TIMEOUT_MS,
+            "Shared venues"
           ),
         ]);
 
@@ -8364,6 +8386,7 @@ function App() {
         if (componentError) throw componentError;
         if (menuError) throw menuError;
         if (menuLineError) throw menuLineError;
+        if (venueError) throw venueError;
         const mergedIngredientReviewState = {
           ...ingredientMasterReviewState,
           ...(ingredientWorkflowError
@@ -8437,6 +8460,7 @@ function App() {
           componentRows: componentRows || [],
           menuRows: menuRows || [],
           menuLineRows: menuLineRows || [],
+          venueRows: venueRows || [],
           profileRows: profilesError ? [] : profileRows,
           ingredientReviewState: mergedIngredientReviewState,
           ingredientSubstitutionState: mergedIngredientSubstitutionState,
@@ -8467,7 +8491,7 @@ function App() {
         setIngredientImportRows(nextImportQueueRows);
         setRecipes(sharedData.recipes);
         setBatches(sharedData.batches);
-        setRestaurants(mergeRestaurantCollections(sharedData.restaurants, customRestaurantsRef.current));
+        setRestaurants(mergeRestaurantCollections(customRestaurantsRef.current, sharedData.restaurants));
         setMenus(sharedData.menus);
         setUsers(sharedData.users);
         setIngredientWorkspaceView((current) => {
@@ -9374,6 +9398,16 @@ function App() {
     return normalized.includes("description") && normalized.includes("menu_lines");
   };
 
+  const isMissingVenueExtendedColumnError = (message = "") => {
+    const normalized = String(message || "").toLowerCase();
+    return (
+      normalized.includes("venues") &&
+      ["venue_type", "service_pattern", "primary_services", "secondary_services", "event_uses"].some((column) =>
+        normalized.includes(column)
+      )
+    );
+  };
+
   const runSharedIngredientMutation = async ({ mode = "update", ingredient, sharedRecordId = "" }) => {
     const execute = async (includeArchived) => {
       const payload = buildSharedIngredientPayload(ingredient, { includeArchived });
@@ -9543,6 +9577,72 @@ function App() {
     return true;
   };
 
+  const buildSharedVenuePayload = (restaurant = {}, { includeExtended = venueExtendedColumnsAvailable } = {}) => {
+    const payload = {
+      name: String(restaurant.name || "").trim() || null,
+    };
+
+    if (includeExtended) {
+      payload.venue_type = String(restaurant.venueType || "Restaurant").trim() || "Restaurant";
+      payload.service_pattern = String(restaurant.servicePattern || "").trim() || null;
+      payload.primary_services = dedupeTextList(restaurant.primaryServices || []);
+      payload.secondary_services = dedupeTextList(restaurant.secondaryServices || []);
+      payload.event_uses = dedupeTextList(restaurant.eventUses || []);
+    }
+
+    return payload;
+  };
+
+  const syncRestaurantToSharedData = async (restaurant) => {
+    if (!supabaseEnabled || !supabase || !String(restaurant?.name || "").trim()) {
+      return {
+        ok: false,
+        error: "Shared data is not enabled for this restaurant.",
+      };
+    }
+
+    const execute = async (includeExtended = venueExtendedColumnsAvailable) =>
+      supabase
+        .from("venues")
+        .upsert(buildSharedVenuePayload(restaurant, { includeExtended }), { onConflict: "name" })
+        .select("*")
+        .single();
+
+    let result = await execute();
+    if (
+      result?.error &&
+      venueExtendedColumnsAvailable &&
+      isMissingVenueExtendedColumnError(result.error.message || "")
+    ) {
+      setVenueExtendedColumnsAvailable(false);
+      result = await execute(false);
+    }
+
+    if (result?.error) {
+      console.error("Could not save restaurant to shared venues", result.error);
+      if (typeof window !== "undefined") {
+        window.alert(result.error.message || `Could not save "${restaurant?.name || "restaurant"}" to shared structure.`);
+      }
+      return {
+        ok: false,
+        error: result.error.message || "Could not save restaurant to shared structure.",
+      };
+    }
+
+    const syncedRestaurant = mapVenueRowToRestaurant(result?.data || restaurant);
+    const restaurantNameKey = normalizeSharedKey(syncedRestaurant.name);
+
+    setCustomRestaurants((current) =>
+      current.filter((entry) => normalizeSharedKey(entry?.name || "") !== restaurantNameKey)
+    );
+    setRestaurants((current) => mergeRestaurantCollections(current, [syncedRestaurant]));
+
+    return {
+      ok: true,
+      restaurant: syncedRestaurant,
+    };
+  };
+
   const getRecordSharedSyncSignature = (record = {}, recordType = "dish") =>
     JSON.stringify({
       recordType,
@@ -9701,24 +9801,28 @@ function App() {
   };
 
   const syncRecipeRecordToSharedData = async (record, recordType = "dish") => {
-    if (!supabaseEnabled || !supabase || !record?.id) return true;
+    const syncedRecord =
+      recordType === "batch"
+        ? batchesRef.current.find((item) => item.id === record?.id) || record
+        : recipesRef.current.find((item) => item.id === record?.id) || record;
+    if (!supabaseEnabled || !supabase || !syncedRecord?.id) return true;
 
     if (recordType === "dish") {
       setRecipeSharedSyncState((current) => ({
         ...current,
-        [record.id]: "syncing",
+        [syncedRecord.id]: "syncing",
       }));
     }
     if (recordType === "batch") {
       setBatchSharedSyncState((current) => ({
         ...current,
-        [record.id]: "syncing",
+        [syncedRecord.id]: "syncing",
       }));
     }
 
-    const syncSignature = getRecordSharedSyncSignature(record, recordType);
+    const syncSignature = getRecordSharedSyncSignature(syncedRecord, recordType);
     const ingredientSourceForSync = new Map(recordMaps.ingredient);
-    const referencedIngredientIds = dedupeTextList((record.ingredientLines || []).map((line) => line.ingredientId).filter(Boolean));
+    const referencedIngredientIds = dedupeTextList((syncedRecord.ingredientLines || []).map((line) => line.ingredientId).filter(Boolean));
 
     for (const ingredientId of referencedIngredientIds) {
       const referencedIngredient =
@@ -9733,17 +9837,17 @@ function App() {
         if (recordType === "dish") {
           setRecipeSharedSyncState((current) => ({
             ...current,
-            [record.id]: "Could not sync one or more linked ingredients first.",
+            [syncedRecord.id]: "Could not sync one or more linked ingredients first.",
           }));
         }
         if (recordType === "batch") {
           setBatchSharedSyncState((current) => ({
             ...current,
-            [record.id]: "Could not sync one or more linked ingredients first.",
+            [syncedRecord.id]: "Could not sync one or more linked ingredients first.",
           }));
         }
         if (typeof window !== "undefined") {
-          window.alert(`Could not save ${recordType === "batch" ? "component" : "recipe"} "${record.name}" because one of its linked ingredients is not yet saved to shared data.`);
+          window.alert(`Could not save ${recordType === "batch" ? "component" : "recipe"} "${syncedRecord.name}" because one of its linked ingredients is not yet saved to shared data.`);
         }
         return false;
       }
@@ -9752,12 +9856,12 @@ function App() {
     }
 
     const executeRecipeUpsert = async (includeServiceSuitability = recipeServiceSuitabilityColumnAvailable) => {
-      const recipePayload = buildSharedRecipePayload(record, recordType, {
+      const recipePayload = buildSharedRecipePayload(syncedRecord, recordType, {
         includeServiceSuitability,
       });
       return supabase.from("recipes").upsert(recipePayload, { onConflict: "id" });
     };
-    const componentPayload = buildSharedRecipeComponentPayloads(record, recordType, ingredientSourceForSync, recordMaps.batch);
+    const componentPayload = buildSharedRecipeComponentPayloads(syncedRecord, recordType, ingredientSourceForSync, recordMaps.batch);
 
     let { error: recipeError } = await executeRecipeUpsert();
     if (
@@ -9772,37 +9876,37 @@ function App() {
       if (recordType === "dish") {
         setRecipeSharedSyncState((current) => ({
           ...current,
-          [record.id]: recipeError.message || "error",
+          [syncedRecord.id]: recipeError.message || "error",
         }));
       }
       if (recordType === "batch") {
         setBatchSharedSyncState((current) => ({
           ...current,
-          [record.id]: recipeError.message || "error",
+          [syncedRecord.id]: recipeError.message || "error",
         }));
       }
       if (typeof window !== "undefined") {
-        window.alert(recipeError.message || `Could not save ${recordType === "batch" ? "component" : "recipe"} "${record.name}".`);
+        window.alert(recipeError.message || `Could not save ${recordType === "batch" ? "component" : "recipe"} "${syncedRecord.name}".`);
       }
       return false;
     }
 
-    const { error: deleteComponentError } = await supabase.from("recipe_components").delete().eq("recipe_id", record.id);
+    const { error: deleteComponentError } = await supabase.from("recipe_components").delete().eq("recipe_id", syncedRecord.id);
     if (deleteComponentError) {
       if (recordType === "dish") {
         setRecipeSharedSyncState((current) => ({
           ...current,
-          [record.id]: deleteComponentError.message || "error",
+          [syncedRecord.id]: deleteComponentError.message || "error",
         }));
       }
       if (recordType === "batch") {
         setBatchSharedSyncState((current) => ({
           ...current,
-          [record.id]: deleteComponentError.message || "error",
+          [syncedRecord.id]: deleteComponentError.message || "error",
         }));
       }
       if (typeof window !== "undefined") {
-        window.alert(deleteComponentError.message || `Could not refresh ${recordType === "batch" ? "component" : "recipe"} lines for "${record.name}".`);
+        window.alert(deleteComponentError.message || `Could not refresh ${recordType === "batch" ? "component" : "recipe"} lines for "${syncedRecord.name}".`);
       }
       return false;
     }
@@ -9813,17 +9917,17 @@ function App() {
         if (recordType === "dish") {
           setRecipeSharedSyncState((current) => ({
             ...current,
-            [record.id]: insertComponentError.message || "error",
+            [syncedRecord.id]: insertComponentError.message || "error",
           }));
         }
         if (recordType === "batch") {
           setBatchSharedSyncState((current) => ({
             ...current,
-            [record.id]: insertComponentError.message || "error",
+            [syncedRecord.id]: insertComponentError.message || "error",
           }));
         }
         if (typeof window !== "undefined") {
-          window.alert(insertComponentError.message || `Could not save ${recordType === "batch" ? "component" : "recipe"} lines for "${record.name}".`);
+          window.alert(insertComponentError.message || `Could not save ${recordType === "batch" ? "component" : "recipe"} lines for "${syncedRecord.name}".`);
         }
         return false;
       }
@@ -9832,7 +9936,7 @@ function App() {
     if (recordType === "dish") {
       setRecipes((current) =>
         current.map((item) => {
-          if (item.id !== record.id) return item;
+          if (item.id !== syncedRecord.id) return item;
           if (getRecordSharedSyncSignature(item, "dish") !== syncSignature) return item;
           return syncRecipeRelations({
             ...item,
@@ -9841,10 +9945,10 @@ function App() {
           });
         })
       );
-      if (!record.sharedPersisted) {
+      if (!syncedRecord.sharedPersisted) {
         setMenus((current) =>
           current.map((menu) =>
-            (menu.recipeIds || []).includes(record.id)
+            (menu.recipeIds || []).includes(syncedRecord.id)
               ? syncMenuRecord({
                   ...menu,
                   sharedDirty: true,
@@ -9855,14 +9959,14 @@ function App() {
       }
       setRecipeSharedSyncState((current) => ({
         ...current,
-        [record.id]: "saved",
+        [syncedRecord.id]: "saved",
       }));
       return true;
     }
 
     setBatches((current) =>
       current.map((item) => {
-        if (item.id !== record.id) return item;
+        if (item.id !== syncedRecord.id) return item;
         if (getRecordSharedSyncSignature(item, "batch") !== syncSignature) return item;
         return syncBatchRecord({
           ...item,
@@ -9874,7 +9978,7 @@ function App() {
 
     setBatchSharedSyncState((current) => ({
       ...current,
-      [record.id]: "saved",
+      [syncedRecord.id]: "saved",
     }));
 
     return true;
@@ -13012,7 +13116,7 @@ function App() {
     });
   };
 
-  const addRestaurant = (draft = {}) => {
+  const addRestaurant = async (draft = {}) => {
     const name = String(draft.name || "").trim();
     if (!name) return false;
 
@@ -13034,6 +13138,11 @@ function App() {
       secondaryServices: dedupeTextList(draft.secondaryServices || []),
       eventUses: dedupeTextList(draft.eventUses || []),
     };
+
+    if (supabaseEnabled && supabase && authUser) {
+      const synced = await syncRestaurantToSharedData(nextRestaurant);
+      return Boolean(synced?.ok);
+    }
 
     setCustomRestaurants((current) => mergeRestaurantCollections(current, [nextRestaurant]));
     setRestaurants((current) => mergeRestaurantCollections(current, [nextRestaurant]));
@@ -18229,8 +18338,8 @@ function SettingsPanel({
       .map((entry) => entry.trim())
       .filter(Boolean);
 
-  const handleCreateRestaurant = () => {
-    const didAdd = addRestaurant({
+  const handleCreateRestaurant = async () => {
+    const didAdd = await addRestaurant({
       name: restaurantDraft.name,
       venueType: restaurantDraft.venueType,
       servicePattern: restaurantDraft.servicePattern,
