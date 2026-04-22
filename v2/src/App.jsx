@@ -1162,7 +1162,7 @@ function hydrateSharedDataToV2({
           id: String(line.id || `${row.id}-${index + 1}`),
           recipeId: recipe?.id || String(line.recipe_id || "").trim(),
           dishName: String(line.dish_name || recipe?.name || "").trim(),
-          description: String(recipe?.menuDescription || "").trim(),
+          description: String(line.description || recipe?.menuDescription || ""),
         };
       });
 
@@ -8167,6 +8167,7 @@ function App() {
   const [ingredientSharedSyncState, setIngredientSharedSyncState] = useState({});
   const [ingredientArchiveColumnAvailable, setIngredientArchiveColumnAvailable] = useState(true);
   const [recipeServiceSuitabilityColumnAvailable, setRecipeServiceSuitabilityColumnAvailable] = useState(true);
+  const [menuLineDescriptionColumnAvailable, setMenuLineDescriptionColumnAvailable] = useState(true);
   const [ingredientTradeCategoryState, setIngredientTradeCategoryState] = useState(() =>
     loadStoredFlagState(INGREDIENT_TRADE_CATEGORY_STORAGE_KEY)
   );
@@ -9307,6 +9308,11 @@ function App() {
     return normalized.includes("service_suitability") && normalized.includes("recipes");
   };
 
+  const isMissingMenuLineDescriptionColumnError = (message = "") => {
+    const normalized = String(message || "").toLowerCase();
+    return normalized.includes("description") && normalized.includes("menu_lines");
+  };
+
   const runSharedIngredientMutation = async ({ mode = "update", ingredient, sharedRecordId = "" }) => {
     const execute = async (includeArchived) => {
       const payload = buildSharedIngredientPayload(ingredient, { includeArchived });
@@ -9353,7 +9359,7 @@ function App() {
     is_live: menu.status === "live",
   });
 
-  const buildSharedMenuLinePayloads = (menu = {}) => {
+  const buildSharedMenuLinePayloads = (menu = {}, { includeDescription = menuLineDescriptionColumnAvailable } = {}) => {
     const normalizedItems = (menu.items || []).map((item) => ({
       ...item,
       id: isUuidLike(item.id) ? item.id : createClientUuid(),
@@ -9364,7 +9370,7 @@ function App() {
       const recipeIsShared = Boolean(recipe?.sharedPersisted);
       const pricing = recipe ? getRecipePricingMetrics(recipe, recordMaps.ingredient, recordMaps.batch) : null;
 
-      return {
+      const row = {
         id: item.id,
         menu_id: String(menu.id || "").trim(),
         recipe_id: recipeIsShared ? recipe.id : null,
@@ -9376,6 +9382,12 @@ function App() {
         line_sale_price: Number(recipe?.salePrice || 0),
         category: String(recipe?.category || "").trim() || null,
       };
+
+      if (includeDescription) {
+        row.description = String(item.description || "").trim() || null;
+      }
+
+      return row;
     });
 
     return {
@@ -9393,7 +9405,12 @@ function App() {
     }));
 
     const syncSignature = getMenuSyncSignature(menu);
-    const { normalizedItems, payload: linePayload } = buildSharedMenuLinePayloads(menu);
+    const executeMenuLineInsert = async (includeDescription = menuLineDescriptionColumnAvailable) => {
+      const { payload } = buildSharedMenuLinePayloads(menu, { includeDescription });
+      if (!payload.length) return { error: null };
+      return supabase.from("menu_lines").insert(payload);
+    };
+    const { normalizedItems } = buildSharedMenuLinePayloads(menu, { includeDescription: menuLineDescriptionColumnAvailable });
     const menuPayload = buildSharedMenuPayload({
       ...menu,
       items: normalizedItems,
@@ -9423,8 +9440,16 @@ function App() {
       return false;
     }
 
-    if (linePayload.length) {
-      const { error: insertLineError } = await supabase.from("menu_lines").insert(linePayload);
+    if (normalizedItems.length) {
+      let { error: insertLineError } = await executeMenuLineInsert();
+      if (
+        insertLineError &&
+        menuLineDescriptionColumnAvailable &&
+        isMissingMenuLineDescriptionColumnError(insertLineError.message || "")
+      ) {
+        setMenuLineDescriptionColumnAvailable(false);
+        ({ error: insertLineError } = await executeMenuLineInsert(false));
+      }
       if (insertLineError) {
         setMenuSharedSyncState((current) => ({
           ...current,
