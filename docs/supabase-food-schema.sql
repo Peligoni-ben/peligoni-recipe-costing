@@ -38,6 +38,7 @@ create table if not exists public.recipes (
   id text primary key,
   restaurant text,
   available_venues jsonb not null default '[]'::jsonb,
+  service_suitability jsonb not null default '[]'::jsonb,
   name text not null,
   category text,
   selling_item_code text,
@@ -59,7 +60,8 @@ create table if not exists public.recipes (
 );
 
 alter table if exists public.recipes
-  add column if not exists available_venues jsonb not null default '[]'::jsonb;
+  add column if not exists available_venues jsonb not null default '[]'::jsonb,
+  add column if not exists service_suitability jsonb not null default '[]'::jsonb;
 
 create index if not exists recipes_restaurant_idx on public.recipes (restaurant);
 create index if not exists recipes_type_idx on public.recipes (recipe_type);

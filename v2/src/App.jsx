@@ -1078,7 +1078,7 @@ function hydrateSharedDataToV2({
       chefNotes: "",
       portions: Math.max(1, numberValue(row.portion_count, 1)),
       salePrice: numberValue(row.current_sale_price),
-      serviceSuitability: [],
+      serviceSuitability: dedupeTextList(Array.isArray(row.service_suitability) ? row.service_suitability : []),
       ingredientLines,
       batchLines,
       sharedMissingLineCount: unmatchedLabels.length,
@@ -8068,6 +8068,7 @@ function App() {
   const [ingredientCodeAlerts, setIngredientCodeAlerts] = useState({});
   const [ingredientSharedSyncState, setIngredientSharedSyncState] = useState({});
   const [ingredientArchiveColumnAvailable, setIngredientArchiveColumnAvailable] = useState(true);
+  const [recipeServiceSuitabilityColumnAvailable, setRecipeServiceSuitabilityColumnAvailable] = useState(true);
   const [ingredientTradeCategoryState, setIngredientTradeCategoryState] = useState(() =>
     loadStoredFlagState(INGREDIENT_TRADE_CATEGORY_STORAGE_KEY)
   );
@@ -9184,6 +9185,11 @@ function App() {
     return normalized.includes("is_archived") && normalized.includes("ingredients");
   };
 
+  const isMissingRecipeServiceSuitabilityColumnError = (message = "") => {
+    const normalized = String(message || "").toLowerCase();
+    return normalized.includes("service_suitability") && normalized.includes("recipes");
+  };
+
   const runSharedIngredientMutation = async ({ mode = "update", ingredient, sharedRecordId = "" }) => {
     const execute = async (includeArchived) => {
       const payload = buildSharedIngredientPayload(ingredient, { includeArchived });
@@ -9346,6 +9352,7 @@ function App() {
       prepNotes: String(record.prepNotes || "").trim(),
       platingNotes: String(record.platingNotes || "").trim(),
       chefNotes: String(record.chefNotes || "").trim(),
+      serviceSuitability: dedupeTextList(record.serviceSuitability || []),
       portions: Number(record.portions || 0),
       salePrice: Number(record.salePrice || 0),
       yieldAmount: Number(record.yieldAmount || 0),
@@ -9364,13 +9371,16 @@ function App() {
       })),
     });
 
-  const buildSharedRecipePayload = (record = {}, recordType = "dish") => {
+  const buildSharedRecipePayload = (
+    record = {},
+    recordType = "dish",
+    { includeServiceSuitability = recipeServiceSuitabilityColumnAvailable } = {}
+  ) => {
     const linkedMenus = menus.filter((menu) => (record.menuIds || []).includes(menu.id));
     const availableVenues = dedupeTextList(linkedMenus.map((menu) => menu.restaurant).filter(Boolean));
     const primaryRestaurant = availableVenues[0] || null;
     const pricing = recordType === "dish" ? getRecipePricingMetrics(record, recordMaps.ingredient, recordMaps.batch) : null;
-
-    return {
+    const payload = {
       id: String(record.id || "").trim(),
       restaurant: primaryRestaurant,
       available_venues: availableVenues,
@@ -9408,6 +9418,12 @@ function App() {
       is_locked: false,
       workflow_stage: record.status === "draft" ? "draft" : "review",
     };
+
+    if (includeServiceSuitability && recordType === "dish") {
+      payload.service_suitability = dedupeTextList(record.serviceSuitability || []);
+    }
+
+    return payload;
   };
 
   const buildSharedRecipeComponentPayloads = (record = {}, recordType = "dish") => {
@@ -9507,10 +9523,23 @@ function App() {
     }
 
     const syncSignature = getRecordSharedSyncSignature(record, recordType);
-    const recipePayload = buildSharedRecipePayload(record, recordType);
+    const executeRecipeUpsert = async (includeServiceSuitability = recipeServiceSuitabilityColumnAvailable) => {
+      const recipePayload = buildSharedRecipePayload(record, recordType, {
+        includeServiceSuitability,
+      });
+      return supabase.from("recipes").upsert(recipePayload, { onConflict: "id" });
+    };
     const componentPayload = buildSharedRecipeComponentPayloads(record, recordType);
 
-    const { error: recipeError } = await supabase.from("recipes").upsert(recipePayload, { onConflict: "id" });
+    let { error: recipeError } = await executeRecipeUpsert();
+    if (
+      recipeError &&
+      recipeServiceSuitabilityColumnAvailable &&
+      isMissingRecipeServiceSuitabilityColumnError(recipeError.message || "")
+    ) {
+      setRecipeServiceSuitabilityColumnAvailable(false);
+      ({ error: recipeError } = await executeRecipeUpsert(false));
+    }
     if (recipeError) {
       if (recordType === "dish") {
         setRecipeSharedSyncState((current) => ({
@@ -19023,8 +19052,8 @@ function RecipeWorkflowDetail({
       {recipeEditorStep === "components" ? (
         <DetailSection title="Ingredients">
           <div className="v2-editor-block">
-            <strong>Ingredient lines</strong>
-            {ingredientLinks.length ? (
+            <strong>Recipe lines</strong>
+            {ingredientLinks.length || batchLinks.length ? (
               <div className="v2-stack">
                 {ingredientLinks.map((line) => (
                   <div key={line.ingredientId} className="v2-line-card">
@@ -19062,24 +19091,6 @@ function RecipeWorkflowDetail({
                     </div>
                   </div>
                 ))}
-              </div>
-            ) : (
-              <div className="v2-micro-note">No ingredient lines yet.</div>
-            )}
-            <div className="v2-link-list">
-              <button type="button" className="v2-primary-button" onClick={openIngredientPicker}>
-                Add ingredient
-              </button>
-              <button type="button" className="v2-secondary-button" onClick={openBatchPicker}>
-                Add component
-              </button>
-            </div>
-          </div>
-
-          <div className="v2-editor-block">
-            <strong>Component lines</strong>
-            {batchLinks.length ? (
-              <div className="v2-stack">
                 {batchLinks.map((line) => (
                   <div key={line.batchId} className="v2-line-card">
                     <div>
@@ -19118,7 +19129,7 @@ function RecipeWorkflowDetail({
                 ))}
               </div>
             ) : (
-              <div className="v2-micro-note">No component lines yet.</div>
+              <div className="v2-micro-note">No ingredient or component lines yet.</div>
             )}
             <div className="v2-link-list">
               <button type="button" className="v2-primary-button" onClick={openIngredientPicker}>
