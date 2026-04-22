@@ -8649,7 +8649,7 @@ function App() {
     if (!supabaseEnabled || !supabase) return undefined;
 
     const dirtyIngredients = ingredientMaster.filter(
-      (ingredient) => ingredient.sharedRecordId && ingredient.sharedDirty && !ingredient.archived
+      (ingredient) => ingredient.sharedDirty && !ingredient.archived
     );
     const ingredientDeletionIds = [...pendingIngredientDeletionIds];
     if (!dirtyIngredients.length && !ingredientDeletionIds.length) return undefined;
@@ -9170,7 +9170,26 @@ function App() {
     }
   };
 
-  const closeRecordPreview = () => {
+  const closeRecordPreview = async () => {
+    const previewType = recordPreviewModal.type;
+    const previewId = recordPreviewModal.id;
+
+    if (previewType === "recipe") {
+      const recipe = recipes.find((item) => item.id === previewId);
+      if (recipe?.sharedDirty && saveRecipeToSharedData) {
+        const saved = await saveRecipeToSharedData(previewId, { quiet: true });
+        if (!saved) return;
+      }
+    }
+
+    if (previewType === "batch") {
+      const batch = batches.find((item) => item.id === previewId);
+      if (batch?.sharedDirty && saveBatchToSharedData) {
+        const saved = await saveBatchToSharedData(previewId, { quiet: true });
+        if (!saved) return;
+      }
+    }
+
     setRecordPreviewModal({
       isOpen: false,
       type: "",
@@ -9520,12 +9539,17 @@ function App() {
     return payload;
   };
 
-  const buildSharedRecipeComponentPayloads = (record = {}, recordType = "dish") => {
+  const buildSharedRecipeComponentPayloads = (
+    record = {},
+    recordType = "dish",
+    ingredientSource = recordMaps.ingredient,
+    batchSource = recordMaps.batch
+  ) => {
     const normalizedIngredientRows = [];
 
     (record.ingredientLines || []).forEach((line) => {
-      const ingredient = recordMaps.ingredient.get(line.ingredientId) || null;
-      const ingredientCostSource = getIngredientCostSource(ingredient, recordMaps.ingredient, recordMaps.batch);
+      const ingredient = ingredientSource.get(line.ingredientId) || null;
+      const ingredientCostSource = getIngredientCostSource(ingredient, ingredientSource, batchSource);
       normalizedIngredientRows.push({
         recipe_id: String(record.id || "").trim(),
         ingredient_name: String(ingredient?.name || "").trim() || null,
@@ -9547,10 +9571,10 @@ function App() {
     const batchRows =
       recordType === "dish"
         ? (record.batchLines || []).flatMap((line) => {
-            const batch = recordMaps.batch.get(line.batchId) || null;
-            const publishedIngredient = findPublishedIngredientForBatch(batch, recordMaps.ingredient);
+            const batch = batchSource.get(line.batchId) || null;
+            const publishedIngredient = findPublishedIngredientForBatch(batch, ingredientSource);
             if (publishedIngredient?.id) {
-              const ingredientCostSource = getIngredientCostSource(publishedIngredient, recordMaps.ingredient, recordMaps.batch);
+              const ingredientCostSource = getIngredientCostSource(publishedIngredient, ingredientSource, batchSource);
               return [
                 {
                   recipe_id: String(record.id || "").trim(),
@@ -9605,13 +9629,44 @@ function App() {
     }
 
     const syncSignature = getRecordSharedSyncSignature(record, recordType);
+    const ingredientSourceForSync = new Map(recordMaps.ingredient);
+    const referencedIngredientIds = dedupeTextList((record.ingredientLines || []).map((line) => line.ingredientId).filter(Boolean));
+
+    for (const ingredientId of referencedIngredientIds) {
+      const referencedIngredient = ingredientSourceForSync.get(ingredientId) || ingredientMaster.find((item) => item.id === ingredientId) || null;
+      if (!referencedIngredient || referencedIngredient.archived) continue;
+      if (!referencedIngredient.sharedDirty && referencedIngredient.sharedRecordId) continue;
+
+      const syncedIngredient = await syncIngredientToSharedData(ingredientId, { quiet: true });
+      if (!syncedIngredient) {
+        if (recordType === "dish") {
+          setRecipeSharedSyncState((current) => ({
+            ...current,
+            [record.id]: "Could not sync one or more linked ingredients first.",
+          }));
+        }
+        if (recordType === "batch") {
+          setBatchSharedSyncState((current) => ({
+            ...current,
+            [record.id]: "Could not sync one or more linked ingredients first.",
+          }));
+        }
+        if (typeof window !== "undefined") {
+          window.alert(`Could not save ${recordType === "batch" ? "component" : "recipe"} "${record.name}" because one of its linked ingredients is not yet saved to shared data.`);
+        }
+        return false;
+      }
+
+      ingredientSourceForSync.set(ingredientId, syncedIngredient);
+    }
+
     const executeRecipeUpsert = async (includeServiceSuitability = recipeServiceSuitabilityColumnAvailable) => {
       const recipePayload = buildSharedRecipePayload(record, recordType, {
         includeServiceSuitability,
       });
       return supabase.from("recipes").upsert(recipePayload, { onConflict: "id" });
     };
-    const componentPayload = buildSharedRecipeComponentPayloads(record, recordType);
+    const componentPayload = buildSharedRecipeComponentPayloads(record, recordType, ingredientSourceForSync, recordMaps.batch);
 
     let { error: recipeError } = await executeRecipeUpsert();
     if (
@@ -10111,20 +10166,16 @@ function App() {
     }
 
     const ingredient = ingredientMaster.find((item) => item.id === ingredientId);
-    if (!ingredient?.sharedRecordId) {
-      if (markReviewed) {
-        markIngredientMasterReviewed(ingredientId, "ready");
-      }
-      return false;
-    }
+    if (!ingredient) return false;
 
     setIngredientSharedSyncState((current) => ({
       ...current,
       [ingredientId]: "syncing",
     }));
 
+    const mutationMode = ingredient.sharedRecordId ? "update" : "insert";
     const { data, error } = await runSharedIngredientMutation({
-      mode: "update",
+      mode: mutationMode,
       ingredient,
       sharedRecordId: ingredient.sharedRecordId,
     });
@@ -10141,25 +10192,36 @@ function App() {
     }
 
     const nextSharedUpdatedAt = String(data?.updated_at || data?.last_updated || getTodayImportDate()).trim();
-
-    updateIngredient(ingredientId, (current) => ({
-      ...current,
-      name: String(data?.ingredient_name || current.name).trim(),
-      code: String(getSharedInternalIngredientCode(data) || getSharedSoft1Code(data) || current.code).trim(),
+    const nextSharedRecordId = String(data?.id || ingredient.sharedRecordId || "").trim();
+    const storedTradeCategory =
+      ingredientTradeCategoryState[nextSharedRecordId || ingredient.sharedRecordId || ingredient.id]?.value ||
+      ingredient.tradeCategory ||
+      "";
+    const syncedIngredient = {
+      ...ingredient,
+      name: String(data?.ingredient_name || ingredient.name).trim(),
+      code: String(getSharedInternalIngredientCode(data) || getSharedSoft1Code(data) || ingredient.code).trim(),
       sourceCode: String(getSharedSoft1Code(data) || "").trim(),
-      packSize: String(data?.pack_size || current.packSize).trim(),
+      packSize: String(data?.pack_size || ingredient.packSize).trim(),
       supplier: String(data?.supplier || "").trim(),
       category: String(data?.category || "").trim(),
-      tradeCategory: ingredientTradeCategoryState[ingredient.sharedRecordId || ingredient.id]?.value || current.tradeCategory || "",
+      tradeCategory: storedTradeCategory,
       sourceType: getSharedSoft1Code(data) ? "soft1" : "manual",
       soft1Status: getSharedSoft1Code(data) ? "in_soft1" : "pending",
-      purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, current.purchaseVatRate ?? 13),
-      lastImportedAt: String(data?.last_updated || current.lastImportedAt).trim(),
+      purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, ingredient.purchaseVatRate ?? 13),
+      lastImportedAt: String(data?.last_updated || ingredient.lastImportedAt).trim(),
+      sharedRecordId: nextSharedRecordId,
       sharedUpdatedAt: nextSharedUpdatedAt,
       archived: Boolean(data?.is_archived),
       sharedDirty: false,
-      masterReviewStatus: markReviewed ? "ready" : current.masterReviewStatus,
-      status: markReviewed ? "ready" : current.status,
+      masterReviewStatus: markReviewed ? "ready" : ingredient.masterReviewStatus,
+      status: markReviewed ? "ready" : ingredient.status,
+      needsReviewFlag: markReviewed ? false : ingredient.needsReviewFlag,
+    };
+
+    updateIngredient(ingredientId, (current) => ({
+      ...current,
+      ...syncedIngredient,
     }));
 
     setIngredientSharedSyncState((current) => ({
@@ -10168,28 +10230,24 @@ function App() {
     }));
 
     if (markReviewed) {
-      const existingReviewEntry = ingredientMasterReviewState[ingredient.sharedRecordId] || {};
-      const currentCatchupSuggestion = getIngredientRuleCatchupSuggestion(ingredient, learningRules, soft1SourceRows);
+      const existingReviewEntry = ingredientMasterReviewState[nextSharedRecordId] || {};
+      const currentCatchupSuggestion = getIngredientRuleCatchupSuggestion(syncedIngredient, learningRules, soft1SourceRows);
       const nextReviewEntry = withIngredientReviewNamingContext({
           status: "ready",
           sharedUpdatedAt: nextSharedUpdatedAt,
-          flagged: Boolean(existingReviewEntry.flagged || ingredient.needsSubstitutionReview),
+          flagged: Boolean(existingReviewEntry.flagged || syncedIngredient.needsSubstitutionReview),
           forReview: false,
           ruleCatchupSignature: getIngredientRuleCatchupSignature(currentCatchupSuggestion),
-        }, ingredient, soft1SourceRows, existingReviewEntry);
+        }, syncedIngredient, soft1SourceRows, existingReviewEntry);
       setIngredientMasterReviewState((current) => ({
         ...current,
-        [ingredient.sharedRecordId]: nextReviewEntry,
+        [nextSharedRecordId]: nextReviewEntry,
       }));
-      await persistIngredientMasterReviewStateEntry(ingredient.sharedRecordId, nextReviewEntry);
-      updateIngredient(ingredientId, (current) => ({
-        ...current,
-        needsReviewFlag: false,
-      }));
+      await persistIngredientMasterReviewStateEntry(nextSharedRecordId, nextReviewEntry);
       setIngredientWorkspaceView("catalogue");
     }
 
-    return true;
+    return syncedIngredient;
   };
 
   const hydrateSharedIngredientRowToV2 = (row = {}) => {
