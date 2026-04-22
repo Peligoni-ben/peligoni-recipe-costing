@@ -8239,6 +8239,7 @@ function App() {
   const recipesRef = useRef(recipes);
   const batchesRef = useRef(batches);
   const customRestaurantsRef = useRef(customRestaurants);
+  const recordSyncQueueRef = useRef(new Map());
   const [history, setHistory] = useState([]);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
@@ -9801,187 +9802,223 @@ function App() {
   };
 
   const syncRecipeRecordToSharedData = async (record, recordType = "dish") => {
-    const syncedRecord =
-      recordType === "batch"
-        ? batchesRef.current.find((item) => item.id === record?.id) || record
-        : recipesRef.current.find((item) => item.id === record?.id) || record;
-    if (!supabaseEnabled || !supabase || !syncedRecord?.id) return true;
+    const syncKey = `${recordType}:${String(record?.id || "").trim()}`;
+    if (!supabaseEnabled || !supabase || !String(record?.id || "").trim()) return true;
 
-    if (recordType === "dish") {
-      setRecipeSharedSyncState((current) => ({
-        ...current,
-        [syncedRecord.id]: "syncing",
-      }));
-    }
-    if (recordType === "batch") {
-      setBatchSharedSyncState((current) => ({
-        ...current,
-        [syncedRecord.id]: "syncing",
-      }));
-    }
+    const previousSync = recordSyncQueueRef.current.get(syncKey) || Promise.resolve(true);
+    const nextSync = previousSync
+      .catch(() => true)
+      .then(async () => {
+        const syncedRecord =
+          recordType === "batch"
+            ? batchesRef.current.find((item) => item.id === record?.id) || record
+            : recipesRef.current.find((item) => item.id === record?.id) || record;
+        if (!syncedRecord?.id) return true;
 
-    const syncSignature = getRecordSharedSyncSignature(syncedRecord, recordType);
-    const ingredientSourceForSync = new Map(recordMaps.ingredient);
-    const referencedIngredientIds = dedupeTextList((syncedRecord.ingredientLines || []).map((line) => line.ingredientId).filter(Boolean));
-
-    for (const ingredientId of referencedIngredientIds) {
-      const referencedIngredient =
-        ingredientSourceForSync.get(ingredientId) ||
-        ingredientMasterRef.current.find((item) => item.id === ingredientId) ||
-        null;
-      if (!referencedIngredient || referencedIngredient.archived) continue;
-      if (!referencedIngredient.sharedDirty && referencedIngredient.sharedRecordId) continue;
-
-      const syncedIngredient = await syncIngredientToSharedData(ingredientId, { quiet: true });
-      if (!syncedIngredient) {
         if (recordType === "dish") {
           setRecipeSharedSyncState((current) => ({
             ...current,
-            [syncedRecord.id]: "Could not sync one or more linked ingredients first.",
+            [syncedRecord.id]: "syncing",
           }));
         }
         if (recordType === "batch") {
           setBatchSharedSyncState((current) => ({
             ...current,
-            [syncedRecord.id]: "Could not sync one or more linked ingredients first.",
+            [syncedRecord.id]: "syncing",
           }));
         }
-        if (typeof window !== "undefined") {
-          window.alert(`Could not save ${recordType === "batch" ? "component" : "recipe"} "${syncedRecord.name}" because one of its linked ingredients is not yet saved to shared data.`);
-        }
-        return false;
-      }
 
-      ingredientSourceForSync.set(ingredientId, syncedIngredient);
-    }
-
-    const executeRecipeUpsert = async (includeServiceSuitability = recipeServiceSuitabilityColumnAvailable) => {
-      const recipePayload = buildSharedRecipePayload(syncedRecord, recordType, {
-        includeServiceSuitability,
-      });
-      return supabase.from("recipes").upsert(recipePayload, { onConflict: "id" });
-    };
-    const componentPayload = buildSharedRecipeComponentPayloads(syncedRecord, recordType, ingredientSourceForSync, recordMaps.batch);
-
-    let { error: recipeError } = await executeRecipeUpsert();
-    if (
-      recipeError &&
-      recipeServiceSuitabilityColumnAvailable &&
-      isMissingRecipeServiceSuitabilityColumnError(recipeError.message || "")
-    ) {
-      setRecipeServiceSuitabilityColumnAvailable(false);
-      ({ error: recipeError } = await executeRecipeUpsert(false));
-    }
-    if (recipeError) {
-      if (recordType === "dish") {
-        setRecipeSharedSyncState((current) => ({
-          ...current,
-          [syncedRecord.id]: recipeError.message || "error",
-        }));
-      }
-      if (recordType === "batch") {
-        setBatchSharedSyncState((current) => ({
-          ...current,
-          [syncedRecord.id]: recipeError.message || "error",
-        }));
-      }
-      if (typeof window !== "undefined") {
-        window.alert(recipeError.message || `Could not save ${recordType === "batch" ? "component" : "recipe"} "${syncedRecord.name}".`);
-      }
-      return false;
-    }
-
-    const { error: deleteComponentError } = await supabase.from("recipe_components").delete().eq("recipe_id", syncedRecord.id);
-    if (deleteComponentError) {
-      if (recordType === "dish") {
-        setRecipeSharedSyncState((current) => ({
-          ...current,
-          [syncedRecord.id]: deleteComponentError.message || "error",
-        }));
-      }
-      if (recordType === "batch") {
-        setBatchSharedSyncState((current) => ({
-          ...current,
-          [syncedRecord.id]: deleteComponentError.message || "error",
-        }));
-      }
-      if (typeof window !== "undefined") {
-        window.alert(deleteComponentError.message || `Could not refresh ${recordType === "batch" ? "component" : "recipe"} lines for "${syncedRecord.name}".`);
-      }
-      return false;
-    }
-
-    if (componentPayload.length) {
-      const { error: insertComponentError } = await supabase.from("recipe_components").insert(componentPayload);
-      if (insertComponentError) {
-        if (recordType === "dish") {
-          setRecipeSharedSyncState((current) => ({
-            ...current,
-            [syncedRecord.id]: insertComponentError.message || "error",
-          }));
-        }
-        if (recordType === "batch") {
-          setBatchSharedSyncState((current) => ({
-            ...current,
-            [syncedRecord.id]: insertComponentError.message || "error",
-          }));
-        }
-        if (typeof window !== "undefined") {
-          window.alert(insertComponentError.message || `Could not save ${recordType === "batch" ? "component" : "recipe"} lines for "${syncedRecord.name}".`);
-        }
-        return false;
-      }
-    }
-
-    if (recordType === "dish") {
-      setRecipes((current) =>
-        current.map((item) => {
-          if (item.id !== syncedRecord.id) return item;
-          if (getRecordSharedSyncSignature(item, "dish") !== syncSignature) return item;
-          return syncRecipeRelations({
-            ...item,
-            sharedDirty: false,
-            sharedPersisted: true,
-          });
-        })
-      );
-      if (!syncedRecord.sharedPersisted) {
-        setMenus((current) =>
-          current.map((menu) =>
-            (menu.recipeIds || []).includes(syncedRecord.id)
-              ? syncMenuRecord({
-                  ...menu,
-                  sharedDirty: true,
-                })
-              : menu
-          )
+        const syncSignature = getRecordSharedSyncSignature(syncedRecord, recordType);
+        const ingredientSourceForSync = new Map(recordMaps.ingredient);
+        const referencedIngredientIds = dedupeTextList(
+          (syncedRecord.ingredientLines || []).map((line) => line.ingredientId).filter(Boolean)
         );
+
+        for (const ingredientId of referencedIngredientIds) {
+          const referencedIngredient =
+            ingredientSourceForSync.get(ingredientId) ||
+            ingredientMasterRef.current.find((item) => item.id === ingredientId) ||
+            null;
+          if (!referencedIngredient || referencedIngredient.archived) continue;
+          if (!referencedIngredient.sharedDirty && referencedIngredient.sharedRecordId) continue;
+
+          const syncedIngredient = await syncIngredientToSharedData(ingredientId, { quiet: true });
+          if (!syncedIngredient) {
+            if (recordType === "dish") {
+              setRecipeSharedSyncState((current) => ({
+                ...current,
+                [syncedRecord.id]: "Could not sync one or more linked ingredients first.",
+              }));
+            }
+            if (recordType === "batch") {
+              setBatchSharedSyncState((current) => ({
+                ...current,
+                [syncedRecord.id]: "Could not sync one or more linked ingredients first.",
+              }));
+            }
+            if (typeof window !== "undefined") {
+              window.alert(
+                `Could not save ${recordType === "batch" ? "component" : "recipe"} "${syncedRecord.name}" because one of its linked ingredients is not yet saved to shared data.`
+              );
+            }
+            return false;
+          }
+
+          ingredientSourceForSync.set(ingredientId, syncedIngredient);
+        }
+
+        const executeRecipeUpsert = async (includeServiceSuitability = recipeServiceSuitabilityColumnAvailable) => {
+          const recipePayload = buildSharedRecipePayload(syncedRecord, recordType, {
+            includeServiceSuitability,
+          });
+          return supabase.from("recipes").upsert(recipePayload, { onConflict: "id" });
+        };
+        const componentPayload = buildSharedRecipeComponentPayloads(
+          syncedRecord,
+          recordType,
+          ingredientSourceForSync,
+          recordMaps.batch
+        );
+
+        let { error: recipeError } = await executeRecipeUpsert();
+        if (
+          recipeError &&
+          recipeServiceSuitabilityColumnAvailable &&
+          isMissingRecipeServiceSuitabilityColumnError(recipeError.message || "")
+        ) {
+          setRecipeServiceSuitabilityColumnAvailable(false);
+          ({ error: recipeError } = await executeRecipeUpsert(false));
+        }
+        if (recipeError) {
+          if (recordType === "dish") {
+            setRecipeSharedSyncState((current) => ({
+              ...current,
+              [syncedRecord.id]: recipeError.message || "error",
+            }));
+          }
+          if (recordType === "batch") {
+            setBatchSharedSyncState((current) => ({
+              ...current,
+              [syncedRecord.id]: recipeError.message || "error",
+            }));
+          }
+          if (typeof window !== "undefined") {
+            window.alert(
+              recipeError.message || `Could not save ${recordType === "batch" ? "component" : "recipe"} "${syncedRecord.name}".`
+            );
+          }
+          return false;
+        }
+
+        const { error: deleteComponentError } = await supabase
+          .from("recipe_components")
+          .delete()
+          .eq("recipe_id", syncedRecord.id);
+        if (deleteComponentError) {
+          if (recordType === "dish") {
+            setRecipeSharedSyncState((current) => ({
+              ...current,
+              [syncedRecord.id]: deleteComponentError.message || "error",
+            }));
+          }
+          if (recordType === "batch") {
+            setBatchSharedSyncState((current) => ({
+              ...current,
+              [syncedRecord.id]: deleteComponentError.message || "error",
+            }));
+          }
+          if (typeof window !== "undefined") {
+            window.alert(
+              deleteComponentError.message ||
+                `Could not refresh ${recordType === "batch" ? "component" : "recipe"} lines for "${syncedRecord.name}".`
+            );
+          }
+          return false;
+        }
+
+        if (componentPayload.length) {
+          const { error: insertComponentError } = await supabase.from("recipe_components").insert(componentPayload);
+          if (insertComponentError) {
+            if (recordType === "dish") {
+              setRecipeSharedSyncState((current) => ({
+                ...current,
+                [syncedRecord.id]: insertComponentError.message || "error",
+              }));
+            }
+            if (recordType === "batch") {
+              setBatchSharedSyncState((current) => ({
+                ...current,
+                [syncedRecord.id]: insertComponentError.message || "error",
+              }));
+            }
+            if (typeof window !== "undefined") {
+              window.alert(
+                insertComponentError.message ||
+                  `Could not save ${recordType === "batch" ? "component" : "recipe"} lines for "${syncedRecord.name}".`
+              );
+            }
+            return false;
+          }
+        }
+
+        if (recordType === "dish") {
+          setRecipes((current) =>
+            current.map((item) => {
+              if (item.id !== syncedRecord.id) return item;
+              if (getRecordSharedSyncSignature(item, "dish") !== syncSignature) return item;
+              return syncRecipeRelations({
+                ...item,
+                sharedDirty: false,
+                sharedPersisted: true,
+              });
+            })
+          );
+          if (!syncedRecord.sharedPersisted) {
+            setMenus((current) =>
+              current.map((menu) =>
+                (menu.recipeIds || []).includes(syncedRecord.id)
+                  ? syncMenuRecord({
+                      ...menu,
+                      sharedDirty: true,
+                    })
+                  : menu
+              )
+            );
+          }
+          setRecipeSharedSyncState((current) => ({
+            ...current,
+            [syncedRecord.id]: "saved",
+          }));
+          return true;
+        }
+
+        setBatches((current) =>
+          current.map((item) => {
+            if (item.id !== syncedRecord.id) return item;
+            if (getRecordSharedSyncSignature(item, "batch") !== syncSignature) return item;
+            return syncBatchRecord({
+              ...item,
+              sharedDirty: false,
+              sharedPersisted: true,
+            });
+          })
+        );
+
+        setBatchSharedSyncState((current) => ({
+          ...current,
+          [syncedRecord.id]: "saved",
+        }));
+
+        return true;
+      });
+
+    const trackedSync = nextSync.finally(() => {
+      if (recordSyncQueueRef.current.get(syncKey) === trackedSync) {
+        recordSyncQueueRef.current.delete(syncKey);
       }
-      setRecipeSharedSyncState((current) => ({
-        ...current,
-        [syncedRecord.id]: "saved",
-      }));
-      return true;
-    }
-
-    setBatches((current) =>
-      current.map((item) => {
-        if (item.id !== syncedRecord.id) return item;
-        if (getRecordSharedSyncSignature(item, "batch") !== syncSignature) return item;
-        return syncBatchRecord({
-          ...item,
-          sharedDirty: false,
-          sharedPersisted: true,
-        });
-      })
-    );
-
-    setBatchSharedSyncState((current) => ({
-      ...current,
-      [syncedRecord.id]: "saved",
-    }));
-
-    return true;
+    });
+    recordSyncQueueRef.current.set(syncKey, trackedSync);
+    return trackedSync;
   };
 
   const saveBatchToSharedData = async (batchId, { quiet = false } = {}) => {
