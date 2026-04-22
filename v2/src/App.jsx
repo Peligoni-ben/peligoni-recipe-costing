@@ -647,6 +647,16 @@ function readMethodSteps(value) {
     .filter(Boolean);
 }
 
+function waitForNextBrowserFrame() {
+  if (typeof window === "undefined") {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
+}
+
 function inferMenuServiceFromName(name = "") {
   const normalized = normalizeSharedKey(name);
   if (normalized.includes("breakfast")) return "Breakfast";
@@ -8240,6 +8250,7 @@ function App() {
   const batchesRef = useRef(batches);
   const customRestaurantsRef = useRef(customRestaurants);
   const recordSyncQueueRef = useRef(new Map());
+  const scheduledRecordSyncTimeoutsRef = useRef(new Map());
   const [history, setHistory] = useState([]);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
@@ -9068,6 +9079,15 @@ function App() {
     window.localStorage.setItem(CUSTOM_RESTAURANTS_STORAGE_KEY, JSON.stringify(customRestaurants));
   }, [customRestaurants]);
 
+  useEffect(() => {
+    return () => {
+      scheduledRecordSyncTimeoutsRef.current.forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      scheduledRecordSyncTimeoutsRef.current.clear();
+    };
+  }, []);
+
   const pushCurrentLocationToHistory = () => {
     setHistory((current) => {
       if (!currentLocation) return current;
@@ -9260,8 +9280,15 @@ function App() {
   };
 
   const closeRecordPreview = async () => {
+    await waitForNextBrowserFrame();
+
     const previewType = recordPreviewModal.type;
     const previewId = recordPreviewModal.id;
+    const pendingSyncKey = `${previewType === "batch" ? "batch" : "dish"}:${String(previewId || "").trim()}`;
+    const pendingSync = recordSyncQueueRef.current.get(pendingSyncKey);
+    if (pendingSync) {
+      await pendingSync.catch(() => false);
+    }
 
     if (previewType === "recipe") {
       const recipe = recipesRef.current.find((item) => item.id === previewId);
@@ -10049,6 +10076,27 @@ function App() {
       return false;
     }
     return saved;
+  };
+
+  const scheduleSharedRecordSync = (recordType, recordId, delayMs = 250) => {
+    if (!supabaseEnabled || !supabase || !String(recordId || "").trim()) return;
+
+    const syncKey = `${recordType}:${String(recordId || "").trim()}`;
+    const existingTimeoutId = scheduledRecordSyncTimeoutsRef.current.get(syncKey);
+    if (existingTimeoutId) {
+      window.clearTimeout(existingTimeoutId);
+    }
+
+    const timeoutId = window.setTimeout(async () => {
+      scheduledRecordSyncTimeoutsRef.current.delete(syncKey);
+      if (recordType === "batch") {
+        await saveBatchToSharedData(recordId, { quiet: true });
+        return;
+      }
+      await saveRecipeToSharedData(recordId, { quiet: true });
+    }, delayMs);
+
+    scheduledRecordSyncTimeoutsRef.current.set(syncKey, timeoutId);
   };
 
   const markIngredientMasterReviewed = (ingredientId, nextStatus = "ready") => {
@@ -12269,8 +12317,8 @@ function App() {
   };
 
   const updateRecipe = (recipeId, updater) => {
-    setRecipes((current) =>
-      current.map((recipe) =>
+    setRecipes((current) => {
+      const nextRecipes = current.map((recipe) =>
         recipe.id === recipeId
           ? normalizeRecipePublishedComponentLines(
               syncRecipeRelations({
@@ -12281,8 +12329,12 @@ function App() {
               recordMaps.batch
             )
           : recipe
-      )
-    );
+      );
+      recipesRef.current = nextRecipes;
+      return nextRecipes;
+    });
+
+    scheduleSharedRecordSync("dish", recipeId);
   };
 
   const updateRecipeField = (recipeId, field, value) => {
@@ -12493,6 +12545,7 @@ function App() {
     });
 
     setBatches((current) => current.map((batch) => (batch.id === batchId ? nextBatch : batch)));
+    batchesRef.current = batchesRef.current.map((batch) => (batch.id === batchId ? nextBatch : batch));
 
     if (nextBatch.publishedIngredientId) {
       setIngredientMaster((currentIngredients) => {
@@ -12514,6 +12567,8 @@ function App() {
         );
       });
     }
+
+    scheduleSharedRecordSync("batch", batchId);
   };
 
   const updateBatchField = (batchId, field, value) => {
@@ -13291,8 +13346,18 @@ function App() {
       status: "draft",
     };
 
-    setRecipes((current) => [syncRecipeRelations(nextRecipe), ...current]);
+    const syncedRecipe = syncRecipeRelations(nextRecipe);
+    setRecipes((current) => {
+      const nextRecipes = [syncedRecipe, ...current];
+      recipesRef.current = nextRecipes;
+      return nextRecipes;
+    });
     selectMenuItemRecipe(menuId, itemId, nextRecipe.id);
+    setSelectedImportRowId("");
+    setSelectedRecord({ type: "recipe", id: nextRecipe.id });
+    setActiveSection("recipes");
+    setRecipeEditorStep("basics");
+    return nextRecipe.id;
   };
 
   const removeMenuItem = (menuId, itemId) => {
@@ -21408,7 +21473,6 @@ function MenuEditorCard({
   menu,
   maps,
   openRecord,
-  openRecipePreview,
   updateMenuField,
   addMenuItem,
   updateMenuItemField,
@@ -21532,8 +21596,8 @@ function MenuEditorCard({
                     </div>
                     <div className="v2-link-list">
                       {recipe ? (
-                        <button type="button" className="v2-secondary-button" onClick={() => (openRecipePreview ? openRecipePreview("recipe", recipe.id) : openRecord("recipe", recipe.id))}>
-                          Open recipe
+                        <button type="button" className="v2-secondary-button" onClick={() => openRecord("recipe", recipe.id)}>
+                          Open in Recipes
                         </button>
                       ) : null}
                       <button type="button" className="v2-secondary-button" onClick={() => removeMenuItem(menu.id, item.id)}>
