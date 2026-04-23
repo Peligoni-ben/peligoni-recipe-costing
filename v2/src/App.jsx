@@ -13854,31 +13854,33 @@ function App() {
 
   const markRecipeReady = (recipeId) => {
     const recipe = recipes.find((item) => item.id === recipeId);
-    if (!recipe) return;
+    if (!recipe) return false;
     if (!isRecipeReadyToPublish(recipe)) {
       if (typeof window !== "undefined") {
         const missing = getRecipeWorkflowMissingItems(recipe);
         window.alert(`This recipe is not ready yet. Finish: ${missing.join(", ")}.`);
       }
-      return;
+      return false;
     }
     updateRecipe(recipeId, (current) => ({
       ...current,
       status: "review",
     }));
+    return true;
   };
 
   const publishRecipeLive = (recipeId) => {
     const recipe = recipes.find((item) => item.id === recipeId);
-    if (!recipe || !isRecipeReadyToPublish(recipe)) return;
+    if (!recipe || !isRecipeReadyToPublish(recipe)) return false;
     if (typeof window !== "undefined") {
       const confirmed = window.confirm("Publish this recipe live?");
-      if (!confirmed) return;
+      if (!confirmed) return false;
     }
     updateRecipe(recipeId, (current) => ({
       ...current,
       status: "live",
     }));
+    return true;
   };
 
   const publishReadyRecipes = () => {
@@ -13912,10 +13914,11 @@ function App() {
       ...current,
       status: "review",
     }));
+    return true;
   };
 
   const updateBatch = (batchId, updater, options = {}) => {
-    const { scheduleSync = true } = options;
+    const { scheduleSync = false } = options;
     const currentBatch = (batchesRef.current || []).find((batch) => batch.id === batchId);
     if (!currentBatch) return;
 
@@ -14083,19 +14086,20 @@ function App() {
 
   const markBatchReady = (batchId) => {
     const batch = batches.find((item) => item.id === batchId);
-    if (!batch) return;
+    if (!batch) return false;
     if (!isBatchReadyToPublish(batch, recordMaps.ingredient)) {
       if (typeof window !== "undefined") {
         const missing = getBatchWorkflowMissingItems(batch, recordMaps.ingredient);
         window.alert(`This component is not ready yet. Finish: ${missing.join(", ")}.`);
       }
-      return;
+      return false;
     }
     updateBatch(batchId, (current) => ({
       ...current,
       status: "review",
     }));
     syncPublishedIngredientStatusForBatch(batchId, "review");
+    return true;
   };
 
   const moveBatchToDraft = (batchId) => {
@@ -14104,6 +14108,7 @@ function App() {
       status: "draft",
     }));
     syncPublishedIngredientStatusForBatch(batchId, "draft");
+    return true;
   };
 
   const returnBatchToReady = (batchId) => {
@@ -14112,6 +14117,7 @@ function App() {
       status: "review",
     }));
     syncPublishedIngredientStatusForBatch(batchId, "review");
+    return true;
   };
 
   const updateBatchIngredientLine = (batchId, ingredientId, field, value) => {
@@ -21116,7 +21122,21 @@ function RecipeWorkflowDetail({
         return false;
       }
     }
-    action?.();
+    const transitionResult = await action?.();
+    if (transitionResult === false) {
+      return false;
+    }
+    const latestAfterAction =
+      (getLatestRecipeSnapshot ? getLatestRecipeSnapshot(record.id) : null) || latestEditableRecipe || record;
+    if (latestAfterAction?.sharedDirty) {
+      const savedAfterAction = await persistVisibleRecipe(`${source}:after-transition`);
+      if (!savedAfterAction) {
+        if (typeof window !== "undefined" && failureMessage) {
+          window.alert(failureMessage);
+        }
+        return false;
+      }
+    }
     return true;
   };
   const goToRecipeStep = async (nextRecipeStep) => {
@@ -21899,14 +21919,45 @@ function BatchWorkflowDetail({
       : record.status === "review"
         ? false
         : false;
+  const hasUnsavedBatchChanges = Boolean(record.sharedDirty);
   const stageBackAction = record.status === "ready" ? "ready" : record.status === "review" ? "draft" : "";
   const stageBackLabel =
     stageBackAction === "ready" ? "Move back to ready" : stageBackAction === "draft" ? "Move back to draft" : "";
 
+  const persistVisibleBatch = async () => {
+    if (!hasUnsavedBatchChanges || !saveBatchToSharedData) return true;
+    return Boolean(await saveBatchToSharedData(record.id, { quiet: true }));
+  };
+
+  const persistThenRunBatchTransition = async ({
+    action,
+    failureMessage = "Could not save this component.",
+  }) => {
+    if (hasUnsavedBatchChanges) {
+      const saved = await persistVisibleBatch();
+      if (!saved) {
+        if (typeof window !== "undefined") {
+          window.alert(failureMessage);
+        }
+        return false;
+      }
+    }
+    const transitionResult = await action?.();
+    if (transitionResult === false) return false;
+    const savedAfterTransition = await saveBatchToSharedData(record.id, { quiet: true });
+    if (!savedAfterTransition) {
+      if (typeof window !== "undefined") {
+        window.alert(failureMessage);
+      }
+      return false;
+    }
+    return true;
+  };
+
   const handleFooterPrimaryAction = async () => {
     if (nextStep) {
-      if (record.sharedDirty && saveBatchToSharedData) {
-        const saved = await saveBatchToSharedData(record.id, { quiet: true });
+      if (hasUnsavedBatchChanges && saveBatchToSharedData) {
+        const saved = await persistVisibleBatch();
         if (!saved) return;
       }
       setBatchEditorStep(nextStep.id);
@@ -21914,7 +21965,10 @@ function BatchWorkflowDetail({
     }
 
     if (record.status === "draft") {
-      markBatchReady(record.id);
+      await persistThenRunBatchTransition({
+        action: () => markBatchReady(record.id),
+        failureMessage: "Could not save this component before marking it ready.",
+      });
       return;
     }
 
@@ -21930,11 +21984,17 @@ function BatchWorkflowDetail({
 
   const handleStageBackAction = () => {
     if (stageBackAction === "ready") {
-      returnBatchToReady(record.id);
+      persistThenRunBatchTransition({
+        action: () => returnBatchToReady(record.id),
+        failureMessage: "Could not save this component before moving it back to ready.",
+      });
       return;
     }
     if (stageBackAction === "draft") {
-      moveBatchToDraft(record.id);
+      persistThenRunBatchTransition({
+        action: () => moveBatchToDraft(record.id),
+        failureMessage: "Could not save this component before moving it back to draft.",
+      });
     }
   };
 
