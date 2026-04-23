@@ -46,6 +46,7 @@ const LIVE_FOOD_APP_URL = "https://peligoni-recipe-costing.vercel.app/";
 const LIVE_DRINKS_APP_URL = "https://drinks-recipe-app.vercel.app/";
 const LOCAL_FOOD_APP_URL = "http://localhost:5174/";
 const LOCAL_DRINKS_APP_URL = "http://localhost:5173/";
+const LOCAL_RECIPE_PERSISTENCE_TRACE_STORAGE_KEY = "peligoni-v2-local-recipe-persistence-trace";
 
 function withTimeout(promise, timeoutMs = SHARED_LOAD_TIMEOUT_MS, label = "Request") {
   return new Promise((resolve, reject) => {
@@ -65,6 +66,45 @@ function withTimeout(promise, timeoutMs = SHARED_LOAD_TIMEOUT_MS, label = "Reque
   });
 }
 
+async function fetchAllSupabaseRows({
+  label = "Shared rows",
+  pageSize = 500,
+  fetchPage,
+}) {
+  const collectedRows = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + pageSize - 1;
+    const { data, error } = await withTimeout(
+      fetchPage(from, to),
+      SHARED_LOAD_TIMEOUT_MS,
+      `${label} (${from}-${to})`
+    );
+
+    if (error) {
+      return {
+        data: null,
+        error,
+      };
+    }
+
+    const pageRows = Array.isArray(data) ? data : [];
+    collectedRows.push(...pageRows);
+
+    if (pageRows.length < pageSize) {
+      break;
+    }
+
+    from += pageSize;
+  }
+
+  return {
+    data: collectedRows,
+    error: null,
+  };
+}
+
 function getAppSwitcherLinks() {
   if (typeof window === "undefined") {
     return {
@@ -80,6 +120,115 @@ function getAppSwitcherLinks() {
     food: isLocalHost ? LOCAL_FOOD_APP_URL : LIVE_FOOD_APP_URL,
     drinks: isLocalHost ? LOCAL_DRINKS_APP_URL : LIVE_DRINKS_APP_URL,
   };
+}
+
+function isLocalBrowserSession() {
+  if (typeof window === "undefined") return false;
+  const hostname = window.location.hostname;
+  return hostname === "localhost" || hostname === "127.0.0.1";
+}
+
+function shouldShowLocalRecipePersistenceTrace() {
+  if (!isLocalBrowserSession() || typeof window === "undefined") return false;
+  try {
+    const searchParams = new URLSearchParams(window.location.search || "");
+    if (searchParams.get("debugRecipeSync") === "1") return true;
+    return window.localStorage.getItem("peligoni-v2-debug-recipe-sync") === "1";
+  } catch (error) {
+    return false;
+  }
+}
+
+function loadLocalRecipePersistenceTrace() {
+  if (typeof window === "undefined") return {};
+  try {
+    const rawValue = window.localStorage.getItem(LOCAL_RECIPE_PERSISTENCE_TRACE_STORAGE_KEY);
+    return rawValue ? JSON.parse(rawValue) : {};
+  } catch (error) {
+    console.warn("Could not read local recipe persistence trace", error);
+    return {};
+  }
+}
+
+function persistLocalRecipePersistenceTrace(recipeId, patch = {}) {
+  if (!isLocalBrowserSession() || !String(recipeId || "").trim()) return;
+  try {
+    const current = loadLocalRecipePersistenceTrace();
+    current[String(recipeId)] = {
+      ...(current[String(recipeId)] || {}),
+      ...patch,
+    };
+    window.localStorage.setItem(LOCAL_RECIPE_PERSISTENCE_TRACE_STORAGE_KEY, JSON.stringify(current));
+  } catch (error) {
+    console.warn("Could not persist local recipe persistence trace", error);
+  }
+}
+
+function appendLocalRecipePersistenceEvent(recipeId, event = {}) {
+  if (!isLocalBrowserSession() || !String(recipeId || "").trim()) return;
+  try {
+    const current = loadLocalRecipePersistenceTrace();
+    const currentEntry = current[String(recipeId)] || {};
+    current[String(recipeId)] = {
+      ...currentEntry,
+      events: [...(currentEntry.events || []), event].slice(-12),
+    };
+    window.localStorage.setItem(LOCAL_RECIPE_PERSISTENCE_TRACE_STORAGE_KEY, JSON.stringify(current));
+  } catch (error) {
+    console.warn("Could not append local recipe persistence event", error);
+  }
+}
+
+function buildPersistableRecipeSnapshot(recipe = {}) {
+  return syncRecipeRelations({
+    ...recipe,
+    localEditRevision: Number(recipe?.localEditRevision || 0),
+    sharedDirty: false,
+    sharedPersisted: true,
+    sharedUpdatedAt: String(recipe?.sharedUpdatedAt || "").trim(),
+    ingredientLines: Array.isArray(recipe?.ingredientLines)
+      ? recipe.ingredientLines.map((line) => ({
+          ingredientId: String(line?.ingredientId || "").trim(),
+          quantity: String(line?.quantity || "").trim() || "1",
+          unit: String(line?.unit || "").trim(),
+          estimatedCost: Number(line?.estimatedCost || 0),
+        }))
+      : [],
+    batchLines: Array.isArray(recipe?.batchLines)
+      ? recipe.batchLines.map((line) => ({
+          batchId: String(line?.batchId || "").trim(),
+          quantity: String(line?.quantity || "").trim() || "1",
+          unit: String(line?.unit || "").trim(),
+          estimatedCost: Number(line?.estimatedCost || 0),
+        }))
+      : [],
+    methodSteps: Array.isArray(recipe?.methodSteps)
+      ? recipe.methodSteps.map((step) => String(step || ""))
+      : [],
+    serviceSuitability: dedupeTextList(recipe?.serviceSuitability || []),
+    menuIds: dedupeTextList(recipe?.menuIds || []),
+  });
+}
+
+function cloneRecipeDraftRecord(recipe = {}) {
+  return syncRecipeRelations({
+    ...recipe,
+    ingredientLines: Array.isArray(recipe?.ingredientLines)
+      ? recipe.ingredientLines.map((line) => ({ ...line }))
+      : [],
+    batchLines: Array.isArray(recipe?.batchLines)
+      ? recipe.batchLines.map((line) => ({ ...line }))
+      : [],
+    methodSteps: Array.isArray(recipe?.methodSteps) ? [...recipe.methodSteps] : [],
+    serviceSuitability: dedupeTextList(recipe?.serviceSuitability || []),
+    menuIds: dedupeTextList(recipe?.menuIds || []),
+    ingredientIds: dedupeTextList(recipe?.ingredientIds || []),
+    batchIds: dedupeTextList(recipe?.batchIds || []),
+    sharedDirty: Boolean(recipe?.sharedDirty),
+    sharedPersisted: Boolean(recipe?.sharedPersisted),
+    sharedUpdatedAt: String(recipe?.sharedUpdatedAt || "").trim(),
+    localEditRevision: Number(recipe?.localEditRevision || 0),
+  });
 }
 
 const initialIngredients = [
@@ -1024,6 +1173,7 @@ function hydrateSharedDataToV2({
       id: String(row.id),
       name: String(row.name || "").trim() || "Untitled component",
       code: String(row.selling_item_code || row.id || "").trim(),
+      sharedUpdatedAt: String(row.updated_at || row.last_updated || "").trim(),
       status,
       needsReviewFlag: Boolean(batchReviewFlagState[String(row.id)]?.flagged),
       sharedDirty: false,
@@ -1064,7 +1214,6 @@ function hydrateSharedDataToV2({
       (left, right) => numberValue(left.component_order) - numberValue(right.component_order)
     );
     const ingredientLines = [];
-    const batchLines = [];
     const unmatchedLabels = [];
     const unmatchedDetails = [];
 
@@ -1084,12 +1233,9 @@ function hydrateSharedDataToV2({
             estimatedCost: numberValue(component.cost),
           });
         } else {
-          batchLines.push({
-            batchId: sourceRecipeId,
-            quantity: formatEditableQuantity(numberValue(component.qty)),
-            unit: mapSharedSourceYieldTypeToLineUnit(component.source_yield_type, batch?.yieldUnit || "portion"),
-            estimatedCost: numberValue(component.cost),
-          });
+          const detail = buildMissingSharedSourceLineDetail(component);
+          unmatchedLabels.push(detail.label);
+          unmatchedDetails.push(detail);
         }
         return;
       }
@@ -1144,42 +1290,55 @@ function hydrateSharedDataToV2({
 
     const workflowStage = String(row.workflow_stage || "").trim().toLowerCase();
     const status = Boolean(row.is_live) ? "live" : workflowStage === "review" ? "review" : "draft";
+    const remoteRecipeUpdatedAt = String(row.updated_at || row.last_updated || "").trim();
+    const hydratedIngredientLabels = ingredientLines
+      .map((line) => mappedIngredientsById.get(line.ingredientId)?.name || line.ingredientId)
+      .filter(Boolean);
+    persistLocalRecipePersistenceTrace(row.id, {
+      lastHydratedAt: new Date().toISOString(),
+      hydratedRecipeUpdatedAt: remoteRecipeUpdatedAt,
+      hydratedUsingLocalSnapshot: false,
+      hydratedLocalSnapshotUpdatedAt: "",
+      hydratedComponentRowCount: linkedComponents.length,
+      hydratedIngredientLineCount: ingredientLines.length,
+      hydratedBatchLineCount: 0,
+      hydratedIngredientLabels: dedupeTextList(hydratedIngredientLabels),
+      hydratedBatchLabels: [],
+      hydratedMissingLabels: dedupeTextList(unmatchedLabels.filter(Boolean)),
+    });
 
-    return normalizeRecipePublishedComponentLines(
-      syncRecipeRelations(
-        syncRecipeStatusFromIngredientState(
-          {
-            id: String(row.id),
-            name: String(row.name || "").trim() || "Untitled recipe",
-            code: String(row.selling_item_code || row.id || "").trim(),
-            status,
-            needsReviewFlag: Boolean(recipeReviewFlagState[String(row.id)]?.flagged),
-            sharedDirty: false,
-            sharedPersisted: true,
-            category: String(row.category || "").trim() || "Main",
-            menuDescription: "",
-            methodSteps,
-            prepNotes: "",
-            platingNotes: String(row.presentation_notes || "").trim(),
-            chefNotes: "",
-            portions: Math.max(1, numberValue(row.portion_count, 1)),
-            salePrice: numberValue(row.current_sale_price),
-            serviceSuitability: dedupeTextList(Array.isArray(row.service_suitability) ? row.service_suitability : []),
-            ingredientLines,
-            batchLines,
-            sharedMissingLineCount: unmatchedLabels.length,
-            sharedMissingLineLabels: dedupeTextList(unmatchedLabels.filter(Boolean)),
-            sharedMissingLineDetails: unmatchedDetails,
-            ingredientIds: ingredientLines.map((line) => line.ingredientId),
-            batchIds: batchLines.map((line) => line.batchId),
-            menuIds: [],
-            archived: false,
-          },
-          mappedIngredientsById
-        )
-      ),
-      mappedIngredientsById,
-      batchById
+    return syncRecipeRelations(
+      syncRecipeStatusFromIngredientState(
+        {
+          id: String(row.id),
+          name: String(row.name || "").trim() || "Untitled recipe",
+          code: String(row.selling_item_code || row.id || "").trim(),
+          sharedUpdatedAt: remoteRecipeUpdatedAt,
+          status,
+          needsReviewFlag: Boolean(recipeReviewFlagState[String(row.id)]?.flagged),
+          sharedDirty: false,
+          sharedPersisted: true,
+          category: String(row.category || "").trim() || "Main",
+          menuDescription: "",
+          methodSteps,
+          prepNotes: "",
+          platingNotes: String(row.presentation_notes || "").trim(),
+          chefNotes: "",
+          portions: Math.max(1, numberValue(row.portion_count, 1)),
+          salePrice: numberValue(row.current_sale_price),
+          serviceSuitability: dedupeTextList(Array.isArray(row.service_suitability) ? row.service_suitability : []),
+          ingredientLines,
+          batchLines: [],
+          sharedMissingLineCount: unmatchedLabels.length,
+          sharedMissingLineLabels: dedupeTextList(unmatchedLabels.filter(Boolean)),
+          sharedMissingLineDetails: unmatchedDetails,
+          ingredientIds: ingredientLines.map((line) => line.ingredientId),
+          batchIds: [],
+          menuIds: [],
+          archived: false,
+        },
+        mappedIngredientsById
+      )
     );
   });
 
@@ -2287,6 +2446,38 @@ function normalizeIngredientCodeToken(value = "") {
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, "")
     .trim();
+}
+
+function getRecipeDuplicateIngredientCodeConflicts(recipe = {}, ingredientMap = new Map()) {
+  const lines = Array.isArray(recipe?.ingredientLines) ? recipe.ingredientLines : [];
+  const seenByCode = new Map();
+  const conflicts = [];
+
+  lines.forEach((line) => {
+    const ingredient = ingredientMap.get(line?.ingredientId) || null;
+    const rawCode =
+      String(ingredient?.sourceCode || "").trim() ||
+      String(ingredient?.code || "").trim();
+    const normalizedCode = normalizeIngredientCodeToken(rawCode);
+    if (!normalizedCode) return;
+
+    const existing = seenByCode.get(normalizedCode);
+    const label = ingredient?.name || line?.ingredientId || rawCode || normalizedCode;
+    if (existing) {
+      conflicts.push({
+        code: rawCode || normalizedCode,
+        firstLabel: existing.label,
+        nextLabel: label,
+      });
+      return;
+    }
+
+    seenByCode.set(normalizedCode, {
+      label,
+    });
+  });
+
+  return conflicts;
 }
 
 function getEffectiveIngredientSourceCode(ingredient = {}) {
@@ -6016,63 +6207,13 @@ function syncRecipeRelations(recipe) {
     ...recipe,
     sharedDirty: Boolean(recipe.sharedDirty),
     sharedPersisted: Boolean(recipe.sharedPersisted),
+    sharedUpdatedAt: String(recipe?.sharedUpdatedAt || "").trim(),
     ingredientLines,
     batchLines,
     menuIds: dedupeTextList(menuIds),
     ingredientIds,
     batchIds,
     serviceSuitability,
-  };
-}
-
-function normalizeRecipePublishedComponentLines(recipe, ingredientMap = new Map(), batchMap = new Map()) {
-  const ingredientLines = Array.isArray(recipe?.ingredientLines) ? [...recipe.ingredientLines] : [];
-  const batchLines = Array.isArray(recipe?.batchLines) ? recipe.batchLines : [];
-  if (!batchLines.length) return recipe;
-
-  const remainingBatchLines = [];
-
-  batchLines.forEach((line) => {
-    const batch = batchMap.get(line.batchId) || null;
-    const publishedIngredient = findPublishedIngredientForBatch(batch, ingredientMap);
-    if (!publishedIngredient?.id) {
-      remainingBatchLines.push(line);
-      return;
-    }
-
-    const normalizedLine = {
-      ingredientId: publishedIngredient.id,
-      quantity: String(line.quantity || "").trim() || "1",
-      unit:
-        String(line.unit || "").trim() ||
-        inferMeasurementUnit(publishedIngredient.packSize) ||
-        String(publishedIngredient.costUnit || "").trim() ||
-        "g",
-      estimatedCost: Number(
-        line.estimatedCost ||
-          calculateLineEstimatedCost(line, getIngredientCostSource(publishedIngredient, ingredientMap, batchMap)) ||
-          0
-      ),
-    };
-
-    const existingIndex = ingredientLines.findIndex((existingLine) => existingLine.ingredientId === publishedIngredient.id);
-    if (existingIndex >= 0) {
-      ingredientLines[existingIndex] = {
-        ...ingredientLines[existingIndex],
-        ...normalizedLine,
-      };
-      return;
-    }
-
-    ingredientLines.push(normalizedLine);
-  });
-
-  if (remainingBatchLines.length === batchLines.length) return recipe;
-
-  return {
-    ...recipe,
-    ingredientLines,
-    batchLines: remainingBatchLines,
   };
 }
 
@@ -6288,15 +6429,12 @@ function getRecipePricingMetrics(recipe, ingredientMap = new Map(), batchMap = n
 
 function getRecipeWorkflowProgress(recipe) {
   const ingredientLines = Array.isArray(recipe?.ingredientLines) ? recipe.ingredientLines : [];
-  const batchLines = Array.isArray(recipe?.batchLines) ? recipe.batchLines : [];
   const methodSteps = Array.isArray(recipe?.methodSteps) ? recipe.methodSteps : [];
-  const menuIds = Array.isArray(recipe?.menuIds) ? recipe.menuIds : [];
   const checks = [
     Boolean(recipe.name && recipe.code && recipe.category),
-    Boolean(ingredientLines.length || batchLines.length),
+    Boolean(ingredientLines.length),
     Boolean(methodSteps.some((step) => String(step || "").trim())),
     Boolean(Number(recipe.portions || 0) > 0 && Number(recipe.salePrice || 0) > 0),
-    Boolean(menuIds.length),
   ];
   const completeCount = checks.filter(Boolean).length;
 
@@ -6313,15 +6451,13 @@ function isRecipeReadyToPublish(recipe) {
 
 function getRecipeWorkflowMissingItems(recipe) {
   const ingredientLines = Array.isArray(recipe?.ingredientLines) ? recipe.ingredientLines : [];
-  const batchLines = Array.isArray(recipe?.batchLines) ? recipe.batchLines : [];
   const methodSteps = Array.isArray(recipe?.methodSteps) ? recipe.methodSteps : [];
-  const menuIds = Array.isArray(recipe?.menuIds) ? recipe.menuIds : [];
   const missing = [];
 
   if (!(recipe.name && recipe.code && recipe.category)) {
     missing.push("basics");
   }
-  if (!(ingredientLines.length || batchLines.length)) {
+  if (!ingredientLines.length) {
     missing.push("ingredients");
   }
   if (!methodSteps.some((step) => String(step || "").trim())) {
@@ -6329,9 +6465,6 @@ function getRecipeWorkflowMissingItems(recipe) {
   }
   if (!(Number(recipe.portions || 0) > 0 && Number(recipe.salePrice || 0) > 0)) {
     missing.push("portions and pricing");
-  }
-  if (!menuIds.length) {
-    missing.push("usage");
   }
 
   return missing;
@@ -7334,6 +7467,7 @@ function syncBatchRecord(batch) {
     ...batch,
     sharedDirty: Boolean(batch?.sharedDirty),
     sharedPersisted: Boolean(batch?.sharedPersisted),
+    sharedUpdatedAt: String(batch?.sharedUpdatedAt || "").trim(),
     yieldAmount,
     yieldUnit,
     ingredientIds,
@@ -8099,7 +8233,7 @@ class AppErrorBoundary extends Component {
 
 function App() {
   const [activeSection, setActiveSection] = useState("ingredients");
-  const [ingredientMaster, setIngredientMaster] = useState(initialIngredients);
+  const [ingredientMaster, setIngredientMasterRaw] = useState(initialIngredients);
   const [ingredientMasterReviewState, setIngredientMasterReviewState] = useState(() =>
     loadStoredIngredientMasterReviewState()
   );
@@ -8142,8 +8276,8 @@ function App() {
       loadStoredFlagState(INGREDIENT_SOURCE_CODE_REDIRECT_STORAGE_KEY)
     )
   );
-  const [recipes, setRecipes] = useState(initialRecipes.map((recipe) => syncRecipeRelations(recipe)));
-  const [batches, setBatches] = useState(initialBatches.map((batch) => syncBatchRecord(batch)));
+  const [recipes, setRecipesRaw] = useState(initialRecipes.map((recipe) => syncRecipeRelations(recipe)));
+  const [batches, setBatchesRaw] = useState(initialBatches.map((batch) => syncBatchRecord(batch)));
   const [pendingIngredientDeletionIds, setPendingIngredientDeletionIds] = useState(() =>
     loadStoredIdList(PENDING_INGREDIENT_DELETION_STORAGE_KEY)
   );
@@ -8152,11 +8286,11 @@ function App() {
   );
   const [pendingRecipeDeletionIds, setPendingRecipeDeletionIds] = useState([]);
   const [pendingBatchDeletionIds, setPendingBatchDeletionIds] = useState([]);
-  const [customRestaurants, setCustomRestaurants] = useState(() => loadStoredCustomRestaurants());
-  const [restaurants, setRestaurants] = useState(() =>
+  const [customRestaurants, setCustomRestaurantsRaw] = useState(() => loadStoredCustomRestaurants());
+  const [restaurants, setRestaurantsRaw] = useState(() =>
     mergeRestaurantCollections(initialRestaurants, loadStoredCustomRestaurants())
   );
-  const [menus, setMenus] = useState(initialMenus.map((menu) => syncMenuRecord(menu)));
+  const [menus, setMenusRaw] = useState(initialMenus.map((menu) => syncMenuRecord(menu)));
   const [pendingMenuDeletionIds, setPendingMenuDeletionIds] = useState([]);
   const [users, setUsers] = useState(initialUsers);
   const [authSession, setAuthSession] = useState(null);
@@ -8239,6 +8373,7 @@ function App() {
   const [recipeSharedSyncState, setRecipeSharedSyncState] = useState({});
   const [batchSharedSyncState, setBatchSharedSyncState] = useState({});
   const [menuSharedSyncState, setMenuSharedSyncState] = useState({});
+  const [recipeDrafts, setRecipeDrafts] = useState({});
   const [ingredientEditingId, setIngredientEditingId] = useState("");
   const [activeEditSessions, setActiveEditSessions] = useState([]);
   const [selectedRecord, setSelectedRecord] = useState({ type: "ingredient", id: "ing-1" });
@@ -8247,7 +8382,9 @@ function App() {
   const activeSectionRef = useRef(activeSection);
   const ingredientMasterRef = useRef(ingredientMaster);
   const recipesRef = useRef(recipes);
+  const recipeDraftsRef = useRef(recipeDrafts);
   const batchesRef = useRef(batches);
+  const menusRef = useRef(menus);
   const customRestaurantsRef = useRef(customRestaurants);
   const recordSyncQueueRef = useRef(new Map());
   const scheduledRecordSyncTimeoutsRef = useRef(new Map());
@@ -8326,36 +8463,36 @@ function App() {
           { data: menuLineRows, error: menuLineError },
           { data: venueRows, error: venueError },
         ] = await Promise.all([
-          withTimeout(
-            supabase.from("ingredients").select("*").order("ingredient_name"),
-            SHARED_LOAD_TIMEOUT_MS,
-            "Shared ingredients"
-          ),
-          withTimeout(
-            supabase.from("recipes").select("*").order("name"),
-            SHARED_LOAD_TIMEOUT_MS,
-            "Shared recipes"
-          ),
-          withTimeout(
-            supabase.from("recipe_components").select("*").order("component_order"),
-            SHARED_LOAD_TIMEOUT_MS,
-            "Shared components"
-          ),
-          withTimeout(
-            supabase.from("menus").select("*").order("name"),
-            SHARED_LOAD_TIMEOUT_MS,
-            "Shared menus"
-          ),
-          withTimeout(
-            supabase.from("menu_lines").select("*").order("line_order"),
-            SHARED_LOAD_TIMEOUT_MS,
-            "Shared menu lines"
-          ),
-          withTimeout(
-            supabase.from("venues").select("*").order("name"),
-            SHARED_LOAD_TIMEOUT_MS,
-            "Shared venues"
-          ),
+          fetchAllSupabaseRows({
+            label: "Shared ingredients",
+            fetchPage: (from, to) =>
+              supabase.from("ingredients").select("*").order("id").range(from, to),
+          }),
+          fetchAllSupabaseRows({
+            label: "Shared recipes",
+            fetchPage: (from, to) =>
+              supabase.from("recipes").select("*").order("id").range(from, to),
+          }),
+          fetchAllSupabaseRows({
+            label: "Shared recipe components",
+            fetchPage: (from, to) =>
+              supabase.from("recipe_components").select("*").order("id").range(from, to),
+          }),
+          fetchAllSupabaseRows({
+            label: "Shared menus",
+            fetchPage: (from, to) =>
+              supabase.from("menus").select("*").order("id").range(from, to),
+          }),
+          fetchAllSupabaseRows({
+            label: "Shared menu lines",
+            fetchPage: (from, to) =>
+              supabase.from("menu_lines").select("*").order("id").range(from, to),
+          }),
+          fetchAllSupabaseRows({
+            label: "Shared venues",
+            fetchPage: (from, to) =>
+              supabase.from("venues").select("*").order("id").range(from, to),
+          }),
         ]);
 
         const [ingredientWorkflowResult, profilesResult] = await Promise.allSettled([
@@ -8376,7 +8513,11 @@ function App() {
             "Ingredient workflow sidecar"
           ),
           withTimeout(
-            supabase.from("profiles").select("id,email,full_name,role").order("email"),
+            fetchAllSupabaseRows({
+              label: "Shared users",
+              fetchPage: (from, to) =>
+                supabase.from("profiles").select("id,email,full_name,role").order("id").range(from, to),
+            }),
             SHARED_LOAD_TIMEOUT_MS,
             "Shared users"
           ),
@@ -8389,7 +8530,9 @@ function App() {
             ? ingredientWorkflowResult.value?.error || null
             : ingredientWorkflowResult.reason || null;
         const profileRows =
-          profilesResult.status === "fulfilled" && !profilesResult.value?.error ? profilesResult.value?.data || [] : [];
+          profilesResult.status === "fulfilled" && !profilesResult.value?.error
+            ? profilesResult.value?.data || []
+            : [];
         const profilesError =
           profilesResult.status === "fulfilled" ? profilesResult.value?.error || null : profilesResult.reason || null;
 
@@ -8492,7 +8635,7 @@ function App() {
           mergedIngredientSourceCodeRedirectState
         );
 
-        setIngredientMaster(sharedData.ingredients);
+        setIngredientMasterState(sharedData.ingredients);
         setIngredientMasterReviewState(mergedIngredientReviewState);
         setIngredientSubstitutionState(mergedIngredientSubstitutionState);
         setIngredientTradeCategoryState(mergedIngredientTradeCategoryState);
@@ -8501,10 +8644,10 @@ function App() {
         setRecipeReviewFlagState(mergedRecipeReviewFlagState);
         setBatchReviewFlagState(mergedBatchReviewFlagState);
         setIngredientImportRows(nextImportQueueRows);
-        setRecipes(sharedData.recipes);
-        setBatches(sharedData.batches);
-        setRestaurants(mergeRestaurantCollections(customRestaurantsRef.current, sharedData.restaurants));
-        setMenus(sharedData.menus);
+        setRecipesState(sharedData.recipes);
+        setBatchesState(sharedData.batches);
+        setRestaurantsState(mergeRestaurantCollections(customRestaurantsRef.current, sharedData.restaurants));
+        setMenusState(sharedData.menus);
         setUsers(sharedData.users);
         setIngredientWorkspaceView((current) => {
           if (current === "catalogue") return "catalogue";
@@ -8671,28 +8814,28 @@ function App() {
   }, [soft1SourceMeta]);
 
   useEffect(() => {
-    const recipeMenuMap = recipes.reduce((map, recipe) => {
-      map.set(recipe.id, []);
-      return map;
-    }, new Map());
+    setRecipesState((current) => {
+      const recipeMenuMap = current.reduce((map, recipe) => {
+        map.set(recipe.id, []);
+        return map;
+      }, new Map());
 
-    menus.forEach((menu) => {
-      (menu.recipeIds || []).forEach((recipeId) => {
-        if (!recipeMenuMap.has(recipeId)) {
-          recipeMenuMap.set(recipeId, []);
-        }
-        recipeMenuMap.get(recipeId).push(menu.id);
+      menus.forEach((menu) => {
+        (menu.recipeIds || []).forEach((recipeId) => {
+          if (!recipeMenuMap.has(recipeId)) {
+            recipeMenuMap.set(recipeId, []);
+          }
+          recipeMenuMap.get(recipeId).push(menu.id);
+        });
       });
-    });
 
-    setRecipes((current) =>
-      current.map((recipe) =>
+      return current.map((recipe) =>
         syncRecipeRelations({
           ...recipe,
           menuIds: dedupeTextList(recipeMenuMap.get(recipe.id) || []),
         })
-      )
-    );
+      );
+    });
   }, [menus]);
 
   const recordMaps = useMemo(
@@ -8810,26 +8953,14 @@ function App() {
   useEffect(() => {
     if (!supabaseEnabled || !supabase) return undefined;
 
-    const dirtyRecipes = recipes.filter((recipe) => recipe.sharedDirty && !recipe.archived);
-    const dirtyBatches = batches.filter((batch) => batch.sharedDirty && !batch.archived);
     const recipeDeletionIds = [...pendingRecipeDeletionIds];
     const batchDeletionIds = [...pendingBatchDeletionIds];
-    if (!dirtyRecipes.length && !dirtyBatches.length && !recipeDeletionIds.length && !batchDeletionIds.length) {
+    if (!recipeDeletionIds.length && !batchDeletionIds.length) {
       return undefined;
     }
 
     let cancelled = false;
     const timeoutId = window.setTimeout(async () => {
-      for (const recipe of dirtyRecipes) {
-        if (cancelled) return;
-        await syncRecipeRecordToSharedData(recipe, "dish");
-      }
-
-      for (const batch of dirtyBatches) {
-        if (cancelled) return;
-        await syncRecipeRecordToSharedData(batch, "batch");
-      }
-
       const allDeletionIds = dedupeTextList([...recipeDeletionIds, ...batchDeletionIds]);
       if (!allDeletionIds.length || cancelled) return;
 
@@ -8862,7 +8993,7 @@ function App() {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [recipes, batches, pendingRecipeDeletionIds, pendingBatchDeletionIds, menus, recordMaps.ingredient, recordMaps.batch]);
+  }, [pendingRecipeDeletionIds, pendingBatchDeletionIds, supabaseEnabled, supabase]);
 
   const relationshipMaps = useMemo(() => {
     const ingredientRecipes = new Map(ingredientMaster.map((item) => [item.id, []]));
@@ -9025,7 +9156,9 @@ function App() {
     selectedImportRow
       ? null
       : selectedRecord.type && selectedRecord.id
-        ? recordMaps[selectedRecord.type]?.get(selectedRecord.id) || null
+        ? selectedRecord.type === "recipe"
+          ? recipeDrafts[selectedRecord.id] || recordMaps.recipe.get(selectedRecord.id) || null
+          : recordMaps[selectedRecord.type]?.get(selectedRecord.id) || null
         : null;
 
   const currentLocation = useMemo(() => {
@@ -9070,8 +9203,16 @@ function App() {
   }, [recipes]);
 
   useEffect(() => {
+    recipeDraftsRef.current = recipeDrafts;
+  }, [recipeDrafts]);
+
+  useEffect(() => {
     batchesRef.current = batches;
   }, [batches]);
+
+  useEffect(() => {
+    menusRef.current = menus;
+  }, [menus]);
 
   useEffect(() => {
     customRestaurantsRef.current = customRestaurants;
@@ -9290,14 +9431,6 @@ function App() {
       await pendingSync.catch(() => false);
     }
 
-    if (previewType === "recipe") {
-      const recipe = recipesRef.current.find((item) => item.id === previewId);
-      if (recipe?.sharedDirty && saveRecipeToSharedData) {
-        const saved = await saveRecipeToSharedData(previewId, { quiet: true });
-        if (!saved) return;
-      }
-    }
-
     if (previewType === "batch") {
       const batch = batchesRef.current.find((item) => item.id === previewId);
       if (batch?.sharedDirty && saveBatchToSharedData) {
@@ -9433,6 +9566,16 @@ function App() {
       ["venue_type", "service_pattern", "primary_services", "secondary_services", "event_uses"].some((column) =>
         normalized.includes(column)
       )
+    );
+  };
+
+  const isMissingSaveRecipeBundleFunctionError = (message = "") => {
+    const normalized = String(message || "").toLowerCase();
+    return (
+      normalized.includes("save_recipe_bundle") &&
+      (normalized.includes("could not find the function") ||
+        normalized.includes("function public.save_recipe_bundle") ||
+        normalized.includes("does not exist"))
     );
   };
 
@@ -9705,16 +9848,21 @@ function App() {
   const buildSharedRecipePayload = (
     record = {},
     recordType = "dish",
-    { includeServiceSuitability = recipeServiceSuitabilityColumnAvailable } = {}
+    {
+      includeServiceSuitability = recipeServiceSuitabilityColumnAvailable,
+      ingredientSource = recordMaps.ingredient,
+      batchSource = recordMaps.batch,
+    } = {}
   ) => {
     const linkedMenus = menus.filter((menu) => (record.menuIds || []).includes(menu.id));
     const availableVenues = dedupeTextList(linkedMenus.map((menu) => menu.restaurant).filter(Boolean));
     const primaryRestaurant = availableVenues[0] || null;
-    const pricing = recordType === "dish" ? getRecipePricingMetrics(record, recordMaps.ingredient, recordMaps.batch) : null;
+    const pricing = recordType === "dish" ? getRecipePricingMetrics(record, ingredientSource, batchSource) : null;
     const payload = {
       id: String(record.id || "").trim(),
       restaurant: primaryRestaurant,
       available_venues: availableVenues,
+      updated_at: new Date().toISOString(),
       name: String(record.name || "").trim() || (recordType === "batch" ? "Untitled component" : "Untitled recipe"),
       category: String(record.category || record.productType || "").trim() || null,
       selling_item_code: String(record.code || "").trim() || null,
@@ -9736,13 +9884,13 @@ function App() {
               record.name &&
               record.code &&
               record.category &&
-              ((record.ingredientLines || []).length || (record.batchLines || []).length) &&
+              (record.ingredientLines || []).length &&
               (record.methodSteps || []).some((step) => String(step || "").trim())
             ),
       pricing_complete:
         recordType === "batch"
-          ? Boolean(Number(record.yieldAmount || 0) > 0 && Number(getBatchCostSource(record, recordMaps.ingredient).totalComponentCost || 0) > 0)
-          : derivePricingComplete(record, recordMaps.ingredient, recordMaps.batch),
+          ? Boolean(Number(record.yieldAmount || 0) > 0 && Number(getBatchCostSource(record, ingredientSource).totalComponentCost || 0) > 0)
+          : derivePricingComplete(record, ingredientSource, batchSource),
       is_live: record.status === "live",
       is_locked: false,
       workflow_stage: record.status === "draft" ? "draft" : "review",
@@ -9784,62 +9932,34 @@ function App() {
       component_order: index,
     }));
 
-    const batchRows =
-      recordType === "dish"
-        ? (record.batchLines || []).flatMap((line) => {
-            const batch = batchSource.get(line.batchId) || null;
-            const publishedIngredient = findPublishedIngredientForBatch(batch, ingredientSource);
-            if (publishedIngredient?.id) {
-              const ingredientCostSource = getIngredientCostSource(publishedIngredient, ingredientSource, batchSource);
-              return [
-                {
-                  recipe_id: String(record.id || "").trim(),
-                  ingredient_name: String(publishedIngredient.name || batch?.name || "").trim() || null,
-                  ingredient_item_code: String(publishedIngredient.sourceCode || publishedIngredient.code || batch?.code || "").trim() || null,
-                  qty: parseNumericQuantity(line.quantity),
-                  cost: Number(line.estimatedCost || calculateLineEstimatedCost(line, ingredientCostSource) || 0),
-                  source_type: "ingredient",
-                  source_recipe_id: String(publishedIngredient.sharedRecordId || publishedIngredient.id || "").trim() || null,
-                  source_unit_cost: Number(ingredientCostSource?.unitCost || 0),
-                  source_yield_type: String(line.unit || "").trim() || null,
-                },
-              ];
-            }
-
-            return [
-              {
-                recipe_id: String(record.id || "").trim(),
-                ingredient_name: String(batch?.name || "").trim() || null,
-                ingredient_item_code: String(batch?.code || "").trim() || null,
-                qty: parseNumericQuantity(line.quantity),
-                cost: Number(line.estimatedCost || 0),
-                source_type: "batch",
-                source_recipe_id: String(line.batchId || "").trim() || null,
-                source_unit_cost: Number(batch?.unitCost || 0),
-                source_yield_type: String(line.unit || "").trim() || null,
-              },
-            ];
-          }).map((row, index) => ({
-            ...row,
-            component_order: ingredientRows.length + index,
-          }))
-        : [];
-
-    return [...ingredientRows, ...batchRows];
+    return ingredientRows;
   };
 
-  const syncRecipeRecordToSharedData = async (record, recordType = "dish") => {
+  const buildCurrentRecordMaps = () => ({
+    ingredient: new Map((ingredientMasterRef.current || []).map((ingredient) => [ingredient.id, ingredient])),
+    batch: new Map((batchesRef.current || []).map((batch) => [batch.id, batch])),
+  });
+
+  const syncRecipeRecordToSharedData = async (
+    record,
+    recordType = "dish",
+    { preferPassedRecord = false, source = "unknown" } = {}
+  ) => {
     const syncKey = `${recordType}:${String(record?.id || "").trim()}`;
     if (!supabaseEnabled || !supabase || !String(record?.id || "").trim()) return true;
+    clearScheduledRecordSync(recordType, record?.id);
 
     const previousSync = recordSyncQueueRef.current.get(syncKey) || Promise.resolve(true);
     const nextSync = previousSync
       .catch(() => true)
       .then(async () => {
-        const syncedRecord =
-          recordType === "batch"
+        const syncedRecord = preferPassedRecord
+          ? (recordType === "dish"
+              ? getRecipeEditorSnapshot(record?.id, record) || record
+              : record)
+          : recordType === "batch"
             ? batchesRef.current.find((item) => item.id === record?.id) || record
-            : recipesRef.current.find((item) => item.id === record?.id) || record;
+            : getRecipeEditorSnapshot(record?.id, recipesRef.current.find((item) => item.id === record?.id) || record) || record;
         if (!syncedRecord?.id) return true;
 
         if (recordType === "dish") {
@@ -9847,6 +9967,20 @@ function App() {
             ...current,
             [syncedRecord.id]: "syncing",
           }));
+          appendLocalRecipePersistenceEvent(syncedRecord.id, {
+            at: new Date().toISOString(),
+            phase: "start",
+            source,
+            lineCount: Number((syncedRecord.ingredientLines || []).length + (syncedRecord.batchLines || []).length),
+            labels: [
+              ...(syncedRecord.ingredientLines || [])
+                .map((line) => ingredientMasterRef.current.find((item) => item.id === line.ingredientId)?.name || line.ingredientId)
+                .filter(Boolean),
+              ...(syncedRecord.batchLines || [])
+                .map((line) => batchesRef.current.find((item) => item.id === line.batchId)?.name || line.batchId)
+                .filter(Boolean),
+            ],
+          });
         }
         if (recordType === "batch") {
           setBatchSharedSyncState((current) => ({
@@ -9856,7 +9990,8 @@ function App() {
         }
 
         const syncSignature = getRecordSharedSyncSignature(syncedRecord, recordType);
-        const ingredientSourceForSync = new Map(recordMaps.ingredient);
+        const currentRecordMaps = buildCurrentRecordMaps();
+        const ingredientSourceForSync = new Map(currentRecordMaps.ingredient);
         const referencedIngredientIds = dedupeTextList(
           (syncedRecord.ingredientLines || []).map((line) => line.ingredientId).filter(Boolean)
         );
@@ -9897,106 +10032,292 @@ function App() {
         const executeRecipeUpsert = async (includeServiceSuitability = recipeServiceSuitabilityColumnAvailable) => {
           const recipePayload = buildSharedRecipePayload(syncedRecord, recordType, {
             includeServiceSuitability,
+            ingredientSource: ingredientSourceForSync,
+            batchSource: currentRecordMaps.batch,
           });
-          return supabase.from("recipes").upsert(recipePayload, { onConflict: "id" });
+          if (syncedRecord.sharedPersisted && String(syncedRecord.sharedUpdatedAt || "").trim()) {
+            const { data, error } = await supabase
+              .from("recipes")
+              .update(recipePayload)
+              .eq("id", syncedRecord.id)
+              .eq("updated_at", String(syncedRecord.sharedUpdatedAt || "").trim())
+              .select("*")
+              .maybeSingle();
+
+            return {
+              data,
+              error,
+              conflict: !error && !data,
+            };
+          }
+
+          const { data, error } = await supabase
+            .from("recipes")
+            .upsert(recipePayload, { onConflict: "id" })
+            .select("*")
+            .single();
+
+          return {
+            data,
+            error,
+            conflict: false,
+          };
         };
         const componentPayload = buildSharedRecipeComponentPayloads(
           syncedRecord,
           recordType,
           ingredientSourceForSync,
-          recordMaps.batch
+          currentRecordMaps.batch
         );
+        const executeRecipeBundleRpc = async (includeServiceSuitability = recipeServiceSuitabilityColumnAvailable) => {
+          const recipePayload = buildSharedRecipePayload(syncedRecord, recordType, {
+            includeServiceSuitability,
+            ingredientSource: ingredientSourceForSync,
+            batchSource: currentRecordMaps.batch,
+          });
 
-        let { error: recipeError } = await executeRecipeUpsert();
+          const { data, error } = await supabase.rpc("save_recipe_bundle", {
+            p_recipe: recipePayload,
+            p_components: componentPayload,
+            p_expected_updated_at:
+              syncedRecord.sharedPersisted && String(syncedRecord.sharedUpdatedAt || "").trim()
+                ? String(syncedRecord.sharedUpdatedAt || "").trim()
+                : null,
+          });
+
+          return {
+            data: Array.isArray(data) ? data[0] || null : data || null,
+            error,
+          };
+        };
+
+        if (recordType === "dish") {
+          persistLocalRecipePersistenceTrace(syncedRecord.id, {
+            lastSaveAttemptAt: new Date().toISOString(),
+            savedComponentPayloadCount: componentPayload.length,
+            savedComponentLabels: dedupeTextList(
+              componentPayload.map((row) => String(row.ingredient_name || row.ingredient_item_code || "").trim()).filter(Boolean)
+            ),
+            savedIngredientLineCount: Array.isArray(syncedRecord.ingredientLines) ? syncedRecord.ingredientLines.length : 0,
+            savedBatchLineCount: Array.isArray(syncedRecord.batchLines) ? syncedRecord.batchLines.length : 0,
+          });
+        }
+
+        let persistedRecipeRow = null;
+        let persistedComponentRows = null;
+        let bundleResult = await executeRecipeBundleRpc();
         if (
-          recipeError &&
+          bundleResult.error &&
           recipeServiceSuitabilityColumnAvailable &&
-          isMissingRecipeServiceSuitabilityColumnError(recipeError.message || "")
+          isMissingRecipeServiceSuitabilityColumnError(bundleResult.error.message || "")
         ) {
           setRecipeServiceSuitabilityColumnAvailable(false);
-          ({ error: recipeError } = await executeRecipeUpsert(false));
+          bundleResult = await executeRecipeBundleRpc(false);
         }
-        if (recipeError) {
+        if (bundleResult.error && String(bundleResult.error.message || "").includes("STALE_RECIPE_WRITE")) {
+          const conflictMessage =
+            `A newer ${recordType === "batch" ? "component" : "recipe"} save landed first. Please reload and try again.`;
           if (recordType === "dish") {
+            persistLocalRecipePersistenceTrace(syncedRecord.id, {
+              lastSaveFailedAt: new Date().toISOString(),
+              lastSaveError: conflictMessage,
+            });
             setRecipeSharedSyncState((current) => ({
               ...current,
-              [syncedRecord.id]: recipeError.message || "error",
+              [syncedRecord.id]: conflictMessage,
             }));
           }
           if (recordType === "batch") {
             setBatchSharedSyncState((current) => ({
               ...current,
-              [syncedRecord.id]: recipeError.message || "error",
+              [syncedRecord.id]: conflictMessage,
             }));
-          }
-          if (typeof window !== "undefined") {
-            window.alert(
-              recipeError.message || `Could not save ${recordType === "batch" ? "component" : "recipe"} "${syncedRecord.name}".`
-            );
           }
           return false;
         }
 
-        const { error: deleteComponentError } = await supabase
-          .from("recipe_components")
-          .delete()
-          .eq("recipe_id", syncedRecord.id);
-        if (deleteComponentError) {
-          if (recordType === "dish") {
-            setRecipeSharedSyncState((current) => ({
-              ...current,
-              [syncedRecord.id]: deleteComponentError.message || "error",
-            }));
-          }
-          if (recordType === "batch") {
-            setBatchSharedSyncState((current) => ({
-              ...current,
-              [syncedRecord.id]: deleteComponentError.message || "error",
-            }));
-          }
-          if (typeof window !== "undefined") {
-            window.alert(
-              deleteComponentError.message ||
-                `Could not refresh ${recordType === "batch" ? "component" : "recipe"} lines for "${syncedRecord.name}".`
-            );
-          }
-          return false;
-        }
-
-        if (componentPayload.length) {
-          const { error: insertComponentError } = await supabase.from("recipe_components").insert(componentPayload);
-          if (insertComponentError) {
+        if (bundleResult.data) {
+          persistedRecipeRow = bundleResult.data.recipe_row || null;
+          persistedComponentRows = Array.isArray(bundleResult.data.component_rows)
+            ? bundleResult.data.component_rows
+            : [];
+        } else {
+          if (bundleResult.error && !isMissingSaveRecipeBundleFunctionError(bundleResult.error.message || "")) {
             if (recordType === "dish") {
+              persistLocalRecipePersistenceTrace(syncedRecord.id, {
+                lastSaveFailedAt: new Date().toISOString(),
+                lastSaveError: bundleResult.error.message || "Atomic recipe save failed.",
+              });
               setRecipeSharedSyncState((current) => ({
                 ...current,
-                [syncedRecord.id]: insertComponentError.message || "error",
+                [syncedRecord.id]: bundleResult.error.message || "error",
               }));
             }
             if (recordType === "batch") {
               setBatchSharedSyncState((current) => ({
                 ...current,
-                [syncedRecord.id]: insertComponentError.message || "error",
+                [syncedRecord.id]: bundleResult.error.message || "error",
               }));
             }
             if (typeof window !== "undefined") {
               window.alert(
-                insertComponentError.message ||
-                  `Could not save ${recordType === "batch" ? "component" : "recipe"} lines for "${syncedRecord.name}".`
+                bundleResult.error.message ||
+                  `Could not atomically save ${recordType === "batch" ? "component" : "recipe"} "${syncedRecord.name}".`
               );
             }
             return false;
           }
+
+          let { data: fallbackRecipeRow, error: recipeError, conflict: recipeConflict } = await executeRecipeUpsert();
+          if (
+            recipeError &&
+            recipeServiceSuitabilityColumnAvailable &&
+            isMissingRecipeServiceSuitabilityColumnError(recipeError.message || "")
+          ) {
+            setRecipeServiceSuitabilityColumnAvailable(false);
+            ({ data: fallbackRecipeRow, error: recipeError, conflict: recipeConflict } = await executeRecipeUpsert(false));
+          }
+          if (recipeConflict) {
+            const conflictMessage =
+              `A newer ${recordType === "batch" ? "component" : "recipe"} save landed first. Please reload and try again.`;
+            if (recordType === "dish") {
+              persistLocalRecipePersistenceTrace(syncedRecord.id, {
+                lastSaveFailedAt: new Date().toISOString(),
+                lastSaveError: conflictMessage,
+              });
+              setRecipeSharedSyncState((current) => ({
+                ...current,
+                [syncedRecord.id]: conflictMessage,
+              }));
+            }
+            if (recordType === "batch") {
+              setBatchSharedSyncState((current) => ({
+                ...current,
+                [syncedRecord.id]: conflictMessage,
+              }));
+            }
+            return false;
+          }
+          if (recipeError) {
+            if (recordType === "dish") {
+              persistLocalRecipePersistenceTrace(syncedRecord.id, {
+                lastSaveFailedAt: new Date().toISOString(),
+                lastSaveError: recipeError.message || "Recipe upsert failed.",
+              });
+              setRecipeSharedSyncState((current) => ({
+                ...current,
+                [syncedRecord.id]: recipeError.message || "error",
+              }));
+            }
+            if (recordType === "batch") {
+              setBatchSharedSyncState((current) => ({
+                ...current,
+                [syncedRecord.id]: recipeError.message || "error",
+              }));
+            }
+            if (typeof window !== "undefined") {
+              window.alert(
+                recipeError.message || `Could not save ${recordType === "batch" ? "component" : "recipe"} "${syncedRecord.name}".`
+              );
+            }
+            return false;
+          }
+
+          persistedRecipeRow = fallbackRecipeRow;
+
+          const { error: deleteComponentError } = await supabase
+            .from("recipe_components")
+            .delete()
+            .eq("recipe_id", syncedRecord.id);
+          if (deleteComponentError) {
+            if (recordType === "dish") {
+              persistLocalRecipePersistenceTrace(syncedRecord.id, {
+                lastSaveFailedAt: new Date().toISOString(),
+                lastSaveError: deleteComponentError.message || "Recipe component delete failed.",
+              });
+            }
+            if (recordType === "dish") {
+              setRecipeSharedSyncState((current) => ({
+                ...current,
+                [syncedRecord.id]: deleteComponentError.message || "error",
+              }));
+            }
+            if (recordType === "batch") {
+              setBatchSharedSyncState((current) => ({
+                ...current,
+                [syncedRecord.id]: deleteComponentError.message || "error",
+              }));
+            }
+            if (typeof window !== "undefined") {
+              window.alert(
+                deleteComponentError.message ||
+                  `Could not refresh ${recordType === "batch" ? "component" : "recipe"} lines for "${syncedRecord.name}".`
+              );
+            }
+            return false;
+          }
+
+          if (componentPayload.length) {
+            const { error: insertComponentError } = await supabase.from("recipe_components").insert(componentPayload);
+            if (insertComponentError) {
+              if (recordType === "dish") {
+                persistLocalRecipePersistenceTrace(syncedRecord.id, {
+                  lastSaveFailedAt: new Date().toISOString(),
+                  lastSaveError: insertComponentError.message || "Recipe component insert failed.",
+                });
+              }
+              if (recordType === "dish") {
+                setRecipeSharedSyncState((current) => ({
+                  ...current,
+                  [syncedRecord.id]: insertComponentError.message || "error",
+                }));
+              }
+              if (recordType === "batch") {
+                setBatchSharedSyncState((current) => ({
+                  ...current,
+                  [syncedRecord.id]: insertComponentError.message || "error",
+                }));
+              }
+              if (typeof window !== "undefined") {
+                window.alert(
+                  insertComponentError.message ||
+                    `Could not save ${recordType === "batch" ? "component" : "recipe"} lines for "${syncedRecord.name}".`
+                );
+              }
+              return false;
+            }
+          }
         }
 
         if (recordType === "dish") {
-          setRecipes((current) =>
+          if (!persistedComponentRows) {
+            const { data } = await supabase
+              .from("recipe_components")
+              .select("ingredient_name,ingredient_item_code,source_type,source_recipe_id")
+              .eq("recipe_id", syncedRecord.id)
+              .order("component_order");
+            persistedComponentRows = data || [];
+          }
+          const persistedRecipeUpdatedAt = String(
+            persistedRecipeRow?.updated_at || persistedRecipeRow?.last_updated || ""
+          ).trim();
+          const persistedRecipeSnapshot = buildPersistableRecipeSnapshot({
+            ...syncedRecord,
+            sharedDirty: false,
+            sharedPersisted: true,
+            sharedUpdatedAt: persistedRecipeUpdatedAt,
+          });
+
+          setRecipesState((current) =>
             current.map((item) => {
               if (item.id !== syncedRecord.id) return item;
-              if (getRecordSharedSyncSignature(item, "dish") !== syncSignature) return item;
               return syncRecipeRelations({
-                ...item,
+                ...syncedRecord,
                 sharedDirty: false,
                 sharedPersisted: true,
+                sharedUpdatedAt: String(
+                  persistedRecipeUpdatedAt || item.sharedUpdatedAt || syncedRecord.sharedUpdatedAt || ""
+                ).trim(),
               });
             })
           );
@@ -10016,17 +10337,48 @@ function App() {
             ...current,
             [syncedRecord.id]: "saved",
           }));
+          persistLocalRecipePersistenceTrace(syncedRecord.id, {
+            lastSaveSucceededAt: new Date().toISOString(),
+            lastSaveError: "",
+            persistedRecipeUpdatedAt,
+            persistedRecipeSnapshot,
+            persistedComponentRowCount: Array.isArray(persistedComponentRows) ? persistedComponentRows.length : 0,
+            persistedComponentLabels: dedupeTextList(
+              (persistedComponentRows || [])
+                .map((row) => String(row?.ingredient_name || row?.ingredient_item_code || "").trim())
+                .filter(Boolean)
+            ),
+            persistedComponentRefs: (persistedComponentRows || []).map((row) => ({
+              label: String(row?.ingredient_name || row?.ingredient_item_code || "").trim(),
+              sourceType: String(row?.source_type || "").trim(),
+              sourceRecipeId: String(row?.source_recipe_id || "").trim(),
+            })),
+          });
+          appendLocalRecipePersistenceEvent(syncedRecord.id, {
+            at: new Date().toISOString(),
+            phase: "success",
+            source,
+            persistedRowCount: Array.isArray(persistedComponentRows) ? persistedComponentRows.length : 0,
+            labels: dedupeTextList(
+              (persistedComponentRows || [])
+                .map((row) => String(row?.ingredient_name || row?.ingredient_item_code || "").trim())
+                .filter(Boolean)
+            ),
+          });
+          clearRecipeDraft(syncedRecord.id);
           return true;
         }
 
-        setBatches((current) =>
+        setBatchesState((current) =>
           current.map((item) => {
             if (item.id !== syncedRecord.id) return item;
-            if (getRecordSharedSyncSignature(item, "batch") !== syncSignature) return item;
             return syncBatchRecord({
-              ...item,
+              ...syncedRecord,
               sharedDirty: false,
               sharedPersisted: true,
+              sharedUpdatedAt: String(
+                persistedRecipeRow?.updated_at || persistedRecipeRow?.last_updated || item.sharedUpdatedAt || syncedRecord.sharedUpdatedAt || ""
+              ).trim(),
             });
           })
         );
@@ -10048,20 +10400,56 @@ function App() {
     return trackedSync;
   };
 
-  const saveBatchToSharedData = async (batchId, { quiet = false } = {}) => {
+  const saveBatchToSharedData = async (batchId, { quiet = false, source = "save-batch-by-id" } = {}) => {
     const batch = batchesRef.current.find((item) => item.id === batchId);
     if (!batch) return false;
-    const saved = await syncRecipeRecordToSharedData(batch, "batch");
+    const saved = await syncRecipeRecordToSharedData(batch, "batch", { source });
     if (!saved && quiet) {
       return false;
     }
     return saved;
   };
 
-  const saveRecipeToSharedData = async (recipeId, { quiet = false } = {}) => {
-    const recipe = recipesRef.current.find((item) => item.id === recipeId);
+  const saveRecipeToSharedData = async (recipeId, { quiet = false, source = "save-recipe-by-id" } = {}) => {
+    const recipe = getRecipeEditorSnapshot(recipeId);
     if (!recipe) return false;
-    const saved = await syncRecipeRecordToSharedData(recipe, "dish");
+    const legacyBatchLinkCount = Array.isArray(recipe.batchLines) ? recipe.batchLines.length : 0;
+    if (legacyBatchLinkCount) {
+      const legacyMessage =
+        `This recipe still contains ${legacyBatchLinkCount} direct component link${legacyBatchLinkCount === 1 ? "" : "s"}. ` +
+        "Publish those components into the ingredient master and re-add them as ingredients before saving.";
+      setRecipeSharedSyncState((current) => ({
+        ...current,
+        [recipeId]: legacyMessage,
+      }));
+      if (!quiet && typeof window !== "undefined") {
+        window.alert(legacyMessage);
+      }
+      return false;
+    }
+    const duplicateIngredientConflicts = getRecipeDuplicateIngredientCodeConflicts(
+      recipe,
+      new Map((ingredientMasterRef.current || []).map((ingredient) => [ingredient.id, ingredient]))
+    );
+    if (duplicateIngredientConflicts.length) {
+      const duplicateMessage = `Duplicate ingredient code${duplicateIngredientConflicts.length === 1 ? "" : "s"} found: ${duplicateIngredientConflicts
+        .map((item) => `${item.code} (${item.firstLabel} / ${item.nextLabel})`)
+        .join(", ")}`;
+      setRecipeSharedSyncState((current) => ({
+        ...current,
+        [recipeId]: duplicateMessage,
+      }));
+      persistLocalRecipePersistenceTrace(recipeId, {
+        lastSaveError: duplicateMessage,
+      });
+      if (!quiet && typeof window !== "undefined") {
+        window.alert(
+          `This recipe contains duplicate ingredient codes and cannot be saved yet.\n\n${duplicateMessage}`
+        );
+      }
+      return false;
+    }
+    const saved = await syncRecipeRecordToSharedData(recipe, "dish", { preferPassedRecord: true, source });
     if (!saved && quiet) {
       return false;
     }
@@ -10069,7 +10457,7 @@ function App() {
   };
 
   const saveMenuToSharedData = async (menuId, { quiet = false } = {}) => {
-    const menu = menus.find((item) => item.id === menuId);
+    const menu = menusRef.current.find((item) => item.id === menuId);
     if (!menu) return false;
     const saved = await syncMenuToSharedData(menu);
     if (!saved && quiet) {
@@ -10078,25 +10466,128 @@ function App() {
     return saved;
   };
 
-  const scheduleSharedRecordSync = (recordType, recordId, delayMs = 250) => {
-    if (!supabaseEnabled || !supabase || !String(recordId || "").trim()) return;
+  const setRecipesState = (updater) => {
+    setRecipesRaw((current) => {
+      const nextRecipes = typeof updater === "function" ? updater(current) : updater;
+      recipesRef.current = nextRecipes;
+      return nextRecipes;
+    });
+  };
+  const setRecipes = setRecipesState;
 
+  const setRecipeDraftsState = (updater) => {
+    setRecipeDrafts((current) => {
+      const nextDrafts = typeof updater === "function" ? updater(current) : updater;
+      recipeDraftsRef.current = nextDrafts;
+      return nextDrafts;
+    });
+  };
+
+  const getRecipeEditorSnapshot = (recipeId, fallbackRecord = null) => {
+    const safeRecipeId = String(recipeId || "").trim();
+    if (!safeRecipeId) return fallbackRecord || null;
+    return (
+      recipeDraftsRef.current[safeRecipeId] ||
+      recipesRef.current.find((item) => item.id === safeRecipeId) ||
+      fallbackRecord ||
+      null
+    );
+  };
+
+  const clearRecipeDraft = (recipeId) => {
+    const safeRecipeId = String(recipeId || "").trim();
+    if (!safeRecipeId) return;
+    setRecipeDraftsState((current) => {
+      if (!current[safeRecipeId]) return current;
+      const nextDrafts = { ...current };
+      delete nextDrafts[safeRecipeId];
+      return nextDrafts;
+    });
+  };
+
+  const setBatchesState = (updater) => {
+    setBatchesRaw((current) => {
+      const nextBatches = typeof updater === "function" ? updater(current) : updater;
+      batchesRef.current = nextBatches;
+      return nextBatches;
+    });
+  };
+  const setBatches = setBatchesState;
+
+  const setMenusState = (updater) => {
+    setMenusRaw((current) => {
+      const nextMenus = typeof updater === "function" ? updater(current) : updater;
+      menusRef.current = nextMenus;
+      return nextMenus;
+    });
+  };
+  const setMenus = setMenusState;
+
+  const setIngredientMasterState = (updater) => {
+    setIngredientMasterRaw((current) => {
+      const nextIngredients = typeof updater === "function" ? updater(current) : updater;
+      ingredientMasterRef.current = nextIngredients;
+      return nextIngredients;
+    });
+  };
+  const setIngredientMaster = setIngredientMasterState;
+
+  const setRestaurantsState = (updater) => {
+    setRestaurantsRaw((current) => (typeof updater === "function" ? updater(current) : updater));
+  };
+  const setRestaurants = setRestaurantsState;
+
+  const setCustomRestaurantsState = (updater) => {
+    setCustomRestaurantsRaw((current) => {
+      const nextRestaurants = typeof updater === "function" ? updater(current) : updater;
+      customRestaurantsRef.current = nextRestaurants;
+      return nextRestaurants;
+    });
+  };
+  const setCustomRestaurants = setCustomRestaurantsState;
+
+  const clearScheduledRecordSync = (recordType, recordId) => {
     const syncKey = `${recordType}:${String(recordId || "").trim()}`;
     const existingTimeoutId = scheduledRecordSyncTimeoutsRef.current.get(syncKey);
     if (existingTimeoutId) {
       window.clearTimeout(existingTimeoutId);
+      scheduledRecordSyncTimeoutsRef.current.delete(syncKey);
     }
+  };
+
+  const scheduleSharedRecordSync = (recordType, recordId, delayMs = 100) => {
+    if (!supabaseEnabled || !supabase || !String(recordId || "").trim()) return;
+
+    const syncKey = `${recordType}:${String(recordId || "").trim()}`;
+    clearScheduledRecordSync(recordType, recordId);
 
     const timeoutId = window.setTimeout(async () => {
       scheduledRecordSyncTimeoutsRef.current.delete(syncKey);
       if (recordType === "batch") {
-        await saveBatchToSharedData(recordId, { quiet: true });
+        await saveBatchToSharedData(recordId, { quiet: true, source: `scheduled:${recordType}` });
         return;
       }
-      await saveRecipeToSharedData(recordId, { quiet: true });
+      await saveRecipeToSharedData(recordId, { quiet: true, source: `scheduled:${recordType}` });
     }, delayMs);
 
     scheduledRecordSyncTimeoutsRef.current.set(syncKey, timeoutId);
+  };
+
+  const flushSharedRecordSync = async (recordType, recordId) => {
+    if (!supabaseEnabled || !supabase || !String(recordId || "").trim()) return false;
+    clearScheduledRecordSync(recordType, recordId);
+    await waitForNextBrowserFrame();
+    if (recordType === "batch") {
+      return saveBatchToSharedData(recordId, { quiet: true, source: `flush:${recordType}` });
+    }
+    return saveRecipeToSharedData(recordId, { quiet: true, source: `flush:${recordType}` });
+  };
+
+  const waitForRecordSync = async (recordType, recordId) => {
+    const syncKey = `${recordType}:${String(recordId || "").trim()}`;
+    const pendingSync = recordSyncQueueRef.current.get(syncKey);
+    if (!pendingSync) return true;
+    return pendingSync.catch(() => false);
   };
 
   const markIngredientMasterReviewed = (ingredientId, nextStatus = "ready") => {
@@ -11877,7 +12368,7 @@ function App() {
     setIngredientMaster((current) => [nextIngredient, ...current]);
 
     if (ingredientMakerModal.attachToRecipeId) {
-      setRecipes((current) =>
+      setRecipesState((current) =>
         current.map((recipe) => {
           if (recipe.id !== ingredientMakerModal.attachToRecipeId) return recipe;
           const alreadyLinked = (recipe.ingredientLines || []).some((line) => line.ingredientId === nextIngredient.id);
@@ -11900,7 +12391,7 @@ function App() {
     }
 
     if (ingredientMakerModal.attachToBatchId) {
-      setBatches((current) =>
+      setBatchesState((current) =>
         current.map((batch) => {
           if (batch.id !== ingredientMakerModal.attachToBatchId) return batch;
           const alreadyLinked = (batch.ingredientLines || []).some((line) => line.ingredientId === nextIngredient.id);
@@ -11920,6 +12411,7 @@ function App() {
           });
         })
       );
+      void flushSharedRecordSync("batch", ingredientMakerModal.attachToBatchId);
     }
 
     if (ingredientMakerModal.attachToBatchId) {
@@ -12317,24 +12809,30 @@ function App() {
   };
 
   const updateRecipe = (recipeId, updater) => {
-    setRecipes((current) => {
-      const nextRecipes = current.map((recipe) =>
-        recipe.id === recipeId
-          ? normalizeRecipePublishedComponentLines(
-              syncRecipeRelations({
-                ...updater(recipe),
-                sharedDirty: true,
-              }),
-              recordMaps.ingredient,
-              recordMaps.batch
-            )
-          : recipe
-      );
-      recipesRef.current = nextRecipes;
-      return nextRecipes;
+    const currentRecipe = getRecipeEditorSnapshot(recipeId);
+    if (!currentRecipe) return null;
+    if (currentRecipe?.id) {
+      clearScheduledRecordSync("dish", currentRecipe.id);
+    }
+
+    const nextRecipeSnapshot = syncRecipeRelations({
+      ...updater(currentRecipe),
+      localEditRevision: Number(currentRecipe.localEditRevision || 0) + 1,
+      sharedDirty: true,
     });
 
-    scheduleSharedRecordSync("dish", recipeId);
+    setRecipeDraftsState((current) => ({
+      ...current,
+      [String(recipeId)]: nextRecipeSnapshot,
+    }));
+    setRecipeSharedSyncState((current) => ({
+      ...current,
+      [String(recipeId)]: "",
+    }));
+    persistLocalRecipePersistenceTrace(String(recipeId), {
+      lastSaveError: "",
+    });
+    return nextRecipeSnapshot;
   };
 
   const updateRecipeField = (recipeId, field, value) => {
@@ -12415,10 +12913,11 @@ function App() {
     }));
   };
 
-  const toggleRecipeIngredientLink = (recipeId, ingredient) => {
+  const toggleRecipeIngredientLink = async (recipeId, ingredient) => {
     if (!ingredient) return;
+    clearScheduledRecordSync("dish", recipeId);
 
-    updateRecipe(recipeId, (recipe) => {
+    const nextRecipe = updateRecipe(recipeId, (recipe) => {
       const currentLines = recipe.ingredientLines || [];
       const exists = currentLines.some((line) => line.ingredientId === ingredient.id);
 
@@ -12437,31 +12936,15 @@ function App() {
             ],
       };
     });
+
+    return Boolean(nextRecipe?.id);
   };
 
-  const toggleRecipeBatchLink = (recipeId, batch) => {
-    if (!batch) return;
-    const batchCostSource = getBatchCostSource(batch, recordMaps.ingredient);
-
-    updateRecipe(recipeId, (recipe) => {
-      const currentLines = recipe.batchLines || [];
-      const exists = currentLines.some((line) => line.batchId === batch.id);
-
-      return {
-        ...recipe,
-        batchLines: exists
-          ? currentLines.filter((line) => line.batchId !== batch.id)
-          : [
-              ...currentLines,
-              {
-                batchId: batch.id,
-                quantity: "1",
-                unit: inferMeasurementUnit(batch.yieldLabel),
-                estimatedCost: Number(batchCostSource?.portionCostHint || batch.portionCostHint || 0),
-              },
-            ],
-      };
-    });
+  const toggleRecipeBatchLink = async (recipeId, batch) => {
+    if (batch && typeof window !== "undefined") {
+      window.alert("Recipes can only use ingredients from the ingredient master. Publish the component as an ingredient first, then add that ingredient here.");
+    }
+    return false;
   };
 
   const createRecipe = () => {
@@ -12535,8 +13018,9 @@ function App() {
     }));
   };
 
-  const updateBatch = (batchId, updater) => {
-    const currentBatch = batches.find((batch) => batch.id === batchId);
+  const updateBatch = (batchId, updater, options = {}) => {
+    const { scheduleSync = true } = options;
+    const currentBatch = (batchesRef.current || []).find((batch) => batch.id === batchId);
     if (!currentBatch) return;
 
     const nextBatch = syncBatchRecord({
@@ -12544,8 +13028,16 @@ function App() {
       sharedDirty: true,
     });
 
-    setBatches((current) => current.map((batch) => (batch.id === batchId ? nextBatch : batch)));
-    batchesRef.current = batchesRef.current.map((batch) => (batch.id === batchId ? nextBatch : batch));
+    const nextBatches = (batchesRef.current || []).map((batch) => (batch.id === batchId ? nextBatch : batch));
+    batchesRef.current = nextBatches;
+    setBatches(nextBatches);
+    setBatchSharedSyncState((current) => ({
+      ...current,
+      [String(batchId)]: "",
+    }));
+    if (nextBatch?.id && scheduleSync) {
+      scheduleSharedRecordSync("batch", nextBatch.id, 450);
+    }
 
     if (nextBatch.publishedIngredientId) {
       setIngredientMaster((currentIngredients) => {
@@ -12568,7 +13060,6 @@ function App() {
       });
     }
 
-    scheduleSharedRecordSync("batch", batchId);
   };
 
   const updateBatchField = (batchId, field, value) => {
@@ -12742,7 +13233,7 @@ function App() {
     }));
   };
 
-  const toggleBatchIngredientLink = (batchId, ingredient) => {
+  const toggleBatchIngredientLink = async (batchId, ingredient) => {
     if (!ingredient) return;
 
     updateBatch(batchId, (batch) => {
@@ -12763,10 +13254,12 @@ function App() {
               },
             ],
       };
-    });
+    }, { scheduleSync: false });
+
+    return flushSharedRecordSync("batch", batchId);
   };
 
-  const applyMissingSharedBatchIngredientSuggestion = (batchId, ingredient, detail = {}) => {
+  const applyMissingSharedBatchIngredientSuggestion = async (batchId, ingredient, detail = {}) => {
     if (!ingredient) return;
 
     updateBatch(batchId, (batch) => {
@@ -12804,7 +13297,9 @@ function App() {
           remainingMissingDetails.length > 0 ||
           !batchHasMethod(batch),
       };
-    });
+    }, { scheduleSync: false });
+
+    return flushSharedRecordSync("batch", batchId);
   };
 
   const publishBatchToIngredient = async (batchId) => {
@@ -13335,7 +13830,8 @@ function App() {
     }));
   };
 
-  const createDraftRecipeForMenuItem = (menuId, itemId) => {
+  const createDraftRecipeForMenuItem = (menuId, itemId, options = {}) => {
+    const { stayInCurrentSection = false } = options;
     const menu = menus.find((entry) => entry.id === menuId);
     const menuItem = menu?.items?.find((entry) => entry.id === itemId) || null;
     const seededName = String(menuItem?.dishName || "").trim();
@@ -13347,16 +13843,17 @@ function App() {
     };
 
     const syncedRecipe = syncRecipeRelations(nextRecipe);
-    setRecipes((current) => {
+    setRecipesState((current) => {
       const nextRecipes = [syncedRecipe, ...current];
-      recipesRef.current = nextRecipes;
       return nextRecipes;
     });
     selectMenuItemRecipe(menuId, itemId, nextRecipe.id);
-    setSelectedImportRowId("");
-    setSelectedRecord({ type: "recipe", id: nextRecipe.id });
-    setActiveSection("recipes");
-    setRecipeEditorStep("basics");
+    if (!stayInCurrentSection) {
+      setSelectedImportRowId("");
+      setSelectedRecord({ type: "recipe", id: nextRecipe.id });
+      setActiveSection("recipes");
+      setRecipeEditorStep("basics");
+    }
     return nextRecipe.id;
   };
 
@@ -15834,9 +16331,34 @@ function App() {
   ).length;
   const pendingIngredientDeletionCount = pendingIngredientDeletionIds.length;
   const readyImportRowCount = ingredientImportRows.filter((row) => row.reviewStatus === "ready" && !row.published).length;
-  const dirtyRecipeCount = recipes.filter((recipe) => recipe.sharedDirty && !recipe.archived).length;
-  const dirtyBatchCount = batches.filter((batch) => batch.sharedDirty && !batch.archived).length;
-  const dirtyMenuCount = menus.filter((menu) => menu.sharedDirty && !menu.archived).length;
+  const syncingRecipeCount = Object.values(recipeSharedSyncState).filter((value) => value === "syncing").length;
+  const syncingBatchCount = Object.values(batchSharedSyncState).filter((value) => value === "syncing").length;
+  const syncingMenuCount = Object.values(menuSharedSyncState).filter((value) => value === "syncing").length;
+  const dirtyRecipeCount = Object.entries(recipeDrafts).filter(
+    ([recipeId, recipe]) => recipe?.sharedDirty && !recipe?.archived && recipeSharedSyncState[recipeId] !== "syncing"
+  ).length;
+  const dirtyBatchCount = batches.filter(
+    (batch) => batch.sharedDirty && !batch.archived && batchSharedSyncState[batch.id] !== "syncing"
+  ).length;
+  const dirtyMenuCount = menus.filter(
+    (menu) => menu.sharedDirty && !menu.archived && menuSharedSyncState[menu.id] !== "syncing"
+  ).length;
+  const recipeSaveIssueCount = Object.entries(recipeSharedSyncState).filter(([recipeId, value]) => {
+    if (!value || value === "syncing" || value === "saved") return false;
+    const draftRecipe = recipeDrafts[recipeId];
+    const persistedRecipe = recipes.find((recipe) => recipe.id === recipeId);
+    return Boolean(draftRecipe?.sharedDirty || persistedRecipe?.sharedDirty);
+  }).length;
+  const batchSaveIssueCount = Object.entries(batchSharedSyncState).filter(([batchId, value]) => {
+    if (!value || value === "syncing" || value === "saved") return false;
+    const batch = batches.find((item) => item.id === batchId);
+    return Boolean(batch?.sharedDirty);
+  }).length;
+  const menuSaveIssueCount = Object.entries(menuSharedSyncState).filter(([menuId, value]) => {
+    if (!value || value === "syncing" || value === "saved") return false;
+    const menu = menus.find((item) => item.id === menuId);
+    return Boolean(menu?.sharedDirty);
+  }).length;
   const pendingDeletionCount =
     pendingIngredientDeletionCount + pendingRecipeDeletionIds.length + pendingBatchDeletionIds.length + pendingMenuDeletionIds.length;
 
@@ -15847,6 +16369,12 @@ function App() {
     dirtyRecipeCount > 0 ||
     dirtyBatchCount > 0 ||
     dirtyMenuCount > 0 ||
+    syncingRecipeCount > 0 ||
+    syncingBatchCount > 0 ||
+    syncingMenuCount > 0 ||
+    recipeSaveIssueCount > 0 ||
+    batchSaveIssueCount > 0 ||
+    menuSaveIssueCount > 0 ||
     pendingDeletionCount > 0;
 
   const sharedSaveSummary = useMemo(() => {
@@ -15854,9 +16382,15 @@ function App() {
     if (dirtyIngredientCount) parts.push(`${dirtyIngredientCount} ingredient edit${dirtyIngredientCount === 1 ? "" : "s"} need saving`);
     if (pendingIngredientDeletionCount) parts.push(`${pendingIngredientDeletionCount} ingredient delete action${pendingIngredientDeletionCount === 1 ? "" : "s"} syncing`);
     if (readyImportRowCount) parts.push(`${readyImportRowCount} ingredient review row${readyImportRowCount === 1 ? "" : "s"} ready to publish`);
-    if (dirtyRecipeCount) parts.push(`${dirtyRecipeCount} recipe edit${dirtyRecipeCount === 1 ? "" : "s"} syncing`);
-    if (dirtyBatchCount) parts.push(`${dirtyBatchCount} component edit${dirtyBatchCount === 1 ? "" : "s"} syncing`);
-    if (dirtyMenuCount) parts.push(`${dirtyMenuCount} menu edit${dirtyMenuCount === 1 ? "" : "s"} syncing`);
+    if (dirtyRecipeCount) parts.push(`${dirtyRecipeCount} recipe edit${dirtyRecipeCount === 1 ? "" : "s"} need saving`);
+    if (syncingRecipeCount) parts.push(`${syncingRecipeCount} recipe save${syncingRecipeCount === 1 ? "" : "s"} syncing`);
+    if (recipeSaveIssueCount) parts.push(`${recipeSaveIssueCount} recipe save issue${recipeSaveIssueCount === 1 ? "" : "s"}`);
+    if (dirtyBatchCount) parts.push(`${dirtyBatchCount} component edit${dirtyBatchCount === 1 ? "" : "s"} need saving`);
+    if (syncingBatchCount) parts.push(`${syncingBatchCount} component save${syncingBatchCount === 1 ? "" : "s"} syncing`);
+    if (batchSaveIssueCount) parts.push(`${batchSaveIssueCount} component save issue${batchSaveIssueCount === 1 ? "" : "s"}`);
+    if (dirtyMenuCount) parts.push(`${dirtyMenuCount} menu edit${dirtyMenuCount === 1 ? "" : "s"} need saving`);
+    if (syncingMenuCount) parts.push(`${syncingMenuCount} menu save${syncingMenuCount === 1 ? "" : "s"} syncing`);
+    if (menuSaveIssueCount) parts.push(`${menuSaveIssueCount} menu save issue${menuSaveIssueCount === 1 ? "" : "s"}`);
     if (pendingDeletionCount) parts.push(`${pendingDeletionCount} delete action${pendingDeletionCount === 1 ? "" : "s"} syncing`);
     return parts.join(" · ");
   }, [
@@ -15864,8 +16398,14 @@ function App() {
     pendingIngredientDeletionCount,
     readyImportRowCount,
     dirtyRecipeCount,
+    syncingRecipeCount,
+    recipeSaveIssueCount,
     dirtyBatchCount,
+    syncingBatchCount,
+    batchSaveIssueCount,
     dirtyMenuCount,
+    syncingMenuCount,
+    menuSaveIssueCount,
     pendingDeletionCount,
   ]);
 
@@ -16288,6 +16828,7 @@ function App() {
                 updateRecipeMethodStep={updateRecipeMethodStep}
                 addRecipeMethodStep={addRecipeMethodStep}
                 saveRecipeToSharedData={saveRecipeToSharedData}
+                getLatestRecipeSnapshot={(recipeId) => getRecipeEditorSnapshot(recipeId)}
                 recipeSharedSyncState={selectedRecord.type === "recipe" ? recipeSharedSyncState[selectedRecord.id] || "" : ""}
                 toggleRecipeReviewFlag={toggleRecipeReviewFlag}
                 updateRecipeIngredientLine={updateRecipeIngredientLine}
@@ -16429,15 +16970,16 @@ function App() {
               <div className="v2-panel-header">
                 <div>
                   <div className="v2-eyebrow">Recipe pop-out</div>
-                  <h3>{recordMaps.recipe.get(recordPreviewModal.id)?.name || "Recipe"}</h3>
+                  <h3>{getRecipeEditorSnapshot(recordPreviewModal.id, recordMaps.recipe.get(recordPreviewModal.id))?.name || "Recipe"}</h3>
                 </div>
                 <button type="button" className="v2-secondary-button" onClick={closeRecordPreview}>
                   Close
                 </button>
               </div>
               <RecordDetail
-                record={recordMaps.recipe.get(recordPreviewModal.id)}
+                record={getRecipeEditorSnapshot(recordPreviewModal.id, recordMaps.recipe.get(recordPreviewModal.id))}
                 recordType="recipe"
+                onCloseRecord={closeRecordPreview}
                 openRecord={openRecord}
                 maps={recordMaps}
                 relationshipMaps={relationshipMaps}
@@ -16459,6 +17001,7 @@ function App() {
                 updateRecipeMethodStep={updateRecipeMethodStep}
                 addRecipeMethodStep={addRecipeMethodStep}
                 saveRecipeToSharedData={saveRecipeToSharedData}
+                getLatestRecipeSnapshot={(recipeId) => getRecipeEditorSnapshot(recipeId)}
                 recipeSharedSyncState={recordPreviewModal.type === "recipe" ? recipeSharedSyncState[recordPreviewModal.id] || "" : ""}
                 toggleRecipeReviewFlag={toggleRecipeReviewFlag}
                 updateRecipeIngredientLine={updateRecipeIngredientLine}
@@ -19384,6 +19927,7 @@ function ImportRowDetail({
 
 function RecipeWorkflowDetail({
   record,
+  onDone,
   openRecord,
   maps,
   recipeEditorStep,
@@ -19400,6 +19944,7 @@ function RecipeWorkflowDetail({
   updateRecipeMethodStep,
   addRecipeMethodStep,
   saveRecipeToSharedData,
+  getLatestRecipeSnapshot,
   recipeSharedSyncState,
   toggleRecipeReviewFlag,
   updateRecipeIngredientLine,
@@ -19421,6 +19966,7 @@ function RecipeWorkflowDetail({
   const [ingredientPickerQuery, setIngredientPickerQuery] = useState("");
   const [batchPickerQuery, setBatchPickerQuery] = useState("");
   const [activePicker, setActivePicker] = useState("");
+  const [showRecipePersistenceTrace, setShowRecipePersistenceTrace] = useState(false);
   const deferredIngredientPickerQuery = useDeferredValue(ingredientPickerQuery);
   const deferredBatchPickerQuery = useDeferredValue(batchPickerQuery);
   const ingredientLinks = safeIngredientLines
@@ -19450,16 +19996,6 @@ function RecipeWorkflowDetail({
     currentStepIndex >= 0 && currentStepIndex < recipeWorkflowSteps.length - 1
       ? recipeWorkflowSteps[currentStepIndex + 1]
       : null;
-  const footerPrimaryLabel = nextStep
-    ? "Next step"
-    : record.status === "draft"
-      ? "Mark ready"
-      : record.status === "review"
-        ? recipeReadyToPublish
-          ? "Publish live"
-          : "Needs work"
-        : "Live";
-  const footerPrimaryDisabled = !nextStep && (record.status === "live" || (record.status === "review" && !recipeReadyToPublish));
   const ingredientPickerResults = useMemo(() => {
     const query = deferredIngredientPickerQuery.trim();
     if (!query) return [];
@@ -19517,9 +20053,11 @@ function RecipeWorkflowDetail({
     setActivePicker("");
   };
 
-  const chooseIngredientFromPicker = (ingredient) => {
-    toggleRecipeIngredientLink(record.id, ingredient);
-    closePicker();
+  const chooseIngredientFromPicker = async (ingredient) => {
+    const applied = await toggleRecipeIngredientLink(record.id, ingredient);
+    if (applied) {
+      closePicker();
+    }
   };
 
   const createIngredientFromPicker = () => {
@@ -19529,32 +20067,110 @@ function RecipeWorkflowDetail({
   const menuRestaurants = Array.from(new Set(menuLinks.map((menu) => menu.restaurant).filter(Boolean))).sort();
   const menuServices = Array.from(new Set(menuLinks.map((menu) => menu.service).filter(Boolean))).sort();
   const recipeSaveState = String(recipeSharedSyncState || "").trim();
+  const latestEditableRecipe = getLatestRecipeSnapshot ? getLatestRecipeSnapshot(record.id) || record : record;
+  const hasUnsavedRecipeChanges = Boolean(latestEditableRecipe?.sharedDirty);
+  const footerPrimaryLabel = nextStep
+    ? "Next step"
+    : record.status === "draft"
+      ? "Mark ready"
+      : record.status === "review"
+        ? recipeReadyToPublish
+          ? "Publish live"
+          : "Needs work"
+        : hasUnsavedRecipeChanges
+          ? "Update live"
+          : onDone
+            ? "Close"
+            : "Live";
+  const footerPrimaryDisabled =
+    !nextStep &&
+    ((record.status === "review" && !recipeReadyToPublish) || (record.status === "live" && !hasUnsavedRecipeChanges && !onDone));
+  const recipePersistenceTrace = useMemo(() => {
+    if (!shouldShowLocalRecipePersistenceTrace()) return null;
+    const allTrace = loadLocalRecipePersistenceTrace();
+    return allTrace[String(record.id)] || null;
+  }, [record.id, recipeSaveState, safeIngredientLines.length, safeBatchLines.length, record.sharedMissingLineCount]);
+  const persistVisibleRecipe = async (source = "recipe-workflow") => {
+    let latestRecord = (getLatestRecipeSnapshot ? getLatestRecipeSnapshot(record.id) : null) || latestEditableRecipe || record;
+    if (!latestRecord.sharedDirty) return true;
+    if (recipeSaveState === "syncing") {
+      await waitForRecordSync("dish", latestRecord.id);
+      latestRecord = (getLatestRecipeSnapshot ? getLatestRecipeSnapshot(record.id) : null) || latestEditableRecipe || record;
+      if (!latestRecord?.sharedDirty) {
+        return true;
+      }
+    }
+    if (saveRecipeToSharedData) {
+      const saved = await saveRecipeToSharedData(latestRecord.id, { quiet: true, source });
+      return Boolean(saved);
+    }
+    return true;
+  };
+  const persistThenRunRecipeTransition = async ({
+    source,
+    failureMessage,
+    action,
+  }) => {
+    if (hasUnsavedRecipeChanges) {
+      const saved = await persistVisibleRecipe(source);
+      if (!saved) {
+        if (typeof window !== "undefined" && failureMessage) {
+          window.alert(failureMessage);
+        }
+        return false;
+      }
+    }
+    action?.();
+    return true;
+  };
   const goToRecipeStep = async (nextRecipeStep) => {
     if (nextRecipeStep === recipeEditorStep) return;
-    if (record.sharedDirty && saveRecipeToSharedData) {
-      const saved = await saveRecipeToSharedData(record.id, { quiet: true });
-      if (!saved) return;
-    }
     setRecipeEditorStep(nextRecipeStep);
   };
 
   const handleFooterPrimaryAction = async () => {
     if (nextStep) {
-      if (record.sharedDirty && saveRecipeToSharedData) {
-        const saved = await saveRecipeToSharedData(record.id, { quiet: true });
-        if (!saved) return;
+      if (hasUnsavedRecipeChanges) {
+        const saved = await persistVisibleRecipe("footerNextStep");
+        if (!saved) {
+          if (typeof window !== "undefined") {
+            window.alert("Could not save this recipe before moving to the next step.");
+          }
+          return;
+        }
       }
       setRecipeEditorStep(nextStep.id);
       return;
     }
 
     if (record.status === "draft") {
-      markRecipeReady(record.id);
+      await persistThenRunRecipeTransition({
+        source: "footerMarkReady",
+        failureMessage: "Could not save this recipe before marking it ready.",
+        action: () => markRecipeReady(record.id),
+      });
       return;
     }
 
     if (record.status === "review" && recipeReadyToPublish) {
-      publishRecipeLive(record.id);
+      await persistThenRunRecipeTransition({
+        source: "footerPublishLive",
+        failureMessage: "Could not save this recipe before publishing it live.",
+        action: () => publishRecipeLive(record.id),
+      });
+      return;
+    }
+
+    if (record.status === "live") {
+      if (!hasUnsavedRecipeChanges) {
+        onDone?.();
+        return;
+      }
+      await persistThenRunRecipeTransition({
+        source: "footerUpdateLive",
+        failureMessage: "Could not save this live recipe update.",
+        action: () => {},
+      });
     }
   };
 
@@ -19586,6 +20202,86 @@ function RecipeWorkflowDetail({
               ? `Missing: ${record.sharedMissingLineLabels.join(", ")}.`
               : "This recipe may be incomplete and should be reviewed before use."}
           </span>
+        </div>
+      ) : null}
+      {recipePersistenceTrace ? (
+        <div className={`v2-inline-callout ${recipePersistenceTrace.savedComponentPayloadCount !== recipePersistenceTrace.hydratedIngredientLineCount + recipePersistenceTrace.hydratedBatchLineCount ? "warn" : ""}`}>
+          <strong>Local persistence trace</strong>
+          <span>
+            Saved {Number(recipePersistenceTrace.savedComponentPayloadCount || 0)} line{Number(recipePersistenceTrace.savedComponentPayloadCount || 0) === 1 ? "" : "s"}
+            {typeof recipePersistenceTrace.persistedComponentRowCount === "number"
+              ? `, database held ${Number(recipePersistenceTrace.persistedComponentRowCount || 0)} line${Number(recipePersistenceTrace.persistedComponentRowCount || 0) === 1 ? "" : "s"},`
+              : " and"}
+            {typeof recipePersistenceTrace.hydratedComponentRowCount === "number"
+              ? ` reload query returned ${Number(recipePersistenceTrace.hydratedComponentRowCount || 0)} row${Number(recipePersistenceTrace.hydratedComponentRowCount || 0) === 1 ? "" : "s"},`
+              : ""}
+            {" "}reloaded {Number((recipePersistenceTrace.hydratedIngredientLineCount || 0) + (recipePersistenceTrace.hydratedBatchLineCount || 0))} line{Number((recipePersistenceTrace.hydratedIngredientLineCount || 0) + (recipePersistenceTrace.hydratedBatchLineCount || 0)) === 1 ? "" : "s"}.
+            {recipePersistenceTrace.lastSaveError ? ` Save error: ${recipePersistenceTrace.lastSaveError}` : ""}
+          </span>
+          <div className="v2-inline-actions">
+            <button
+              type="button"
+              className="v2-secondary-button"
+              onClick={() => setShowRecipePersistenceTrace((current) => !current)}
+            >
+              {showRecipePersistenceTrace ? "Hide debug details" : "Show debug details"}
+            </button>
+          </div>
+          {showRecipePersistenceTrace ? (
+            <>
+              {recipePersistenceTrace.persistedComponentLabels?.length ? (
+                <div className="v2-micro-note">
+                  Saved labels: {recipePersistenceTrace.persistedComponentLabels.join(", ")}
+                </div>
+              ) : null}
+              {recipePersistenceTrace.persistedComponentRefs?.length ? (
+                <div className="v2-micro-note">
+                  Saved refs: {recipePersistenceTrace.persistedComponentRefs
+                    .map((item) => `${item.label} [${item.sourceType || "-"}:${item.sourceRecipeId || "-"}]`)
+                    .join(", ")}
+                </div>
+              ) : null}
+              {recipePersistenceTrace.persistedRecipeUpdatedAt || recipePersistenceTrace.hydratedRecipeUpdatedAt ? (
+                <div className="v2-micro-note">
+                  Recipe updated_at: saved {recipePersistenceTrace.persistedRecipeUpdatedAt || "-"} · reloaded {recipePersistenceTrace.hydratedRecipeUpdatedAt || "-"}
+                  {recipePersistenceTrace.hydratedUsingLocalSnapshot
+                    ? ` · local safeguard used ${recipePersistenceTrace.hydratedLocalSnapshotUpdatedAt || recipePersistenceTrace.persistedRecipeUpdatedAt || ""}`
+                    : ""}
+                </div>
+              ) : null}
+              {(recipePersistenceTrace.hydratedIngredientLabels?.length || recipePersistenceTrace.hydratedBatchLabels?.length) ? (
+                <div className="v2-micro-note">
+                  Reloaded labels: {[
+                    ...(recipePersistenceTrace.hydratedIngredientLabels || []),
+                    ...(recipePersistenceTrace.hydratedBatchLabels || []),
+                  ].join(", ")}
+                </div>
+              ) : null}
+              {recipePersistenceTrace.hydratedMissingLabels?.length ? (
+                <div className="v2-micro-note">
+                  Missing on hydrate: {recipePersistenceTrace.hydratedMissingLabels.join(", ")}
+                </div>
+              ) : null}
+              {recipePersistenceTrace.events?.length ? (
+                <div className="v2-micro-note">
+                  Save events:{" "}
+                  {recipePersistenceTrace.events
+                    .map((event) => {
+                      const source = String(event?.source || "unknown").trim();
+                      const phase = String(event?.phase || "").trim();
+                      const count =
+                        typeof event?.persistedRowCount === "number"
+                          ? `${event.persistedRowCount} rows`
+                          : typeof event?.lineCount === "number"
+                            ? `${event.lineCount} lines`
+                            : "";
+                      return [source, phase, count].filter(Boolean).join(" ");
+                    })
+                    .join(" | ")}
+                </div>
+              ) : null}
+            </>
+          ) : null}
         </div>
       ) : null}
       <div className="v2-step-nav">
@@ -19658,7 +20354,7 @@ function RecipeWorkflowDetail({
             <div className="v2-detail-toolbar">
               <div>
                 <strong>Recipe lines</strong>
-                <span>Add simple ingredients or reusable components into one recipe line list.</span>
+                <span>Add ingredients from the ingredient master. Published component-derived ingredients can be used here because they already live in that master list.</span>
               </div>
             </div>
             {ingredientLinks.length || batchLinks.length ? (
@@ -19701,7 +20397,7 @@ function RecipeWorkflowDetail({
                 ))}
               </div>
             ) : (
-              <div className="v2-micro-note">No ingredient or component lines yet.</div>
+              <div className="v2-micro-note">No ingredient lines yet.</div>
             )}
             {batchLinks.length ? (
               <div className="v2-inline-callout warn">
@@ -19839,7 +20535,9 @@ function RecipeWorkflowDetail({
                   ? "Saving recipe..."
                   : recipeSaveState && recipeSaveState !== "saved"
                     ? "Recipe save error"
-                    : record.sharedDirty
+                    : hasUnsavedRecipeChanges && record.status === "live"
+                      ? "Live recipe has unsaved changes"
+                      : hasUnsavedRecipeChanges
                       ? "Unsaved recipe changes"
                       : "Recipe saved"}
               </strong>
@@ -19848,30 +20546,68 @@ function RecipeWorkflowDetail({
                   ? "This recipe is syncing to shared data now."
                   : recipeSaveState && recipeSaveState !== "saved"
                     ? recipeSaveState
-                    : record.sharedDirty
+                    : hasUnsavedRecipeChanges && record.status === "live"
+                      ? "Use Update live to save these changes while keeping the recipe live."
+                      : hasUnsavedRecipeChanges
                       ? "Use Save now if you want to force the shared save before moving on."
                       : "The latest recipe edits are saved to shared data."}
               </span>
             </div>
             <div className="v2-link-list">
               {record.status === "draft" && recipeReadyToPublish ? (
-                <button type="button" className="v2-primary-button" onClick={() => markRecipeReady(record.id)}>
+                <button
+                  type="button"
+                  className="v2-primary-button"
+                  onClick={() =>
+                    persistThenRunRecipeTransition({
+                      source: "usageMarkReady",
+                      failureMessage: "Could not save this recipe before marking it ready.",
+                      action: () => markRecipeReady(record.id),
+                    })
+                  }
+                >
                   Mark ready
                 </button>
               ) : null}
               {record.status === "review" && recipeReadyToPublish ? (
-                <button type="button" className="v2-primary-button" onClick={() => publishRecipeLive(record.id)}>
+                <button
+                  type="button"
+                  className="v2-primary-button"
+                  onClick={() =>
+                    persistThenRunRecipeTransition({
+                      source: "usagePublishLive",
+                      failureMessage: "Could not save this recipe before publishing it live.",
+                      action: () => publishRecipeLive(record.id),
+                    })
+                  }
+                >
                   Publish live
                 </button>
               ) : null}
-              <button
-                type="button"
-                className="v2-secondary-button"
-                onClick={() => saveRecipeToSharedData(record.id)}
-                disabled={recipeSaveState === "syncing" || !record.sharedDirty}
-              >
-                {recipeSaveState === "syncing" ? "Saving..." : "Save now"}
-              </button>
+              {record.status === "live" && hasUnsavedRecipeChanges ? (
+                <button
+                  type="button"
+                  className="v2-primary-button"
+                  onClick={() =>
+                    persistThenRunRecipeTransition({
+                      source: "usageUpdateLive",
+                      failureMessage: "Could not save this live recipe update.",
+                      action: () => {},
+                    })
+                  }
+                >
+                  {recipeSaveState === "syncing" ? "Saving..." : "Update live"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="v2-secondary-button"
+                  onClick={() => persistVisibleRecipe("saveNowButton")}
+                  disabled={recipeSaveState === "syncing" || !hasUnsavedRecipeChanges}
+                >
+                  {recipeSaveState === "syncing" ? "Saving..." : "Save now"}
+                </button>
+              )}
               {record.status === "live" ? (
                 <button type="button" className="v2-secondary-button" onClick={() => unpublishRecipe(record.id)}>
                   Return to ready
@@ -20206,8 +20942,8 @@ function BatchWorkflowDetail({
     setIngredientPickerQuery("");
   };
 
-  const chooseIngredientFromPicker = (ingredient) => {
-    toggleBatchIngredientLink(record.id, ingredient);
+  const chooseIngredientFromPicker = async (ingredient) => {
+    await toggleBatchIngredientLink(record.id, ingredient);
     closePicker();
   };
 
@@ -21473,6 +22209,7 @@ function MenuEditorCard({
   menu,
   maps,
   openRecord,
+  openRecipePreview,
   updateMenuField,
   addMenuItem,
   updateMenuItemField,
@@ -21596,8 +22333,18 @@ function MenuEditorCard({
                     </div>
                     <div className="v2-link-list">
                       {recipe ? (
-                        <button type="button" className="v2-secondary-button" onClick={() => openRecord("recipe", recipe.id)}>
-                          Open in Recipes
+                        <button
+                          type="button"
+                          className="v2-secondary-button"
+                          onClick={() => {
+                            if (openRecipePreview) {
+                              openRecipePreview("recipe", recipe.id);
+                              return;
+                            }
+                            openRecord("recipe", recipe.id);
+                          }}
+                        >
+                          Open recipe
                         </button>
                       ) : null}
                       <button type="button" className="v2-secondary-button" onClick={() => removeMenuItem(menu.id, item.id)}>
@@ -21636,8 +22383,13 @@ function MenuEditorCard({
                 className="v2-secondary-button"
                 onClick={() => {
                   if (!pickerItemId) return;
-                  createDraftRecipeForMenuItem(menu.id, pickerItemId);
+                  const nextRecipeId = createDraftRecipeForMenuItem(menu.id, pickerItemId, {
+                    stayInCurrentSection: true,
+                  });
                   closeRecipePicker();
+                  if (nextRecipeId && openRecipePreview) {
+                    openRecipePreview("recipe", nextRecipeId);
+                  }
                 }}
               >
                 Create draft recipe
@@ -21920,6 +22672,7 @@ const IngredientRecordDetail = memo(function IngredientRecordDetail({
 function RecordDetail({
   record,
   recordType,
+  onCloseRecord,
   openRecord,
   maps,
   relationshipMaps,
@@ -21944,6 +22697,7 @@ function RecordDetail({
   updateRecipeMethodStep,
   addRecipeMethodStep,
   saveRecipeToSharedData,
+  getLatestRecipeSnapshot,
   recipeSharedSyncState,
   toggleRecipeReviewFlag,
   updateRecipeIngredientLine,
@@ -22050,6 +22804,7 @@ function RecordDetail({
     return (
       <RecipeWorkflowDetail
         record={record}
+        onDone={onCloseRecord}
         openRecord={openRecord}
         maps={maps}
         recipeEditorStep={recipeEditorStep}
@@ -22066,6 +22821,7 @@ function RecordDetail({
         updateRecipeMethodStep={updateRecipeMethodStep}
         addRecipeMethodStep={addRecipeMethodStep}
         saveRecipeToSharedData={saveRecipeToSharedData}
+        getLatestRecipeSnapshot={getLatestRecipeSnapshot}
         recipeSharedSyncState={recipeSharedSyncState}
         toggleRecipeReviewFlag={toggleRecipeReviewFlag}
         updateRecipeIngredientLine={updateRecipeIngredientLine}

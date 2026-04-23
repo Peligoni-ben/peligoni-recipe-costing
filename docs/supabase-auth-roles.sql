@@ -130,6 +130,8 @@ to authenticated
 using (public.current_app_role() in ('manager', 'editor'))
 with check (public.current_app_role() in ('manager', 'editor'));
 
+grant execute on function public.save_recipe_bundle(jsonb, jsonb, timestamptz) to authenticated;
+
 drop policy if exists "menus_read_authenticated" on public.menus;
 create policy "menus_read_authenticated"
 on public.menus

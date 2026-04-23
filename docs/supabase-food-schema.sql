@@ -96,6 +96,145 @@ create table if not exists public.recipe_components (
 
 create index if not exists recipe_components_recipe_idx on public.recipe_components (recipe_id);
 
+create or replace function public.save_recipe_bundle(
+  p_recipe jsonb,
+  p_components jsonb default '[]'::jsonb,
+  p_expected_updated_at timestamptz default null
+)
+returns table(recipe_row jsonb, component_rows jsonb)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_recipe public.recipes%rowtype;
+  v_component_rows jsonb := '[]'::jsonb;
+begin
+  if coalesce(trim(p_recipe->>'id'), '') = '' then
+    raise exception 'Recipe id is required.';
+  end if;
+
+  if p_expected_updated_at is not null then
+    if not exists (
+      select 1
+      from public.recipes
+      where id = p_recipe->>'id'
+        and updated_at = p_expected_updated_at
+    ) then
+      raise exception 'STALE_RECIPE_WRITE';
+    end if;
+  end if;
+
+  insert into public.recipes (
+    id,
+    restaurant,
+    available_venues,
+    service_suitability,
+    name,
+    category,
+    selling_item_code,
+    current_sale_price,
+    roundup,
+    recipe_type,
+    batch_yield,
+    batch_yield_type,
+    portion_count,
+    method,
+    presentation_notes,
+    recipe_complete,
+    pricing_complete,
+    is_live,
+    is_locked,
+    workflow_stage,
+    updated_at
+  )
+  values (
+    p_recipe->>'id',
+    nullif(trim(p_recipe->>'restaurant'), ''),
+    coalesce(p_recipe->'available_venues', '[]'::jsonb),
+    coalesce(p_recipe->'service_suitability', '[]'::jsonb),
+    coalesce(nullif(trim(p_recipe->>'name'), ''), 'Untitled recipe'),
+    nullif(trim(p_recipe->>'category'), ''),
+    nullif(trim(p_recipe->>'selling_item_code'), ''),
+    coalesce(nullif(p_recipe->>'current_sale_price', '')::numeric, 0),
+    coalesce(nullif(p_recipe->>'roundup', '')::numeric, 0),
+    coalesce(nullif(trim(p_recipe->>'recipe_type'), ''), 'dish'),
+    nullif(p_recipe->>'batch_yield', '')::numeric,
+    nullif(trim(p_recipe->>'batch_yield_type'), ''),
+    nullif(p_recipe->>'portion_count', '')::numeric,
+    coalesce(p_recipe->'method', '[]'::jsonb),
+    nullif(trim(p_recipe->>'presentation_notes'), ''),
+    coalesce(nullif(p_recipe->>'recipe_complete', '')::boolean, false),
+    coalesce(nullif(p_recipe->>'pricing_complete', '')::boolean, false),
+    coalesce(nullif(p_recipe->>'is_live', '')::boolean, false),
+    coalesce(nullif(p_recipe->>'is_locked', '')::boolean, false),
+    coalesce(nullif(trim(p_recipe->>'workflow_stage'), ''), 'draft'),
+    coalesce(nullif(p_recipe->>'updated_at', '')::timestamptz, now())
+  )
+  on conflict (id) do update
+  set
+    restaurant = excluded.restaurant,
+    available_venues = excluded.available_venues,
+    service_suitability = excluded.service_suitability,
+    name = excluded.name,
+    category = excluded.category,
+    selling_item_code = excluded.selling_item_code,
+    current_sale_price = excluded.current_sale_price,
+    roundup = excluded.roundup,
+    recipe_type = excluded.recipe_type,
+    batch_yield = excluded.batch_yield,
+    batch_yield_type = excluded.batch_yield_type,
+    portion_count = excluded.portion_count,
+    method = excluded.method,
+    presentation_notes = excluded.presentation_notes,
+    recipe_complete = excluded.recipe_complete,
+    pricing_complete = excluded.pricing_complete,
+    is_live = excluded.is_live,
+    is_locked = excluded.is_locked,
+    workflow_stage = excluded.workflow_stage,
+    updated_at = excluded.updated_at
+  returning * into v_recipe;
+
+  delete from public.recipe_components
+  where recipe_id = v_recipe.id;
+
+  if jsonb_typeof(coalesce(p_components, '[]'::jsonb)) = 'array' then
+    insert into public.recipe_components (
+      recipe_id,
+      component_order,
+      ingredient_name,
+      ingredient_item_code,
+      qty,
+      cost,
+      source_type,
+      source_recipe_id,
+      source_unit_cost,
+      source_yield_type
+    )
+    select
+      v_recipe.id,
+      coalesce(nullif(item->>'component_order', '')::integer, ord - 1),
+      nullif(trim(item->>'ingredient_name'), ''),
+      nullif(trim(item->>'ingredient_item_code'), ''),
+      coalesce(nullif(item->>'qty', '')::numeric, 0),
+      coalesce(nullif(item->>'cost', '')::numeric, 0),
+      nullif(trim(item->>'source_type'), ''),
+      nullif(trim(item->>'source_recipe_id'), ''),
+      nullif(item->>'source_unit_cost', '')::numeric,
+      nullif(trim(item->>'source_yield_type'), '')
+    from jsonb_array_elements(coalesce(p_components, '[]'::jsonb)) with ordinality as payload(item, ord);
+  end if;
+
+  select coalesce(jsonb_agg(to_jsonb(rc) order by rc.component_order), '[]'::jsonb)
+  into v_component_rows
+  from public.recipe_components rc
+  where rc.recipe_id = v_recipe.id;
+
+  return query
+  select to_jsonb(v_recipe), v_component_rows;
+end;
+$$;
+
 create table if not exists public.menus (
   id text primary key,
   name text not null,
