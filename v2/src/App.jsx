@@ -6533,19 +6533,27 @@ function slugifyLabel(value = "") {
 }
 
 function buildMenuPreviewGroups(menu, recipeMap = new Map()) {
-  return ["Starters", "Mains", "Desserts"].map((course) => ({
+  const knownCourseOrder = ["Starters", "Mains", "Desserts"];
+  const enrichedItems = (menu?.items || []).map((item) => {
+    const recipe = item.recipeId ? recipeMap.get(item.recipeId) : null;
+    return {
+      ...item,
+      recipe,
+      course: getMenuCourseLabel(item, recipe),
+      dishName: item.dishName || item.name || recipe?.name || "",
+      description: item.description || item.recipeDescription || recipe?.menuDescription || "",
+      price: Number(item.price || recipe?.salePrice || 0),
+    };
+  });
+  const discoveredCourses = Array.from(new Set(enrichedItems.map((item) => item.course).filter(Boolean)));
+  const orderedCourses = [
+    ...knownCourseOrder.filter((course) => discoveredCourses.includes(course)),
+    ...discoveredCourses.filter((course) => !knownCourseOrder.includes(course)),
+  ];
+
+  return orderedCourses.map((course) => ({
     course,
-    items: (menu?.items || [])
-      .map((item) => {
-        const recipe = item.recipeId ? recipeMap.get(item.recipeId) : null;
-        return {
-          ...item,
-          recipe,
-          course: getMenuCourseLabel(item, recipe),
-          price: Number(recipe?.salePrice || 0),
-        };
-      })
-      .filter((item) => item.course === course),
+    items: enrichedItems.filter((item) => item.course === course),
   }));
 }
 
@@ -6690,7 +6698,7 @@ function buildMenuExportCsv(menu, recipeMap = new Map()) {
     group.items.forEach((item) => {
       rows.push([
         group.course,
-        item.name || item.recipe?.name || "",
+        item.dishName || item.recipe?.name || "",
         item.description || item.recipe?.menuDescription || "",
         Number(item.price || 0).toFixed(2),
       ]);
@@ -6822,7 +6830,7 @@ function buildMenuPrintHtml(menu, recipeMap = new Map()) {
         .map(
           (item) => `
             <tr>
-              <td>${item.name || item.recipe?.name || ""}</td>
+              <td>${item.dishName || item.recipe?.name || ""}</td>
               <td>${item.description || item.recipe?.menuDescription || ""}</td>
               <td>${formatCurrency(item.price || 0)}</td>
             </tr>
@@ -7281,11 +7289,30 @@ function buildChefSheetHtmlV2(record, componentRows = [], options = {}) {
     !isBatch && record.finishedDishImage
       ? `<div class="hero-image"><img src="${record.finishedDishImage}" alt="Completed dish" /></div>`
       : `<div class="hero-placeholder">${isBatch ? "Component recipe print sheet" : "Add a completed dish image in the app to include it here."}</div>`;
-  const metaRight = isBatch
-    ? `<div class="stat"><span>Yield</span><strong>${record.yieldLabel || ""}</strong></div>
-       <div class="stat"><span>Cost per unit</span><strong>${formatCurrency(options.unitCost || 0)}</strong></div>`
-    : `<div class="stat"><span>Sale price</span><strong>${formatCurrency(record.salePrice || 0)}</strong></div>
-       <div class="stat"><span>Gross profit</span><strong>${formatPercent(options.grossProfit || 0)}</strong></div>`;
+  const metaCards = isBatch
+    ? [
+        { label: "Recipe cost", value: formatCurrency(options.totalCost || 0) },
+        { label: "Yield", value: record.yieldLabel || "" },
+        { label: "Cost per unit", value: formatCurrency(options.unitCost || 0) },
+        { label: "Components", value: String(componentRows.length) },
+      ]
+    : [
+        { label: "Recipe cost", value: formatCurrency(options.totalCost || 0) },
+        { label: "Portions", value: String(Math.max(1, Number(record.portions || 0) || 1)) },
+        { label: "Sale price", value: formatCurrency(record.salePrice || 0) },
+        { label: "Gross profit", value: formatPercent(options.grossProfit || 0) },
+        { label: "Components", value: String(componentRows.length) },
+      ];
+  const metaHtml = metaCards
+    .map(
+      (card) => `
+        <div class="stat">
+          <span>${card.label}</span>
+          <strong>${card.value}</strong>
+        </div>
+      `
+    )
+    .join("");
 
   return `<!doctype html>
   <html lang="en">
@@ -7298,7 +7325,7 @@ function buildChefSheetHtmlV2(record, componentRows = [], options = {}) {
         .header { display: flex; justify-content: space-between; gap: 24px; align-items: start; margin-bottom: 24px; }
         .eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: #64748b; font-weight: 700; }
         h1 { margin: 6px 0 10px; font-size: 34px; }
-        .meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 24px; }
+        .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
         .stat { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 14px; }
         .stat span { display: block; font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
         .stat strong { font-size: 20px; }
@@ -7327,9 +7354,7 @@ function buildChefSheetHtmlV2(record, componentRows = [], options = {}) {
           <div><div class="eyebrow">Item code</div><strong>${record.code || "Missing"}</strong></div>
         </div>
         <div class="meta">
-          <div class="stat"><span>Recipe cost</span><strong>${formatCurrency(options.totalCost || 0)}</strong></div>
-          ${metaRight}
-          <div class="stat"><span>Components</span><strong>${componentRows.length}</strong></div>
+          ${metaHtml}
         </div>
         <div class="layout">
           <div>
@@ -15252,12 +15277,25 @@ function App() {
 
   const printExportPreview = () => {
     if (typeof window === "undefined" || !exportPreviewModal.html) return;
-    const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1100,height=900");
+    const printWindow = window.open("", "_blank", "width=1100,height=900");
     if (!printWindow) return;
     printWindow.document.open();
     printWindow.document.write(exportPreviewModal.html);
     printWindow.document.close();
     printWindow.focus();
+    const triggerPrint = () => {
+      try {
+        printWindow.focus();
+        printWindow.print();
+      } catch (_error) {
+        // Leave the printable window open as a fallback if the browser blocks auto-print.
+      }
+    };
+    if (printWindow.document.readyState === "complete") {
+      window.setTimeout(triggerPrint, 50);
+    } else {
+      printWindow.addEventListener("load", () => window.setTimeout(triggerPrint, 50), { once: true });
+    }
   };
 
   const openRecipeCostSheetPreview = (recipeId) => {
@@ -21084,11 +21122,6 @@ function BatchWorkflowDetail({
                 <strong>Ingredient lines</strong>
                 <span>Build this component from ingredient lines before publishing it into the ingredient library.</span>
               </div>
-              <div className="v2-link-list">
-                <button type="button" className="v2-primary-button" onClick={() => setPickerOpen(true)}>
-                  Add ingredient
-                </button>
-              </div>
             </div>
             {ingredientLinks.length ? (
               <div className="v2-stack">
@@ -21132,6 +21165,11 @@ function BatchWorkflowDetail({
             ) : (
               <div className="v2-micro-note">No ingredient lines linked yet.</div>
             )}
+            <div className="v2-link-list">
+              <button type="button" className="v2-primary-button" onClick={() => setPickerOpen(true)}>
+                Add ingredient
+              </button>
+            </div>
           </div>
         </DetailSection>
       ) : null}
