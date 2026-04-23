@@ -23,8 +23,10 @@ export function buildIngredientsPanelState({
   const rowNeedsPriceReview = (row) => getRowReviewAttentionReasons(row).includes("price_review");
   const rowNeedsRuleCatchup = (row) => getRowReviewAttentionReasons(row).includes("rule_catchup");
   const isComponentDerivedRow = (row) => Boolean(row?.batchId);
+  const hasSoft1SourceCode = (row) => Boolean(String(row?.sourceCode || "").trim());
   const isManualRow = (row) =>
     !isComponentDerivedRow(row) &&
+    !hasSoft1SourceCode(row) &&
     (String(row?.sourceType || "").trim().toLowerCase() === "manual" ||
       String(row?.soft1Status || "").trim().toLowerCase() === "pending");
   const isSimpleRow = (row) => !isComponentDerivedRow(row) && !isManualRow(row);
