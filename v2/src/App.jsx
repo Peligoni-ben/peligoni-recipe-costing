@@ -904,63 +904,6 @@ function hydrateSharedDataToV2({
   recipeReviewFlagState = {},
   batchReviewFlagState = {},
 }) {
-  let mappedIngredients = (ingredientRows || []).map((row) => {
-    const sharedRecordId = String(row.id || "").trim();
-    const sharedUpdatedAt = String(row.updated_at || row.last_updated || "").trim();
-    const isPublishedComponent = String(row.entry_type || "").trim() === "batch";
-    const rawIngredientCode = String(row.ingredient_item_code || "").trim();
-    const hasBchIngredientCode = hasBchCode(rawIngredientCode || row.id || "");
-    const soft1SourceCode = getSharedSoft1Code(row);
-    const internalCode = getSharedInternalIngredientCode(row);
-    const hasSoft1SourceCode = Boolean(soft1SourceCode);
-    const storedReviewState = sharedRecordId ? ingredientReviewState[sharedRecordId] || null : null;
-    const storedTradeCategory = sharedRecordId ? ingredientTradeCategoryState[sharedRecordId]?.value || "" : "";
-    const categoryFields = deriveImportCategoryFields({
-      category: row.category,
-      tradeCategory: storedTradeCategory || row.trade_category || "",
-      sourceCode: soft1SourceCode,
-    });
-
-    return {
-      id: String(row.id || `ing-${Date.now()}`),
-      name: String(row.ingredient_name || "").trim() || "Untitled ingredient",
-      code: internalCode || soft1SourceCode || String(row.id || "").trim(),
-      sourceCode: hasSoft1SourceCode ? soft1SourceCode : "",
-      aliases: dedupeTextList(storedReviewState?.aliases || []).filter(Boolean),
-      referenceRawName: String(storedReviewState?.referenceRawName || "").trim(),
-      status: "ready",
-      packSize: String(row.pack_size || "").trim(),
-      supplier: String(row.supplier || "").trim(),
-      category: categoryFields.category,
-      tradeCategory: categoryFields.tradeCategory,
-      sourceType: hasSoft1SourceCode ? "soft1" : "manual",
-      soft1Status: hasSoft1SourceCode ? "in_soft1" : "pending",
-      sourceRecordLabel: isPublishedComponent ? "Published from component" : "Shared ingredients",
-      lastImportedAt: String(row.last_updated || "").trim(),
-      unitCost: numberValue(row.unit_cost),
-      purchaseVatRate: normalizeVatPercent(row.purchase_vat_rate, 13),
-      costUnit: inferPricingUnit(String(row.pack_size || "").trim()),
-      portionCostHint: numberValue(row.unit_cost),
-      usedInRecipeIds: [],
-      batchId: String(row.linked_recipe_id || "").trim(),
-      archived: Boolean(row.is_archived),
-      notes: "",
-      needsSubstitutionReview: Boolean(
-        storedReviewState?.flagged || (sharedRecordId && ingredientSubstitutionState[sharedRecordId]?.flagged)
-      ),
-      needsReviewFlag: Boolean(storedReviewState?.forReview),
-      sharedRecordId,
-      sharedUpdatedAt,
-      masterReviewStatus: resolveHydratedIngredientReviewStatus({
-        storedReviewState,
-        isPublishedComponent,
-        hasBchIngredientCode,
-        hasSoft1SourceCode,
-      }),
-      sharedDirty: false,
-    };
-  });
-
   const componentsByRecipeId = new Map();
   (componentRows || []).forEach((component) => {
     const recipeId = String(component.recipe_id || "").trim();
@@ -980,18 +923,71 @@ function hydrateSharedDataToV2({
     if (codeKey && !batchRecipeRowsByCode.has(codeKey)) batchRecipeRowsByCode.set(codeKey, String(row.id));
     if (nameKey && !batchRecipeRowsByName.has(nameKey)) batchRecipeRowsByName.set(nameKey, String(row.id));
   });
-  mappedIngredients = mappedIngredients.map((ingredient) => {
-    if (String(ingredient.batchId || "").trim()) return ingredient;
-    if (String(ingredient.sourceRecordLabel || "").trim() !== "Published from component") return ingredient;
 
-    const batchIdFromCode = batchRecipeRowsByCode.get(normalizeSharedKey(String(ingredient.code || "").trim())) || "";
-    const batchIdFromName = batchRecipeRowsByName.get(normalizeSharedKey(String(ingredient.name || "").trim())) || "";
-    const fallbackBatchId = batchIdFromCode || batchIdFromName;
-    if (!fallbackBatchId) return ingredient;
+  const mappedIngredients = (ingredientRows || []).map((row) => {
+    const sharedRecordId = String(row.id || "").trim();
+    const sharedUpdatedAt = String(row.updated_at || row.last_updated || "").trim();
+    const rawIngredientCode = String(row.ingredient_item_code || "").trim();
+    const soft1SourceCode = getSharedSoft1Code(row);
+    const internalCode = getSharedInternalIngredientCode(row);
+    const ingredientName = String(row.ingredient_name || "").trim() || "Untitled ingredient";
+    const resolvedComponentLink = resolveHydratedIngredientComponentLink({
+      row,
+      ingredientName,
+      ingredientCode: internalCode || rawIngredientCode || String(row.id || "").trim(),
+      ingredientSourceCode: soft1SourceCode,
+      batchRecipeRowsById,
+      batchRecipeRowsByCode,
+      batchRecipeRowsByName,
+    });
+    const hasBchIngredientCode = hasBchCode(rawIngredientCode || row.id || "");
+    const hasSoft1SourceCode = Boolean(soft1SourceCode);
+    const storedReviewState = sharedRecordId ? ingredientReviewState[sharedRecordId] || null : null;
+    const storedTradeCategory = sharedRecordId ? ingredientTradeCategoryState[sharedRecordId]?.value || "" : "";
+    const categoryFields = deriveImportCategoryFields({
+      category: row.category,
+      tradeCategory: storedTradeCategory || row.trade_category || "",
+      sourceCode: soft1SourceCode,
+    });
 
     return {
-      ...ingredient,
-      batchId: fallbackBatchId,
+      id: String(row.id || `ing-${Date.now()}`),
+      name: ingredientName,
+      code: internalCode || soft1SourceCode || String(row.id || "").trim(),
+      sourceCode: hasSoft1SourceCode ? soft1SourceCode : "",
+      aliases: dedupeTextList(storedReviewState?.aliases || []).filter(Boolean),
+      referenceRawName: String(storedReviewState?.referenceRawName || "").trim(),
+      status: "ready",
+      packSize: String(row.pack_size || "").trim(),
+      supplier: String(row.supplier || "").trim(),
+      category: categoryFields.category,
+      tradeCategory: categoryFields.tradeCategory,
+      sourceType: hasSoft1SourceCode ? "soft1" : "manual",
+      soft1Status: hasSoft1SourceCode ? "in_soft1" : "pending",
+      sourceRecordLabel: resolvedComponentLink.sourceRecordLabel,
+      lastImportedAt: String(row.last_updated || "").trim(),
+      unitCost: numberValue(row.unit_cost),
+      purchaseVatRate: normalizeVatPercent(row.purchase_vat_rate, 13),
+      costUnit: normalizeImportPricingUnit(String(row.cost_unit || "").trim(), String(row.pack_size || "").trim()),
+      unitsInPack: normalizeUnitsInPack(row.units_in_pack, String(row.pack_size || "").trim()),
+      portionCostHint: numberValue(row.unit_cost),
+      usedInRecipeIds: [],
+      batchId: resolvedComponentLink.batchId,
+      archived: Boolean(row.is_archived),
+      notes: "",
+      needsSubstitutionReview: Boolean(
+        storedReviewState?.flagged || (sharedRecordId && ingredientSubstitutionState[sharedRecordId]?.flagged)
+      ),
+      needsReviewFlag: Boolean(storedReviewState?.forReview),
+      sharedRecordId,
+      sharedUpdatedAt,
+      masterReviewStatus: resolveHydratedIngredientReviewStatus({
+        storedReviewState,
+        isPublishedComponent: resolvedComponentLink.isPublishedComponent,
+        hasBchIngredientCode,
+        hasSoft1SourceCode,
+      }),
+      sharedDirty: false,
     };
   });
 
@@ -1194,7 +1190,7 @@ function hydrateSharedDataToV2({
       costUnit: yieldUnit,
       portionCostHint: 0,
       methodSteps,
-      prepNotes: String(row.presentation_notes || "").trim(),
+      prepNotes: String(row.prep_notes || row.presentation_notes || "").trim(),
     });
   });
 
@@ -1319,11 +1315,11 @@ function hydrateSharedDataToV2({
           sharedDirty: false,
           sharedPersisted: true,
           category: String(row.category || "").trim() || "Main",
-          menuDescription: "",
+          menuDescription: String(row.menu_description || "").trim(),
           methodSteps,
-          prepNotes: "",
-          platingNotes: String(row.presentation_notes || "").trim(),
-          chefNotes: "",
+          prepNotes: String(row.prep_notes || "").trim(),
+          platingNotes: String(row.plating_notes || row.presentation_notes || "").trim(),
+          chefNotes: String(row.chef_notes || "").trim(),
           portions: Math.max(1, numberValue(row.portion_count, 1)),
           salePrice: numberValue(row.current_sale_price),
           serviceSuitability: dedupeTextList(Array.isArray(row.service_suitability) ? row.service_suitability : []),
@@ -2077,15 +2073,39 @@ function parsePackSizeComponents(packSize = "") {
   const text = String(packSize || "").trim().toLowerCase();
   if (!text) return null;
 
-  const measureMatch = text.match(/(\d+(?:[.,]\d+)?)\s*(kg|gr|g|ml|l|lt)\b/i);
+  const countFirstMeasureMatch = text.match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*(kg|gr|g|ml|l|lt)\b/i);
+  const measureFirstCountMatch = text.match(/(\d+(?:[.,]\d+)?)\s*(kg|gr|g|ml|l|lt)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
+  const multipliedMeasureMatch = countFirstMeasureMatch || measureFirstCountMatch;
+  const measureMatch = multipliedMeasureMatch ? null : text.match(/(\d+(?:[.,]\d+)?)\s*(kg|gr|g|ml|l|lt)\b/i);
   const countMatch = text.match(/(?:\(|\b)(\d+(?:[.,]\d+)?)\s*(pc|pcs|piece|pieces)\b\)?/i);
 
-  const count = countMatch ? Number(String(countMatch[1] || "0").replace(",", ".")) : 0;
+  const multiplierCount = countFirstMeasureMatch
+    ? Number(String(countFirstMeasureMatch[1] || "0").replace(",", "."))
+    : measureFirstCountMatch
+      ? Number(String(measureFirstCountMatch[3] || "0").replace(",", "."))
+      : 0;
+  const count = countMatch
+    ? Number(String(countMatch[1] || "0").replace(",", "."))
+    : multiplierCount;
   const normalizedCount = Number.isFinite(count) && count > 0 ? count : 0;
 
-  if (measureMatch) {
-    const amount = Number(String(measureMatch[1] || "0").replace(",", "."));
-    const rawUnit = String(measureMatch[2] || "").toLowerCase();
+  if (measureMatch || multipliedMeasureMatch) {
+    const amount = Number(
+      String(
+        countFirstMeasureMatch
+          ? countFirstMeasureMatch[2] || "0"
+          : measureFirstCountMatch
+            ? measureFirstCountMatch[1] || "0"
+            : measureMatch?.[1] || "0"
+      ).replace(",", ".")
+    );
+    const rawUnit = String(
+      countFirstMeasureMatch
+        ? countFirstMeasureMatch[3] || ""
+        : measureFirstCountMatch
+          ? measureFirstCountMatch[2] || ""
+          : measureMatch?.[2] || ""
+    ).toLowerCase();
     if (!(amount > 0)) return null;
 
     if (rawUnit === "kg") {
@@ -2144,6 +2164,49 @@ function parsePackSizeComponents(packSize = "") {
   return null;
 }
 
+function getInferredUnitsInPack(packSize = "") {
+  const parsedPack = parsePackSizeComponents(packSize);
+  if ((parsedPack?.count || 0) > 0) return parsedPack.count;
+  if (parsedPack?.totalUnit === "piece" && parsedPack.totalAmount > 0) return parsedPack.totalAmount;
+  return 1;
+}
+
+function normalizeUnitsInPack(value = 1, packSize = "") {
+  const numericValue = Number(String(value ?? "").replace(",", "."));
+  if (Number.isFinite(numericValue) && numericValue > 0) return numericValue;
+  return getInferredUnitsInPack(packSize);
+}
+
+function getPerPieceMeasurementBasis(packSize = "") {
+  const parsedPack = parsePackSizeComponents(packSize);
+  if (!(parsedPack?.amount > 0)) return null;
+
+  if (parsedPack.unit === "g") {
+    return { amount: parsedPack.amount / 1000, unit: "kg" };
+  }
+  if (parsedPack.unit === "kg") {
+    return { amount: parsedPack.amount, unit: "kg" };
+  }
+  if (parsedPack.unit === "ml") {
+    return { amount: parsedPack.amount / 1000, unit: "l" };
+  }
+  if (parsedPack.unit === "l" || parsedPack.unit === "lt") {
+    return { amount: parsedPack.amount, unit: "l" };
+  }
+  return null;
+}
+
+function hasConcretePiecePackContext(packSize = "", unitsInPack = 1) {
+  const normalizedPackSize = String(packSize || "").trim();
+  const parsedPack = parsePackSizeComponents(normalizedPackSize);
+  const normalizedUnitsInPack = normalizeUnitsInPack(unitsInPack, normalizedPackSize);
+  if (!normalizedPackSize) return false;
+  if (parsedPack?.unit && parsedPack.unit !== "piece") return true;
+  if (normalizedUnitsInPack > 1) return true;
+  if (parsedPack?.totalUnit === "piece" && parsedPack.totalAmount > 1) return true;
+  return false;
+}
+
 function extractPackSize(rawName = "", unit = "") {
   const text = String(rawName || "").trim();
   const parsedPack = parsePackSizeComponents(text);
@@ -2186,32 +2249,103 @@ function isPieceLikeUnit(unit = "") {
   return ["pc", "pcs", "piece", "pieces"].includes(normalizedUnit);
 }
 
-function requiresImportPackSizeReview(rawName = "", unit = "", packSize = "", sourceCode = "") {
+function requiresImportPackSizeReview(rawName = "", unit = "", packSize = "", sourceCode = "", unitsInPack = 1) {
   const normalizedPackSize = String(packSize || "").trim();
   if (!isPieceLikeUnit(unit)) return false;
-  if (!normalizedPackSize) return true;
-  const parsedFromPackSize = parsePackSizeComponents(normalizedPackSize);
   if (
     isWholeEggImportRow(rawName, sourceCode) &&
-    parsedFromPackSize?.totalUnit === "piece" &&
-    parsedFromPackSize.totalAmount > 1
+    normalizeUnitsInPack(unitsInPack, normalizedPackSize || rawName) > 1
   ) {
     return false;
   }
-  const parsedFromRawName = parsePackSizeComponents(rawName);
-  if (!parsedFromRawName) return true;
-  if (parsedFromRawName.totalUnit === "piece") return true;
-  return normalizeIngredientKey(normalizedPackSize) === "1pc";
+  return !hasConcretePiecePackContext(normalizedPackSize || rawName, unitsInPack);
 }
 
-function isLikelyMultipackSnackImport(rawName = "", unit = "", averagePrice = 0, sourceCode = "") {
+function isLikelyMultipackSnackImport(rawName = "", unit = "", averagePrice = 0, sourceCode = "", unitsInPack = 1) {
   if (!isPieceLikeUnit(unit)) return false;
+  if (normalizeUnitsInPack(unitsInPack, rawName) > 1) return false;
   const family = getSoft1CodeFamily(sourceCode);
   if (!["CER", "ASPR"].includes(family)) return false;
   const text = normalizeIngredientParserText(rawName);
   const suspiciousSnackCue =
     /\bprotein ball\b|\bprotein balls\b|\bbars?\b|\bballs?\b|\bbiscuits?\b|\bchips?\b|\bcrisps?\b|\bpuffs?\b/.test(text);
   return suspiciousSnackCue && Number(averagePrice || 0) >= 6;
+}
+
+function deriveImportedIngredientPricing({
+  rawName = "",
+  sourceUnit = "",
+  packSize = "",
+  sourceCode = "",
+  averagePrice = 0,
+  unitsInPack = 1,
+} = {}) {
+  const numericPrice = Number(averagePrice || 0);
+  const normalizedSourceUnit = normalizeImportPricingUnit(sourceUnit, packSize);
+  const parsedPack = parsePackSizeComponents(packSize);
+  const normalizedUnitsInPack = normalizeUnitsInPack(unitsInPack, packSize || rawName);
+  const packNeedsReview = requiresImportPackSizeReview(
+    rawName,
+    sourceUnit,
+    packSize,
+    sourceCode,
+    normalizedUnitsInPack
+  );
+  const likelyMultipackWithoutCount =
+    isLikelyMultipackSnackImport(rawName, sourceUnit, numericPrice, sourceCode, normalizedUnitsInPack) &&
+    !(normalizedUnitsInPack > 1);
+
+  if (!(numericPrice > 0)) {
+    return {
+      unitCost: 0,
+      costUnit: normalizedSourceUnit || inferPricingUnit(packSize),
+      unitsInPack: normalizedUnitsInPack,
+      priceReviewReason: null,
+    };
+  }
+
+  if (normalizedSourceUnit === "kg" || normalizedSourceUnit === "l") {
+    return {
+      unitCost: numericPrice,
+      costUnit: normalizedSourceUnit,
+      unitsInPack: normalizedUnitsInPack,
+      priceReviewReason: null,
+    };
+  }
+
+  if (normalizedSourceUnit === "piece") {
+    if (likelyMultipackWithoutCount) {
+      return {
+        unitCost: numericPrice,
+        costUnit: "piece",
+        unitsInPack: normalizedUnitsInPack,
+        priceReviewReason: "multipack_unknown",
+      };
+    }
+
+    if (!packNeedsReview && normalizedUnitsInPack > 1) {
+      return {
+        unitCost: numericPrice / normalizedUnitsInPack,
+        costUnit: "piece",
+        unitsInPack: normalizedUnitsInPack,
+        priceReviewReason: null,
+      };
+    }
+
+    return {
+      unitCost: numericPrice,
+      costUnit: "piece",
+      unitsInPack: normalizedUnitsInPack,
+      priceReviewReason: packNeedsReview ? "pack_unknown" : null,
+    };
+  }
+
+  return {
+    unitCost: numericPrice,
+    costUnit: normalizedSourceUnit || inferPricingUnit(packSize),
+    unitsInPack: normalizedUnitsInPack,
+    priceReviewReason: null,
+  };
 }
 
 function titleCaseCategory(value = "") {
@@ -2307,13 +2441,23 @@ function parseSoft1IngredientUploadMatrix(rows = [], { sourceWorkbook = "", sour
         const sourceCode = read(row, ["Ingr. Soft1 Code", "ingredient_item_code"]);
         const packSize = extractWholeEggPackSize(rawName, sourceCode) || extractPackSize(rawName, sourceUnit);
         const nameIndex = parseIngredientIndex(rawName, packSize, [], sourceCode);
+        const pricing = deriveImportedIngredientPricing({
+          rawName,
+          sourceUnit,
+          packSize,
+          sourceCode,
+          averagePrice: numberValue(read(row, ["Average Price", "unit_cost"]), 0),
+        });
         return {
           id: `${rowIdPrefix}-${index + 1}`,
           sourceCode,
           rawName,
-          averagePrice: numberValue(read(row, ["Average Price", "unit_cost"]), 0),
+          averagePrice: pricing.unitCost,
           packSize,
           sourceUnit,
+          pricingUnit: pricing.costUnit,
+          unitsInPack: pricing.unitsInPack,
+          priceReviewReason: pricing.priceReviewReason,
           category: deriveImportCategoryFields({
             productCategory: read(row, ["Product Category", "product_category"]),
             tradeCategory: read(row, ["Εμπορ. κατηγορία", "Trade Category", "trade_category"]),
@@ -2343,9 +2487,18 @@ function parseSoft1IngredientUploadMatrix(rows = [], { sourceWorkbook = "", sour
 
       if (isNormalizedImport) {
         const sourceCode = read(row, ["ingredient_item_code", "Ingr. Soft1 Code"]);
-        const sourceUnit = read(row, ["pack_size", "Unit"]);
+        const packSizeSource = read(row, ["pack_size", "Pack size"]);
+        const pricingUnitSource = read(row, ["cost_unit", "Cost unit", "pricing_unit", "Pricing unit", "Unit"]);
         const rawName = read(row, ["ingredient_name", "Ingredient name"]);
-        const nameIndex = parseIngredientIndex(rawName, extractWholeEggPackSize(rawName, sourceCode) || String(sourceUnit || "").trim(), [], sourceCode);
+        const packSize = extractWholeEggPackSize(rawName, sourceCode) || String(packSizeSource || "").trim();
+        const nameIndex = parseIngredientIndex(rawName, packSize, [], sourceCode);
+        const pricing = deriveImportedIngredientPricing({
+          rawName,
+          sourceUnit: pricingUnitSource,
+          packSize,
+          sourceCode,
+          averagePrice: numberValue(read(row, ["unit_cost", "Average Price"]), 0),
+        });
         const categoryFields = deriveImportCategoryFields({
           productCategory: read(row, ["category", "Product Category", "product_category"]),
           tradeCategory: read(row, ["trade_category", "Trade Category"]),
@@ -2357,9 +2510,12 @@ function parseSoft1IngredientUploadMatrix(rows = [], { sourceWorkbook = "", sour
           id: `${rowIdPrefix}-${index + 1}`,
           sourceCode,
           rawName,
-          averagePrice: numberValue(read(row, ["unit_cost", "Average Price"]), 0),
-          packSize: extractWholeEggPackSize(rawName, sourceCode) || String(sourceUnit || "").trim(),
-          sourceUnit,
+          averagePrice: pricing.unitCost,
+          packSize,
+          sourceUnit: String(packSizeSource || "").trim(),
+          pricingUnit: pricing.costUnit,
+          unitsInPack: pricing.unitsInPack,
+          priceReviewReason: pricing.priceReviewReason,
           category: categoryFields.category,
           productCategory: categoryFields.productCategory,
           tradeCategory: categoryFields.tradeCategory,
@@ -2376,6 +2532,13 @@ function parseSoft1IngredientUploadMatrix(rows = [], { sourceWorkbook = "", sour
         const rawName = read(row, ["Ingredient name", "ingredient_name"]) || description;
         const packSize = extractWholeEggPackSize(rawName, sourceCode) || String(sourceUnit || extractPackSize(description, "")).trim();
         const nameIndex = parseIngredientIndex(rawName, packSize, [], sourceCode);
+        const pricing = deriveImportedIngredientPricing({
+          rawName,
+          sourceUnit,
+          packSize,
+          sourceCode,
+          averagePrice: numberValue(read(row, ["Cost per kilo", "unit_cost"]), 0),
+        });
         const categoryFields = deriveImportCategoryFields({
           tradeCategory: read(row, ["Description"]),
           sourceCode,
@@ -2386,9 +2549,12 @@ function parseSoft1IngredientUploadMatrix(rows = [], { sourceWorkbook = "", sour
           id: `${rowIdPrefix}-${index + 1}`,
           sourceCode,
           rawName,
-          averagePrice: numberValue(read(row, ["Cost per kilo", "unit_cost"]), 0),
+          averagePrice: pricing.unitCost,
           packSize,
           sourceUnit,
+          pricingUnit: pricing.costUnit,
+          unitsInPack: pricing.unitsInPack,
+          priceReviewReason: pricing.priceReviewReason,
           category: categoryFields.category,
           productCategory: categoryFields.productCategory,
           tradeCategory: categoryFields.tradeCategory,
@@ -2414,6 +2580,13 @@ function createSoft1RowsFromSample(sample) {
     const rawName = row.description;
     const packSize = extractWholeEggPackSize(rawName, row.source_code) || extractPackSize(row.description, row.unit);
     const nameIndex = parseIngredientIndex(rawName, packSize, [], row.source_code);
+    const pricing = deriveImportedIngredientPricing({
+      rawName,
+      sourceUnit: row.unit,
+      packSize,
+      sourceCode: row.source_code,
+      averagePrice: numberValue(row.average_price, 0),
+    });
     const categoryFields = deriveImportCategoryFields({
       tradeCategory: row.trade_category,
       productCategory: row.product_category,
@@ -2426,9 +2599,12 @@ function createSoft1RowsFromSample(sample) {
       id: `raw-${index + 1}`,
       sourceCode: row.source_code,
       rawName,
-      averagePrice: numberValue(row.average_price, 0),
+      averagePrice: pricing.unitCost,
       packSize,
       sourceUnit: String(row.unit || "").trim(),
+      pricingUnit: pricing.costUnit,
+      unitsInPack: pricing.unitsInPack,
+      priceReviewReason: pricing.priceReviewReason,
       category: categoryFields.category,
       productCategory: categoryFields.productCategory,
       tradeCategory: categoryFields.tradeCategory,
@@ -6036,19 +6212,25 @@ function getIngredientReferencePrice(ingredient = {}) {
   const unitCost = Number(ingredient?.unitCost || 0);
   if (!(unitCost > 0)) return null;
 
-  const parsedPack = parseReferencePackSize(ingredient?.packSize || "");
-  if (parsedPack?.amount > 0 && (parsedPack.unit === "kg" || parsedPack.unit === "l")) {
+  const costUnit = String(ingredient?.costUnit || "").trim().toLowerCase();
+  if (costUnit === "piece") {
     return {
-      value: unitCost / parsedPack.amount,
-      unit: parsedPack.unit,
+      value: unitCost,
+      unit: "piece",
     };
   }
-
-  const costUnit = String(ingredient?.costUnit || "").trim().toLowerCase();
   if (costUnit === "kg" || costUnit === "l") {
     return {
       value: unitCost,
       unit: costUnit,
+    };
+  }
+
+  const parsedPack = parseReferencePackSize(ingredient?.packSize || "");
+  if (!costUnit && parsedPack?.amount > 0 && (parsedPack.unit === "kg" || parsedPack.unit === "l")) {
+    return {
+      value: unitCost / parsedPack.amount,
+      unit: parsedPack.unit,
     };
   }
 
@@ -6084,19 +6266,40 @@ function getIngredientPriceReviewIssue(ingredient = {}) {
   const packSize = String(ingredient?.packSize || "").trim();
   const normalizedCostUnit = getNormalizedIngredientCostUnit(ingredient?.costUnit || inferMeasurementUnit(packSize));
   const pieceLikeUnit = normalizedCostUnit === "piece";
+  const sourceType = getIngredientSourceType(ingredient);
+  const soft1Backed = sourceType === "soft1";
+  const unitsInPack = normalizeUnitsInPack(ingredient?.unitsInPack, packSize);
+  const packNeedsReview =
+    soft1Backed &&
+    requiresImportPackSizeReview(
+      ingredient?.name || "",
+      normalizedCostUnit,
+      packSize,
+      ingredient?.sourceCode || "",
+      unitsInPack
+    );
+  if (packNeedsReview) {
+    return {
+      kind: "pack_size_unknown",
+      label: "Price review",
+      message: "This Soft1 ingredient is still priced as a piece, but the pack detail does not give us a concrete weight, volume, or count to normalize against.",
+    };
+  }
+
   if (
     pieceLikeUnit &&
     isLikelyMultipackSnackImport(
       ingredient?.name || "",
       normalizedCostUnit,
       unitCost,
-      ingredient?.sourceCode || ""
+      ingredient?.sourceCode || "",
+      unitsInPack
     )
   ) {
     return {
       kind: "likely_multipack",
       label: "Price review",
-      message: "This looks like a boxed or multipack snack product being priced as a single piece. Review the pack detail before trusting the price.",
+      message: "This looks like a boxed or multipack item being priced as a single piece, but the pack quantity is not explicit enough to trust the price yet.",
     };
   }
 
@@ -6132,7 +6335,12 @@ function getIngredientCatalogueDisplayName(ingredient = {}, catchupSuggestion = 
 
 function formatIngredientReferencePrice(referencePrice = null, compact = false) {
   if (!referencePrice?.unit || !Number.isFinite(referencePrice?.value)) return "";
-  const unitLabel = referencePrice.unit === "l" ? (compact ? "l" : "litre") : "kg";
+  const unitLabel =
+    referencePrice.unit === "l"
+      ? compact ? "l" : "litre"
+      : referencePrice.unit === "piece"
+        ? compact ? "pc" : "piece"
+        : "kg";
   return compact
     ? `${formatCurrency(referencePrice.value)}/${unitLabel}`
     : `${formatCurrency(referencePrice.value)} / ${unitLabel}`;
@@ -6149,8 +6357,15 @@ function parseNumericQuantity(value = 0) {
 
 function convertMeasurementQuantity(quantity = 0, fromUnit = "", toUnit = "") {
   const amount = parseNumericQuantity(quantity);
-  const from = String(fromUnit || "").trim().toLowerCase();
-  const to = String(toUnit || "").trim().toLowerCase();
+  const normalizeUnit = (value = "") => {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "pc" || normalized === "pcs" || normalized === "piece" || normalized === "pieces") {
+      return "piece";
+    }
+    return normalized;
+  };
+  const from = normalizeUnit(fromUnit);
+  const to = normalizeUnit(toUnit);
   if (!amount || !from || !to) return 0;
   if (from === to) return amount;
 
@@ -6188,6 +6403,16 @@ function calculateLineEstimatedCost(line, sourceRecord) {
     const convertedQuantity = convertMeasurementQuantity(quantity, lineUnit, basisUnit);
     if (convertedQuantity > 0) {
       return convertedQuantity * unitCost;
+    }
+
+    if (basisUnit === "piece") {
+      const perPieceBasis = getPerPieceMeasurementBasis(sourceRecord?.packSize || "");
+      if (perPieceBasis?.amount > 0) {
+        const convertedMeasurementQuantity = convertMeasurementQuantity(quantity, lineUnit, perPieceBasis.unit);
+        if (convertedMeasurementQuantity > 0) {
+          return (convertedMeasurementQuantity / perPieceBasis.amount) * unitCost;
+        }
+      }
     }
   }
 
@@ -7612,6 +7837,37 @@ function createRecipeDraftFromBatch(batch = {}, recipeCount = 0) {
   });
 }
 
+function createBatchDraftFromRecipe(recipe = {}, batchCount = 0) {
+  const emptyBatch = createEmptyBatch(batchCount);
+  const preservedNotes = [
+    String(recipe.prepNotes || "").trim() ? `Prep notes: ${String(recipe.prepNotes || "").trim()}` : "",
+    String(recipe.platingNotes || "").trim() ? `Plating notes: ${String(recipe.platingNotes || "").trim()}` : "",
+    String(recipe.chefNotes || "").trim() ? `Service notes: ${String(recipe.chefNotes || "").trim()}` : "",
+    `Converted from recipe ${String(recipe.code || recipe.id || "").trim()}. Review product type, yield, and publish as an ingredient when ready.`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const inferredYieldAmount = Math.max(1, numberValue(recipe.portions, 1));
+
+  return syncBatchRecord({
+    ...emptyBatch,
+    name: String(recipe.name || "").trim() || emptyBatch.name,
+    ingredientLines: (recipe.ingredientLines || []).map((line) => ({
+      ingredientId: String(line.ingredientId || "").trim(),
+      quantity: String(line.quantity || "").trim(),
+      unit: String(line.unit || "").trim(),
+      estimatedCost: Number(line.estimatedCost || 0),
+    })),
+    ingredientIds: dedupeTextList((recipe.ingredientLines || []).map((line) => line.ingredientId).filter(Boolean)),
+    yieldAmount: inferredYieldAmount,
+    yieldUnit: "portion",
+    costUnit: "portion",
+    methodSteps: (recipe.methodSteps || []).length ? [...recipe.methodSteps] : emptyBatch.methodSteps,
+    prepNotes: preservedNotes,
+  });
+}
+
 function createEmptyIngredient(ingredientCount = 0) {
   const nextNumber = ingredientCount + 1;
   return {
@@ -7632,6 +7888,7 @@ function createEmptyIngredient(ingredientCount = 0) {
     unitCost: 0,
     purchaseVatRate: 13,
     costUnit: "kg",
+    unitsInPack: 1,
     portionCostHint: 0,
     usedInRecipeIds: [],
     batchId: "",
@@ -7665,6 +7922,7 @@ function sanitizeIngredientDraft(draft, ingredientCount = 0) {
     unitCost: Number(draft?.unitCost || 0),
     purchaseVatRate: normalizeVatPercent(draft?.purchaseVatRate, fallback.purchaseVatRate),
     costUnit: String(draft?.costUnit || fallback.costUnit).trim() || fallback.costUnit,
+    unitsInPack: normalizeUnitsInPack(draft?.unitsInPack, draft?.packSize || fallback.packSize),
     portionCostHint: Number(draft?.portionCostHint || 0),
     archived: Boolean(draft?.archived),
     sharedRecordId: String(draft?.sharedRecordId || "").trim(),
@@ -7692,6 +7950,48 @@ function inferPricingUnit(label = "") {
   if (lineUnit === "ml" || lineUnit === "l") return "l";
   if (lineUnit === "piece") return "piece";
   return lineUnit || "kg";
+}
+
+function normalizeImportPricingUnit(unit = "", fallbackLabel = "") {
+  const normalizedUnit = String(unit || "").trim().toLowerCase();
+  if (normalizedUnit === "kg") return "kg";
+  if (normalizedUnit === "l" || normalizedUnit === "lt") return "l";
+  if (normalizedUnit === "pc" || normalizedUnit === "pcs" || normalizedUnit === "piece" || normalizedUnit === "pieces") {
+    return "piece";
+  }
+  return inferPricingUnit(fallbackLabel || unit);
+}
+
+function buildIngredientPricingGuidance(packSize = "", costUnit = "", pricingNote = "", unitsInPack = 1) {
+  const explicitNote = String(pricingNote || "").trim();
+  if (explicitNote) return explicitNote;
+
+  const normalizedCostUnit = String(costUnit || inferPricingUnit(packSize) || "").trim().toLowerCase();
+  if (normalizedCostUnit === "piece") {
+    const normalizedUnitsInPack = normalizeUnitsInPack(unitsInPack, packSize);
+    const perPieceBasis = getPerPieceMeasurementBasis(packSize);
+    if (normalizedUnitsInPack > 1) {
+      const unitLabel = `${formatEditableQuantity(normalizedUnitsInPack)} ${normalizedUnitsInPack === 1 ? "unit" : "units"}`;
+      if (perPieceBasis?.amount > 0) {
+        return `Enter the price per piece. This pack contains ${unitLabel}, and each piece is ${formatEditableQuantity(perPieceBasis.amount)} ${perPieceBasis.unit}.`;
+      }
+      return `Enter the price per piece. This pack contains ${unitLabel}.`;
+    }
+    if (perPieceBasis?.amount > 0) {
+      return `Enter the price per piece. One piece is ${formatEditableQuantity(perPieceBasis.amount)} ${perPieceBasis.unit}.`;
+    }
+    return "";
+  }
+
+  const parsedPack = parsePackSizeComponents(packSize);
+  if (!(parsedPack?.totalAmount > 0)) return "";
+  const normalizedPackUnit = String(parsedPack.totalUnit || "").trim().toLowerCase();
+
+  if (!normalizedCostUnit || normalizedPackUnit !== normalizedCostUnit) return "";
+  if (normalizedCostUnit !== "kg" && normalizedCostUnit !== "l") return "";
+
+  const normalizedAmountLabel = `${formatEditableQuantity(parsedPack.totalAmount)} ${normalizedCostUnit}`;
+  return `Enter the price per ${normalizedCostUnit}, not the pack price. This pack size normalizes to ${normalizedAmountLabel}.`;
 }
 
 function getMeasurementUnitFamily(unit = "") {
@@ -7863,6 +8163,82 @@ function resolveHydratedIngredientReviewStatus({
   }
 
   return "ready";
+}
+
+function doesHydratedIngredientMatchPublishedBatch({
+  ingredientName = "",
+  ingredientCode = "",
+  ingredientSourceCode = "",
+  batchRow = null,
+}) {
+  if (!batchRow) return false;
+
+  const ingredientNameKey = normalizeSharedKey(String(ingredientName || "").trim());
+  const ingredientCodeKeys = [
+    normalizeSharedKey(String(ingredientCode || "").trim()),
+    normalizeSharedKey(String(ingredientSourceCode || "").trim()),
+  ].filter(Boolean);
+  const batchNameKey = normalizeSharedKey(String(batchRow?.name || "").trim());
+  const batchCodeKey = normalizeSharedKey(String(batchRow?.selling_item_code || batchRow?.id || "").trim());
+
+  return Boolean(
+    (batchNameKey && ingredientNameKey && batchNameKey === ingredientNameKey) ||
+      (batchCodeKey && ingredientCodeKeys.includes(batchCodeKey))
+  );
+}
+
+function resolveHydratedIngredientComponentLink({
+  row = {},
+  ingredientName = "",
+  ingredientCode = "",
+  ingredientSourceCode = "",
+  batchRecipeRowsById = new Map(),
+  batchRecipeRowsByCode = new Map(),
+  batchRecipeRowsByName = new Map(),
+}) {
+  const flaggedAsBatch = String(row?.entry_type || "").trim() === "batch";
+  const explicitBatchId = String(row?.linked_recipe_id || "").trim();
+
+  let matchedBatchId = explicitBatchId && batchRecipeRowsById.has(explicitBatchId) ? explicitBatchId : "";
+  let matchedBatchRow = matchedBatchId ? batchRecipeRowsById.get(matchedBatchId) || null : null;
+
+  if (!matchedBatchId && flaggedAsBatch) {
+    const codeKey = normalizeSharedKey(String(ingredientCode || ingredientSourceCode || "").trim());
+    const nameKey = normalizeSharedKey(String(ingredientName || "").trim());
+    const batchIdFromCode = codeKey ? batchRecipeRowsByCode.get(codeKey) || "" : "";
+    const batchIdFromName = nameKey ? batchRecipeRowsByName.get(nameKey) || "" : "";
+    matchedBatchId = batchIdFromCode || batchIdFromName;
+    matchedBatchRow = matchedBatchId ? batchRecipeRowsById.get(matchedBatchId) || null : null;
+  }
+
+  const isTruePublishedComponent = doesHydratedIngredientMatchPublishedBatch({
+    ingredientName,
+    ingredientCode,
+    ingredientSourceCode,
+    batchRow: matchedBatchRow,
+  });
+
+  if (isTruePublishedComponent) {
+    return {
+      isPublishedComponent: true,
+      batchId: matchedBatchId,
+      sourceRecordLabel: "Published from component",
+    };
+  }
+
+  if (flaggedAsBatch || explicitBatchId) {
+    return {
+      isPublishedComponent: false,
+      batchId: "",
+      sourceRecordLabel: "Legacy extracted ingredient",
+    };
+  }
+
+  return {
+    isPublishedComponent: false,
+    batchId: "",
+    sourceRecordLabel: "Shared ingredients",
+  };
 }
 
 function resolvePublishedIngredientCode(batch = {}, ingredients = [], currentIngredientId = "") {
@@ -8331,6 +8707,7 @@ function App() {
   );
   const [userSyncMessage, setUserSyncMessage] = useState("");
   const [userSyncState, setUserSyncState] = useState("idle");
+  const [ingredientUnitsInPackColumnAvailable, setIngredientUnitsInPackColumnAvailable] = useState(true);
   const [ingredientWorkspaceView, setIngredientWorkspaceView] = useState("catalogue");
   const [recipeEditorStep, setRecipeEditorStep] = useState("basics");
   const [batchEditorStep, setBatchEditorStep] = useState("basics");
@@ -8341,6 +8718,7 @@ function App() {
     attachToRecipeId: "",
     attachToBatchId: "",
     openRecordAfterSave: true,
+    saving: false,
   });
   const [ingredientSubstitutionModal, setIngredientSubstitutionModal] = useState({
     isOpen: false,
@@ -8389,7 +8767,9 @@ function App() {
   const [ingredientCodeAlerts, setIngredientCodeAlerts] = useState({});
   const [ingredientSharedSyncState, setIngredientSharedSyncState] = useState({});
   const [ingredientArchiveColumnAvailable, setIngredientArchiveColumnAvailable] = useState(true);
+  const [ingredientCostUnitColumnAvailable, setIngredientCostUnitColumnAvailable] = useState(true);
   const [recipeServiceSuitabilityColumnAvailable, setRecipeServiceSuitabilityColumnAvailable] = useState(true);
+  const [recipeExtendedNotesColumnsAvailable, setRecipeExtendedNotesColumnsAvailable] = useState(true);
   const [menuLineDescriptionColumnAvailable, setMenuLineDescriptionColumnAvailable] = useState(true);
   const [venueExtendedColumnsAvailable, setVenueExtendedColumnsAvailable] = useState(true);
   const [ingredientTradeCategoryState, setIngredientTradeCategoryState] = useState(() =>
@@ -9542,7 +9922,14 @@ function App() {
     );
   };
 
-  const buildSharedIngredientPayload = (ingredient, { includeArchived = ingredientArchiveColumnAvailable } = {}) => {
+  const buildSharedIngredientPayload = (
+    ingredient,
+    {
+      includeArchived = ingredientArchiveColumnAvailable,
+      includeCostUnit = ingredientCostUnitColumnAvailable,
+      includeUnitsInPack = ingredientUnitsInPackColumnAvailable,
+    } = {}
+  ) => {
     const payload = {
       ingredient_name: String(ingredient.name || "").trim(),
       ingredient_item_code: String(
@@ -9562,6 +9949,14 @@ function App() {
       is_locked: getIngredientSourceType(ingredient) === "soft1",
     };
 
+    if (includeCostUnit) {
+      payload.cost_unit = String(ingredient.costUnit || "").trim() || null;
+    }
+
+    if (includeUnitsInPack) {
+      payload.units_in_pack = Number(ingredient.unitsInPack || 1);
+    }
+
     if (includeArchived) {
       payload.is_archived = Boolean(ingredient.archived);
     }
@@ -9574,9 +9969,27 @@ function App() {
     return normalized.includes("is_archived") && normalized.includes("ingredients");
   };
 
+  const isMissingIngredientCostUnitColumnError = (message = "") => {
+    const normalized = String(message || "").toLowerCase();
+    return normalized.includes("cost_unit") && normalized.includes("ingredients");
+  };
+
+  const isMissingIngredientUnitsInPackColumnError = (message = "") => {
+    const normalized = String(message || "").toLowerCase();
+    return normalized.includes("units_in_pack") && normalized.includes("ingredients");
+  };
+
   const isMissingRecipeServiceSuitabilityColumnError = (message = "") => {
     const normalized = String(message || "").toLowerCase();
     return normalized.includes("service_suitability") && normalized.includes("recipes");
+  };
+
+  const isMissingRecipeExtendedNotesColumnError = (message = "") => {
+    const normalized = String(message || "").toLowerCase();
+    return (
+      normalized.includes("recipes") &&
+      ["menu_description", "prep_notes", "plating_notes", "chef_notes"].some((column) => normalized.includes(column))
+    );
   };
 
   const isMissingMenuLineDescriptionColumnError = (message = "") => {
@@ -9605,8 +10018,16 @@ function App() {
   };
 
   const runSharedIngredientMutation = async ({ mode = "update", ingredient, sharedRecordId = "" }) => {
-    const execute = async (includeArchived) => {
-      const payload = buildSharedIngredientPayload(ingredient, { includeArchived });
+    const execute = async (
+      includeArchived,
+      includeCostUnit = ingredientCostUnitColumnAvailable,
+      includeUnitsInPack = ingredientUnitsInPackColumnAvailable
+    ) => {
+      const payload = buildSharedIngredientPayload(ingredient, {
+        includeArchived,
+        includeCostUnit,
+        includeUnitsInPack,
+      });
       if (mode === "insert") {
         return supabase.from("ingredients").insert(payload).select("*").single();
       }
@@ -9618,10 +10039,29 @@ function App() {
         .single();
     };
 
-    let result = await execute(ingredientArchiveColumnAvailable);
-    if (result?.error && ingredientArchiveColumnAvailable && isMissingIngredientArchivedColumnError(result.error.message || "")) {
+    let includeArchived = ingredientArchiveColumnAvailable;
+    let includeCostUnit = ingredientCostUnitColumnAvailable;
+    let includeUnitsInPack = ingredientUnitsInPackColumnAvailable;
+
+    let result = await execute(includeArchived, includeCostUnit, includeUnitsInPack);
+    if (result?.error && includeArchived && isMissingIngredientArchivedColumnError(result.error.message || "")) {
       setIngredientArchiveColumnAvailable(false);
-      result = await execute(false);
+      includeArchived = false;
+      result = await execute(includeArchived, includeCostUnit, includeUnitsInPack);
+    }
+    if (result?.error && includeCostUnit && isMissingIngredientCostUnitColumnError(result.error.message || "")) {
+      setIngredientCostUnitColumnAvailable(false);
+      includeCostUnit = false;
+      result = await execute(includeArchived, includeCostUnit, includeUnitsInPack);
+    }
+    if (
+      result?.error &&
+      includeUnitsInPack &&
+      isMissingIngredientUnitsInPackColumnError(result.error.message || "")
+    ) {
+      setIngredientUnitsInPackColumnAvailable(false);
+      includeUnitsInPack = false;
+      result = await execute(includeArchived, includeCostUnit, includeUnitsInPack);
     }
     return result;
   };
@@ -9875,6 +10315,7 @@ function App() {
     recordType = "dish",
     {
       includeServiceSuitability = recipeServiceSuitabilityColumnAvailable,
+      includeExtendedNotes = recipeExtendedNotesColumnsAvailable,
       ingredientSource = recordMaps.ingredient,
       batchSource = recordMaps.batch,
     } = {}
@@ -9923,6 +10364,13 @@ function App() {
 
     if (includeServiceSuitability && recordType === "dish") {
       payload.service_suitability = dedupeTextList(record.serviceSuitability || []);
+    }
+
+    if (includeExtendedNotes) {
+      payload.menu_description = recordType === "dish" ? String(record.menuDescription || "").trim() || null : null;
+      payload.prep_notes = String(record.prepNotes || "").trim() || null;
+      payload.plating_notes = recordType === "dish" ? String(record.platingNotes || "").trim() || null : null;
+      payload.chef_notes = recordType === "dish" ? String(record.chefNotes || "").trim() || null : null;
     }
 
     return payload;
@@ -10054,9 +10502,13 @@ function App() {
           ingredientSourceForSync.set(ingredientId, syncedIngredient);
         }
 
-        const executeRecipeUpsert = async (includeServiceSuitability = recipeServiceSuitabilityColumnAvailable) => {
+        const executeRecipeUpsert = async (
+          includeServiceSuitability = recipeServiceSuitabilityColumnAvailable,
+          includeExtendedNotes = recipeExtendedNotesColumnsAvailable
+        ) => {
           const recipePayload = buildSharedRecipePayload(syncedRecord, recordType, {
             includeServiceSuitability,
+            includeExtendedNotes,
             ingredientSource: ingredientSourceForSync,
             batchSource: currentRecordMaps.batch,
           });
@@ -10094,9 +10546,13 @@ function App() {
           ingredientSourceForSync,
           currentRecordMaps.batch
         );
-        const executeRecipeBundleRpc = async (includeServiceSuitability = recipeServiceSuitabilityColumnAvailable) => {
+        const executeRecipeBundleRpc = async (
+          includeServiceSuitability = recipeServiceSuitabilityColumnAvailable,
+          includeExtendedNotes = recipeExtendedNotesColumnsAvailable
+        ) => {
           const recipePayload = buildSharedRecipePayload(syncedRecord, recordType, {
             includeServiceSuitability,
+            includeExtendedNotes,
             ingredientSource: ingredientSourceForSync,
             batchSource: currentRecordMaps.batch,
           });
@@ -10130,14 +10586,27 @@ function App() {
 
         let persistedRecipeRow = null;
         let persistedComponentRows = null;
-        let bundleResult = await executeRecipeBundleRpc();
+        let includeServiceSuitability = recipeServiceSuitabilityColumnAvailable;
+        let includeExtendedNotes = recipeExtendedNotesColumnsAvailable;
+
+        let bundleResult = await executeRecipeBundleRpc(includeServiceSuitability, includeExtendedNotes);
         if (
           bundleResult.error &&
-          recipeServiceSuitabilityColumnAvailable &&
+          includeServiceSuitability &&
           isMissingRecipeServiceSuitabilityColumnError(bundleResult.error.message || "")
         ) {
           setRecipeServiceSuitabilityColumnAvailable(false);
-          bundleResult = await executeRecipeBundleRpc(false);
+          includeServiceSuitability = false;
+          bundleResult = await executeRecipeBundleRpc(includeServiceSuitability, includeExtendedNotes);
+        }
+        if (
+          bundleResult.error &&
+          includeExtendedNotes &&
+          isMissingRecipeExtendedNotesColumnError(bundleResult.error.message || "")
+        ) {
+          setRecipeExtendedNotesColumnsAvailable(false);
+          includeExtendedNotes = false;
+          bundleResult = await executeRecipeBundleRpc(includeServiceSuitability, includeExtendedNotes);
         }
         if (bundleResult.error && String(bundleResult.error.message || "").includes("STALE_RECIPE_WRITE")) {
           const conflictMessage =
@@ -10193,14 +10662,33 @@ function App() {
             return false;
           }
 
-          let { data: fallbackRecipeRow, error: recipeError, conflict: recipeConflict } = await executeRecipeUpsert();
+          let { data: fallbackRecipeRow, error: recipeError, conflict: recipeConflict } = await executeRecipeUpsert(
+            includeServiceSuitability,
+            includeExtendedNotes
+          );
           if (
             recipeError &&
-            recipeServiceSuitabilityColumnAvailable &&
+            includeServiceSuitability &&
             isMissingRecipeServiceSuitabilityColumnError(recipeError.message || "")
           ) {
             setRecipeServiceSuitabilityColumnAvailable(false);
-            ({ data: fallbackRecipeRow, error: recipeError, conflict: recipeConflict } = await executeRecipeUpsert(false));
+            includeServiceSuitability = false;
+            ({ data: fallbackRecipeRow, error: recipeError, conflict: recipeConflict } = await executeRecipeUpsert(
+              includeServiceSuitability,
+              includeExtendedNotes
+            ));
+          }
+          if (
+            recipeError &&
+            includeExtendedNotes &&
+            isMissingRecipeExtendedNotesColumnError(recipeError.message || "")
+          ) {
+            setRecipeExtendedNotesColumnsAvailable(false);
+            includeExtendedNotes = false;
+            ({ data: fallbackRecipeRow, error: recipeError, conflict: recipeConflict } = await executeRecipeUpsert(
+              includeServiceSuitability,
+              includeExtendedNotes
+            ));
           }
           if (recipeConflict) {
             const conflictMessage =
@@ -10932,6 +11420,14 @@ function App() {
         sourceType: getSharedSoft1Code(data) ? "soft1" : "manual",
         soft1Status: getSharedSoft1Code(data) ? "in_soft1" : "pending",
         purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, current.purchaseVatRate ?? 13),
+        costUnit: normalizeImportPricingUnit(
+          String(data?.cost_unit || current.costUnit || "").trim(),
+          String(data?.pack_size || current.packSize || "").trim()
+        ),
+        unitsInPack: normalizeUnitsInPack(
+          data?.units_in_pack ?? current.unitsInPack,
+          String(data?.pack_size || current.packSize || "").trim()
+        ),
         lastImportedAt: String(data?.last_updated || current.lastImportedAt).trim(),
         sharedUpdatedAt: nextSharedUpdatedAt,
         sharedDirty: false,
@@ -11005,6 +11501,14 @@ function App() {
       sourceType: getSharedSoft1Code(data) ? "soft1" : "manual",
       soft1Status: getSharedSoft1Code(data) ? "in_soft1" : "pending",
       purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, ingredient.purchaseVatRate ?? 13),
+      costUnit: normalizeImportPricingUnit(
+        String(data?.cost_unit || ingredient.costUnit || "").trim(),
+        String(data?.pack_size || ingredient.packSize || "").trim()
+      ),
+      unitsInPack: normalizeUnitsInPack(
+        data?.units_in_pack ?? ingredient.unitsInPack,
+        String(data?.pack_size || ingredient.packSize || "").trim()
+      ),
       lastImportedAt: String(data?.last_updated || ingredient.lastImportedAt).trim(),
       sharedRecordId: nextSharedRecordId,
       sharedUpdatedAt: nextSharedUpdatedAt,
@@ -11049,11 +11553,38 @@ function App() {
   const hydrateSharedIngredientRowToV2 = (row = {}) => {
     const sharedRecordId = String(row.id || "").trim();
     const sharedUpdatedAt = String(row.updated_at || row.last_updated || "").trim();
-    const isPublishedComponent = String(row.entry_type || "").trim() === "batch";
     const rawIngredientCode = String(row.ingredient_item_code || "").trim();
-    const hasBchIngredientCode = hasBchCode(rawIngredientCode || row.id || "");
     const soft1SourceCode = getSharedSoft1Code(row);
     const internalCode = getSharedInternalIngredientCode(row);
+    const ingredientName = String(row.ingredient_name || "").trim() || "Untitled ingredient";
+    const batchRecipeRowsById = new Map(
+      (batchesRef.current || []).map((batch) => [
+        String(batch.id || "").trim(),
+        {
+          id: String(batch.id || "").trim(),
+          name: String(batch.name || "").trim(),
+          selling_item_code: String(batch.code || batch.id || "").trim(),
+        },
+      ])
+    );
+    const batchRecipeRowsByCode = new Map();
+    const batchRecipeRowsByName = new Map();
+    Array.from(batchRecipeRowsById.values()).forEach((batchRow) => {
+      const codeKey = normalizeSharedKey(String(batchRow.selling_item_code || batchRow.id || "").trim());
+      const nameKey = normalizeSharedKey(String(batchRow.name || "").trim());
+      if (codeKey && !batchRecipeRowsByCode.has(codeKey)) batchRecipeRowsByCode.set(codeKey, String(batchRow.id));
+      if (nameKey && !batchRecipeRowsByName.has(nameKey)) batchRecipeRowsByName.set(nameKey, String(batchRow.id));
+    });
+    const resolvedComponentLink = resolveHydratedIngredientComponentLink({
+      row,
+      ingredientName,
+      ingredientCode: internalCode || rawIngredientCode || String(row.id || "").trim(),
+      ingredientSourceCode: soft1SourceCode,
+      batchRecipeRowsById,
+      batchRecipeRowsByCode,
+      batchRecipeRowsByName,
+    });
+    const hasBchIngredientCode = hasBchCode(rawIngredientCode || row.id || "");
     const hasSoft1SourceCode = Boolean(soft1SourceCode);
     const storedReviewState = sharedRecordId ? ingredientMasterReviewState[sharedRecordId] || null : null;
     const storedTradeCategory = sharedRecordId ? ingredientTradeCategoryState[sharedRecordId]?.value || "" : "";
@@ -11065,7 +11596,7 @@ function App() {
 
     return {
       id: String(row.id || `ing-${Date.now()}`),
-      name: String(row.ingredient_name || "").trim() || "Untitled ingredient",
+      name: ingredientName,
       code: internalCode || soft1SourceCode || String(row.id || "").trim(),
       sourceCode: hasSoft1SourceCode ? soft1SourceCode : "",
       aliases: dedupeTextList(storedReviewState?.aliases || []).filter(Boolean),
@@ -11077,14 +11608,15 @@ function App() {
       tradeCategory: categoryFields.tradeCategory,
       sourceType: hasSoft1SourceCode ? "soft1" : "manual",
       soft1Status: hasSoft1SourceCode ? "in_soft1" : "pending",
-      sourceRecordLabel: isPublishedComponent ? "Published from component" : "Shared ingredients",
+      sourceRecordLabel: resolvedComponentLink.sourceRecordLabel,
       lastImportedAt: String(row.last_updated || "").trim(),
       unitCost: numberValue(row.unit_cost),
       purchaseVatRate: normalizeVatPercent(row.purchase_vat_rate, 13),
-      costUnit: inferPricingUnit(String(row.pack_size || "").trim()),
+      costUnit: normalizeImportPricingUnit(String(row.cost_unit || "").trim(), String(row.pack_size || "").trim()),
+      unitsInPack: normalizeUnitsInPack(row.units_in_pack, String(row.pack_size || "").trim()),
       portionCostHint: numberValue(row.unit_cost),
       usedInRecipeIds: [],
-      batchId: String(row.linked_recipe_id || "").trim(),
+      batchId: resolvedComponentLink.batchId,
       archived: false,
       notes: "",
       needsSubstitutionReview: Boolean(
@@ -11095,7 +11627,7 @@ function App() {
       sharedUpdatedAt,
       masterReviewStatus: resolveHydratedIngredientReviewStatus({
         storedReviewState,
-        isPublishedComponent,
+        isPublishedComponent: resolvedComponentLink.isPublishedComponent,
         hasBchIngredientCode,
         hasSoft1SourceCode,
       }),
@@ -11134,7 +11666,11 @@ function App() {
         tradeCategory: row.tradeCategory || existingTarget.tradeCategory || "",
         unitCost: row.averagePrice > 0 ? row.averagePrice : existingTarget.unitCost,
         lastImportPriceMissing: !(Number(row.averagePrice || 0) > 0),
-        costUnit: inferPricingUnit(row.packSize || existingTarget.packSize || ""),
+        costUnit: normalizeImportPricingUnit(
+          String(row.pricingUnit || existingTarget.costUnit || "").trim(),
+          String(row.packSize || existingTarget.packSize || "").trim()
+        ),
+        unitsInPack: normalizeUnitsInPack(row.unitsInPack ?? existingTarget.unitsInPack, row.packSize || existingTarget.packSize || ""),
         sourceType: existingTarget.sourceType,
         soft1Status: existingTarget.soft1Status,
         sourceRecordLabel: row.sourceRecordLabel || existingTarget.sourceRecordLabel,
@@ -11189,6 +11725,14 @@ function App() {
                 sourceType: getSharedSoft1Code(data) ? "soft1" : "manual",
                 soft1Status: getSharedSoft1Code(data) ? "in_soft1" : "pending",
                 purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, ingredient.purchaseVatRate ?? 13),
+                costUnit: normalizeImportPricingUnit(
+                  String(data?.cost_unit || ingredient.costUnit || "").trim(),
+                  String(data?.pack_size || ingredient.packSize || "").trim()
+                ),
+                unitsInPack: normalizeUnitsInPack(
+                  data?.units_in_pack ?? ingredient.unitsInPack,
+                  String(data?.pack_size || ingredient.packSize || "").trim()
+                ),
                 lastImportedAt: String(data?.last_updated || ingredient.lastImportedAt).trim(),
                 lastImportPriceMissing: !(Number(row.averagePrice || 0) > 0),
                 sharedUpdatedAt: nextSharedUpdatedAt,
@@ -12140,7 +12684,7 @@ function App() {
   };
 
   const updateIngredientField = (ingredientId, field, value) => {
-    const numericFields = new Set(["unitCost", "purchaseVatRate", "portionCostHint"]);
+    const numericFields = new Set(["unitCost", "purchaseVatRate", "portionCostHint", "unitsInPack"]);
     const existingIngredient = ingredientMaster.find((item) => item.id === ingredientId) || null;
     let ingredientForReviewShift = null;
     let ingredientStatusForRecipeSync = "";
@@ -12157,6 +12701,10 @@ function App() {
           ? { sharedDirty: true, masterReviewStatus: getIngredientMasterReviewStatus(ingredient) === "ready" ? "review" : ingredient.masterReviewStatus }
           : {}),
       };
+
+      if (field === "packSize" && !(Number(ingredient.unitsInPack || 0) > 1)) {
+        nextIngredient.unitsInPack = normalizeUnitsInPack("", String(value || "").trim());
+      }
 
       if (field === "sourceCode" || field === "sourceType") {
         if (isIngredientCodeLocked(nextIngredient)) {
@@ -12256,6 +12804,7 @@ function App() {
       attachToRecipeId,
       attachToBatchId,
       openRecordAfterSave,
+      saving: false,
     });
   };
 
@@ -12263,6 +12812,7 @@ function App() {
     setIngredientMakerModal((current) => ({
       ...current,
       isOpen: false,
+      saving: false,
     }));
   };
 
@@ -12321,9 +12871,13 @@ function App() {
         (() => {
           const nextDraft = {
           ...current.draft,
-          [field]: ["unitCost", "purchaseVatRate", "portionCostHint"].includes(field) ? Number(value || 0) : value,
+          [field]: ["unitCost", "purchaseVatRate", "portionCostHint", "unitsInPack"].includes(field) ? Number(value || 0) : value,
           ...(field === "sourceType" ? { soft1Status: value === "soft1" ? "in_soft1" : "pending" } : {}),
           };
+
+          if (field === "packSize" && !(Number(current.draft?.unitsInPack || 0) > 1)) {
+            nextDraft.unitsInPack = normalizeUnitsInPack("", String(value || "").trim());
+          }
 
           if ((field === "sourceCode" || field === "sourceType") && isIngredientCodeLocked(nextDraft)) {
             nextDraft.code = String(nextDraft.sourceCode || "").trim();
@@ -12383,54 +12937,144 @@ function App() {
     }));
   };
 
-  const saveIngredientMaker = () => {
+  const saveIngredientMaker = async () => {
+    if (ingredientMakerModal.saving) return;
+
     const nextIngredient = sanitizeIngredientDraft(ingredientMakerModal.draft, ingredientMaster.length);
     const codeConflict = getIngredientCodeConflict(ingredientMaster, nextIngredient.code, nextIngredient.id);
     if (codeConflict) {
+      if (typeof window !== "undefined") {
+        window.alert(`Ingredient code "${nextIngredient.code}" is already used by ${codeConflict.name}.`);
+      }
       return;
     }
 
-    setIngredientMaster((current) => [nextIngredient, ...current]);
+    setIngredientMakerModal((current) => ({
+      ...current,
+      saving: true,
+    }));
+
+    let savedIngredient = nextIngredient;
+
+    if (supabaseEnabled && supabase) {
+      const { data, error } = await runSharedIngredientMutation({
+        mode: "insert",
+        ingredient: nextIngredient,
+      });
+
+      if (error) {
+        setIngredientMakerModal((current) => ({
+          ...current,
+          saving: false,
+        }));
+        if (typeof window !== "undefined") {
+          window.alert(error.message || "Could not create this ingredient in shared data.");
+        }
+        return;
+      }
+
+      const nextSharedRecordId = String(data?.id || nextIngredient.id || "").trim();
+      const nextSharedUpdatedAt = String(data?.updated_at || data?.last_updated || getTodayImportDate()).trim();
+      savedIngredient = sanitizeIngredientDraft(
+        {
+          ...nextIngredient,
+          id: nextSharedRecordId || nextIngredient.id,
+          name: String(data?.ingredient_name || nextIngredient.name).trim(),
+          code: String(getSharedInternalIngredientCode(data) || getSharedSoft1Code(data) || nextIngredient.code).trim(),
+          sourceCode: String(getSharedSoft1Code(data) || "").trim(),
+          packSize: String(data?.pack_size || nextIngredient.packSize).trim(),
+          supplier: String(data?.supplier || "").trim(),
+          category: String(data?.category || nextIngredient.category).trim(),
+          sourceType: getSharedSoft1Code(data) ? "soft1" : "manual",
+          soft1Status: getSharedSoft1Code(data) ? "in_soft1" : "pending",
+          purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, nextIngredient.purchaseVatRate ?? 13),
+          costUnit: normalizeImportPricingUnit(
+            String(data?.cost_unit || nextIngredient.costUnit || "").trim(),
+            String(data?.pack_size || nextIngredient.packSize || "").trim()
+          ),
+          unitsInPack: normalizeUnitsInPack(
+            data?.units_in_pack ?? nextIngredient.unitsInPack,
+            String(data?.pack_size || nextIngredient.packSize || "").trim()
+          ),
+          lastImportedAt: String(data?.last_updated || nextIngredient.lastImportedAt || getTodayImportDate()).trim(),
+          sharedRecordId: nextSharedRecordId,
+          sharedUpdatedAt: nextSharedUpdatedAt,
+          archived: Boolean(data?.is_archived),
+          sharedDirty: false,
+          masterReviewStatus: "ready",
+          status: "ready",
+          needsReviewFlag: false,
+        },
+        ingredientMaster.length
+      );
+
+      if (savedIngredient.sharedRecordId && String(savedIngredient.tradeCategory || "").trim()) {
+        await persistIngredientTradeCategoryForRecord(savedIngredient.id, savedIngredient.tradeCategory);
+      }
+
+      if (savedIngredient.sharedRecordId) {
+        const nextReviewEntry = withIngredientReviewNamingContext(
+          {
+            status: "ready",
+            sharedUpdatedAt: nextSharedUpdatedAt,
+            flagged: Boolean(savedIngredient.needsSubstitutionReview),
+            forReview: false,
+          },
+          savedIngredient,
+          soft1SourceRows,
+          ingredientMasterReviewState[savedIngredient.sharedRecordId] || {}
+        );
+        setIngredientMasterReviewState((current) => ({
+          ...current,
+          [savedIngredient.sharedRecordId]: nextReviewEntry,
+        }));
+        await persistIngredientMasterReviewStateEntry(savedIngredient.sharedRecordId, nextReviewEntry);
+      }
+    }
+
+    setIngredientMaster((current) => [savedIngredient, ...current]);
+    setIngredientSharedSyncState((current) => ({
+      ...current,
+      [savedIngredient.id]: "saved",
+    }));
 
     if (ingredientMakerModal.attachToRecipeId) {
-      setRecipesState((current) =>
-        current.map((recipe) => {
-          if (recipe.id !== ingredientMakerModal.attachToRecipeId) return recipe;
-          const alreadyLinked = (recipe.ingredientLines || []).some((line) => line.ingredientId === nextIngredient.id);
-          if (alreadyLinked) return recipe;
+      updateRecipe(ingredientMakerModal.attachToRecipeId, (recipe) => {
+        const alreadyLinked = (recipe.ingredientLines || []).some((line) => line.ingredientId === savedIngredient.id);
+        if (alreadyLinked) return recipe;
 
-          return syncRecipeRelations({
-            ...recipe,
-            ingredientLines: [
-              ...(recipe.ingredientLines || []),
-              {
-                ingredientId: nextIngredient.id,
-                quantity: "1",
-                unit: inferMeasurementUnit(nextIngredient.packSize),
-                estimatedCost: Number(nextIngredient.portionCostHint || 0),
-              },
-            ],
-          });
-        })
-      );
+        return {
+          ...recipe,
+          ingredientLines: [
+            ...(recipe.ingredientLines || []),
+            {
+              ingredientId: savedIngredient.id,
+              quantity: "1",
+              unit: inferMeasurementUnit(savedIngredient.packSize),
+              estimatedCost: Number(savedIngredient.portionCostHint || 0),
+            },
+          ],
+        };
+      });
     }
 
     if (ingredientMakerModal.attachToBatchId) {
       setBatchesState((current) =>
         current.map((batch) => {
           if (batch.id !== ingredientMakerModal.attachToBatchId) return batch;
-          const alreadyLinked = (batch.ingredientLines || []).some((line) => line.ingredientId === nextIngredient.id);
+          const alreadyLinked = (batch.ingredientLines || []).some((line) => line.ingredientId === savedIngredient.id);
           if (alreadyLinked) return batch;
 
           return syncBatchRecord({
             ...batch,
+            sharedDirty: true,
             ingredientLines: [
               ...(batch.ingredientLines || []),
               {
-                ingredientId: nextIngredient.id,
+                ingredientId: savedIngredient.id,
                 quantity: "1",
-                unit: inferMeasurementUnit(nextIngredient.packSize),
-                estimatedCost: Number(nextIngredient.portionCostHint || 0),
+                unit: inferMeasurementUnit(savedIngredient.packSize),
+                estimatedCost: Number(savedIngredient.portionCostHint || 0),
               },
             ],
           });
@@ -12446,7 +13090,7 @@ function App() {
       setBatchEditorStep("components");
     } else if (ingredientMakerModal.openRecordAfterSave && !ingredientMakerModal.attachToRecipeId) {
       setSelectedImportRowId("");
-      setSelectedRecord({ type: "ingredient", id: nextIngredient.id });
+      setSelectedRecord({ type: "ingredient", id: savedIngredient.id });
       setActiveSection("ingredients");
       setIngredientWorkspaceView("catalogue");
     }
@@ -12536,10 +13180,10 @@ function App() {
     const targetIngredient = ingredientMergeTarget;
     if (!sourceIngredient || !targetIngredient || sourceIngredient.id === targetIngredient.id) return;
 
-    if (sourceIngredient.batchId || targetIngredient.batchId) {
+    if (sourceIngredient.batchId) {
       if (typeof window !== "undefined") {
         window.alert(
-          "Published component ingredients should be cleaned up from the component screen first. Master-list merge is only available for normal ingredients right now."
+          "Published component-derived ingredients should stay as the keeper. Merge the normal/manual duplicate into that keeper instead of archiving the component-derived ingredient from here."
         );
       }
       return;
@@ -12776,6 +13420,14 @@ function App() {
           packSize: String(data?.pack_size || current.packSize).trim(),
           supplier: String(data?.supplier || "").trim(),
           category: String(data?.category || current.category).trim(),
+          costUnit: normalizeImportPricingUnit(
+            String(data?.cost_unit || current.costUnit || "").trim(),
+            String(data?.pack_size || current.packSize || "").trim()
+          ),
+          unitsInPack: normalizeUnitsInPack(
+            data?.units_in_pack ?? current.unitsInPack,
+            String(data?.pack_size || current.packSize || "").trim()
+          ),
           lastImportedAt: String(data?.last_updated || current.lastImportedAt).trim(),
           sharedUpdatedAt: String(data?.updated_at || data?.last_updated || current.sharedUpdatedAt || "").trim(),
           archived: Boolean(data?.is_archived),
@@ -12800,6 +13452,14 @@ function App() {
           packSize: String(data?.pack_size || current.packSize).trim(),
           supplier: String(data?.supplier || "").trim(),
           category: String(data?.category || current.category).trim(),
+          costUnit: normalizeImportPricingUnit(
+            String(data?.cost_unit || current.costUnit || "").trim(),
+            String(data?.pack_size || current.packSize || "").trim()
+          ),
+          unitsInPack: normalizeUnitsInPack(
+            data?.units_in_pack ?? current.unitsInPack,
+            String(data?.pack_size || current.packSize || "").trim()
+          ),
           lastImportedAt: String(data?.last_updated || current.lastImportedAt).trim(),
           sharedUpdatedAt: String(data?.updated_at || data?.last_updated || current.sharedUpdatedAt || "").trim(),
           archived: Boolean(data?.is_archived),
@@ -12979,6 +13639,73 @@ function App() {
     setSelectedRecord({ type: "recipe", id: nextRecipe.id });
     setActiveSection("recipes");
     setRecipeEditorStep("basics");
+  };
+
+  const convertRecipeToBatchDraft = (recipeId) => {
+    const recipe = recipes.find((item) => item.id === recipeId);
+    if (!recipe) return;
+
+    const existingBatch =
+      recipe.convertedBatchId
+        ? batches.find((batch) => batch.id === recipe.convertedBatchId) || null
+        : null;
+
+    if (existingBatch) {
+      setSelectedImportRowId("");
+      setSelectedRecord({ type: "batch", id: existingBatch.id });
+      setActiveSection("batches");
+      setBatchEditorStep("basics");
+      return;
+    }
+
+    const menuLinks = (recipe.menuIds || [])
+      .map((menuId) => recordMaps.menu.get(menuId))
+      .filter(Boolean);
+    const hasMenuLinks = menuLinks.length > 0;
+    const linkedMenuSummary = hasMenuLinks
+      ? [
+          "",
+          `This recipe is still linked to ${menuLinks.length} menu${menuLinks.length === 1 ? "" : "s"}:`,
+          ...menuLinks.slice(0, 8).map((menu) => `- ${menu.restaurant} · ${menu.service}`),
+          menuLinks.length > 8 ? `- and ${menuLinks.length - 8} more` : "",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : "";
+
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(
+        [
+          `Create a component draft from "${recipe.name}"?`,
+          "",
+          "This will:",
+          "- save a new component draft with the current ingredients and method",
+          hasMenuLinks
+            ? "- keep the recipe in place for menu review and move it back to Draft"
+            : "- archive the recipe so it leaves the recipe library but stays recoverable",
+          "- open the new component draft so you can review yield, product type, and publish it as an ingredient",
+          linkedMenuSummary,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      );
+      if (!confirmed) return;
+    }
+
+    const nextBatch = createBatchDraftFromRecipe(recipe, batches.length);
+
+    setBatches((current) => [nextBatch, ...current]);
+    updateRecipe(recipeId, (current) => ({
+      ...current,
+      convertedBatchId: nextBatch.id,
+      archived: hasMenuLinks ? Boolean(current.archived) : true,
+      status: "draft",
+    }), { scheduleSync: false });
+
+    setSelectedImportRowId("");
+    setSelectedRecord({ type: "batch", id: nextBatch.id });
+    setActiveSection("batches");
+    setBatchEditorStep("basics");
   };
 
   const markRecipeReady = (recipeId) => {
@@ -14509,6 +15236,11 @@ function App() {
             : "",
         ]),
         unitCost: Number(row.averagePrice || 0) > 0 ? Number(row.averagePrice) : liveTarget.unitCost,
+        costUnit: normalizeImportPricingUnit(
+          String(row.pricingUnit || liveTarget.costUnit || "").trim(),
+          String(row.packSize || liveTarget.packSize || "").trim()
+        ),
+        unitsInPack: normalizeUnitsInPack(row.unitsInPack ?? liveTarget.unitsInPack, row.packSize || liveTarget.packSize || ""),
         lastImportedAt: String(row.importedAt || liveTarget.lastImportedAt || getTodayImportDate()).trim(),
         sourceRecordLabel: String(row.sourceRecordLabel || liveTarget.sourceRecordLabel || "Soft1 import").trim(),
         lastImportPriceMissing: !(Number(row.averagePrice || 0) > 0),
@@ -14546,6 +15278,14 @@ function App() {
         supplier: String(data?.supplier || "").trim(),
         category: String(data?.category || updatedIngredient.category || "").trim(),
         purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, updatedIngredient.purchaseVatRate ?? 13),
+        costUnit: normalizeImportPricingUnit(
+          String(data?.cost_unit || updatedIngredient.costUnit || "").trim(),
+          String(data?.pack_size || updatedIngredient.packSize || "").trim()
+        ),
+        unitsInPack: normalizeUnitsInPack(
+          data?.units_in_pack ?? updatedIngredient.unitsInPack,
+          String(data?.pack_size || updatedIngredient.packSize || "").trim()
+        ),
         lastImportedAt: String(data?.last_updated || updatedIngredient.lastImportedAt).trim(),
         sharedUpdatedAt: String(data?.updated_at || data?.last_updated || updatedIngredient.sharedUpdatedAt || "").trim(),
         archived: Boolean(data?.is_archived),
@@ -14698,10 +15438,15 @@ function App() {
         const priceMissingFromImport = !(nextUnitCost > 0);
         const updatedIngredient = {
           ...matchedIngredient,
-          unitCost: nextUnitCost > 0 ? nextUnitCost : matchedIngredient.unitCost,
-          lastImportedAt: String(row.importedAt || matchedIngredient.lastImportedAt || getTodayImportDate()).trim(),
-          sourceRecordLabel: String(row.sourceRecordLabel || matchedIngredient.sourceRecordLabel || "Soft1 import").trim(),
-          lastImportPriceMissing: priceMissingFromImport,
+        unitCost: nextUnitCost > 0 ? nextUnitCost : matchedIngredient.unitCost,
+        costUnit: normalizeImportPricingUnit(
+          String(row.pricingUnit || matchedIngredient.costUnit || "").trim(),
+          String(row.packSize || matchedIngredient.packSize || "").trim()
+        ),
+        unitsInPack: normalizeUnitsInPack(row.unitsInPack ?? matchedIngredient.unitsInPack, row.packSize || matchedIngredient.packSize || ""),
+        lastImportedAt: String(row.importedAt || matchedIngredient.lastImportedAt || getTodayImportDate()).trim(),
+        sourceRecordLabel: String(row.sourceRecordLabel || matchedIngredient.sourceRecordLabel || "Soft1 import").trim(),
+        lastImportPriceMissing: priceMissingFromImport,
           masterReviewStatus: "ready",
           needsReviewFlag: false,
           sharedDirty: Boolean(matchedIngredient.sharedRecordId),
@@ -14733,6 +15478,14 @@ function App() {
             supplier: String(data?.supplier || "").trim(),
             category: String(data?.category || updatedIngredient.category || "").trim(),
             purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, updatedIngredient.purchaseVatRate ?? 13),
+            costUnit: normalizeImportPricingUnit(
+              String(data?.cost_unit || updatedIngredient.costUnit || "").trim(),
+              String(data?.pack_size || updatedIngredient.packSize || "").trim()
+            ),
+            unitsInPack: normalizeUnitsInPack(
+              data?.units_in_pack ?? updatedIngredient.unitsInPack,
+              String(data?.pack_size || updatedIngredient.packSize || "").trim()
+            ),
             lastImportedAt: String(data?.last_updated || updatedIngredient.lastImportedAt).trim(),
             sharedUpdatedAt: nextSharedUpdatedAt,
             archived: Boolean(data?.is_archived),
@@ -15177,6 +15930,14 @@ function App() {
           packSize: String(data?.pack_size || current.packSize).trim(),
           supplier: String(data?.supplier || "").trim(),
           category: String(data?.category || current.category).trim(),
+          costUnit: normalizeImportPricingUnit(
+            String(data?.cost_unit || current.costUnit || "").trim(),
+            String(data?.pack_size || current.packSize || "").trim()
+          ),
+          unitsInPack: normalizeUnitsInPack(
+            data?.units_in_pack ?? current.unitsInPack,
+            String(data?.pack_size || current.packSize || "").trim()
+          ),
           sharedUpdatedAt: nextSharedUpdatedAt,
           lastImportedAt: String(data?.last_updated || current.lastImportedAt).trim(),
           sharedDirty: false,
@@ -15604,12 +16365,16 @@ function App() {
             code: nextCode,
             sourceCode: existingTarget.sourceCode,
             aliases: buildIngredientAliases(existingTarget.aliases || [], row),
-        packSize: row.packSize,
-        supplier: row.supplier || existingTarget.supplier,
+            packSize: row.packSize,
+            supplier: row.supplier || existingTarget.supplier,
             category: row.category,
             tradeCategory: row.tradeCategory || existingTarget.tradeCategory || "",
             unitCost: row.averagePrice > 0 ? row.averagePrice : existingTarget.unitCost,
-            costUnit: inferPricingUnit(row.packSize || existingTarget.packSize || ""),
+            costUnit: normalizeImportPricingUnit(
+              String(row.pricingUnit || existingTarget.costUnit || "").trim(),
+              String(row.packSize || existingTarget.packSize || "").trim()
+            ),
+            unitsInPack: normalizeUnitsInPack(row.unitsInPack ?? existingTarget.unitsInPack, row.packSize || existingTarget.packSize || ""),
             sourceType: String(row.sourceCode || "").trim() ? "soft1" : existingTarget.sourceType || "manual",
             soft1Status: String(row.sourceCode || "").trim() ? "in_soft1" : existingTarget.soft1Status || "pending",
             needsReviewFlag: false,
@@ -15715,6 +16480,14 @@ function App() {
                 packSize: String(sourceData?.pack_size || mergedSourceIngredient.packSize).trim(),
                 supplier: String(sourceData?.supplier || "").trim(),
                 category: String(sourceData?.category || mergedSourceIngredient.category).trim(),
+                costUnit: normalizeImportPricingUnit(
+                  String(sourceData?.cost_unit || mergedSourceIngredient.costUnit || "").trim(),
+                  String(sourceData?.pack_size || mergedSourceIngredient.packSize || "").trim()
+                ),
+                unitsInPack: normalizeUnitsInPack(
+                  sourceData?.units_in_pack ?? mergedSourceIngredient.unitsInPack,
+                  String(sourceData?.pack_size || mergedSourceIngredient.packSize || "").trim()
+                ),
                 lastImportedAt: String(sourceData?.last_updated || mergedSourceIngredient.lastImportedAt).trim(),
                 sharedUpdatedAt: String(
                   sourceData?.updated_at || sourceData?.last_updated || mergedSourceIngredient.sharedUpdatedAt || ""
@@ -15778,7 +16551,11 @@ function App() {
           category: row.category,
           tradeCategory: row.tradeCategory || "",
           unitCost: row.averagePrice > 0 ? row.averagePrice : 0,
-          costUnit: inferPricingUnit(row.packSize || ""),
+          costUnit: normalizeImportPricingUnit(
+            String(row.pricingUnit || "").trim(),
+            String(row.packSize || "").trim()
+          ),
+          unitsInPack: normalizeUnitsInPack(row.unitsInPack, row.packSize || ""),
           sourceType: String(row.sourceCode || "").trim() ? "soft1" : "manual",
           soft1Status: String(row.sourceCode || "").trim() ? "in_soft1" : "pending",
           needsReviewFlag: false,
@@ -16878,6 +17655,7 @@ function App() {
               openIngredientMerge={openIngredientMerge}
 	              openRecipeCostSheetPreview={openRecipeCostSheetPreview}
 	              openRecipeChefSheetPreview={openRecipeChefSheetPreview}
+                convertRecipeToBatchDraft={convertRecipeToBatchDraft}
 	              openBatchCostSheetPreview={openBatchCostSheetPreview}
 	              openBatchChefSheetPreview={openBatchChefSheetPreview}
 	              learningRules={learningRules}
@@ -16956,6 +17734,7 @@ function App() {
             onAliasesChange={updateIngredientMakerAliases}
             onGenerateCode={generateIngredientMakerCode}
             codeConflict={ingredientMakerCodeConflict}
+            saving={ingredientMakerModal.saving}
             onClose={closeIngredientMaker}
             onSave={saveIngredientMaker}
           />
@@ -16978,9 +17757,7 @@ function App() {
           <IngredientMergeModal
             sourceIngredient={ingredientMergeSource}
             targetIngredient={ingredientMergeTarget}
-            trustedIngredients={trustedIngredientMaster.filter(
-              (ingredient) => ingredient.id !== ingredientMergeSource.id && !ingredient.batchId
-            )}
+            trustedIngredients={trustedIngredientMaster.filter((ingredient) => ingredient.id !== ingredientMergeSource.id)}
             impact={ingredientMergeImpact}
             onFieldChange={updateIngredientMergeField}
             onClose={closeIngredientMerge}
@@ -17048,8 +17825,9 @@ function App() {
                 toggleRecipeBatchLink={toggleRecipeBatchLink}
                 openIngredientMaker={openIngredientMaker}
                 openIngredientMerge={openIngredientMerge}
-	                openRecipeCostSheetPreview={openRecipeCostSheetPreview}
-	                openRecipeChefSheetPreview={openRecipeChefSheetPreview}
+		                openRecipeCostSheetPreview={openRecipeCostSheetPreview}
+		                openRecipeChefSheetPreview={openRecipeChefSheetPreview}
+                convertRecipeToBatchDraft={convertRecipeToBatchDraft}
 	                openBatchCostSheetPreview={openBatchCostSheetPreview}
 	                openBatchChefSheetPreview={openBatchChefSheetPreview}
 	                learningRules={learningRules}
@@ -19992,6 +20770,7 @@ function RecipeWorkflowDetail({
   openIngredientMaker,
   openRecipeCostSheetPreview,
   openRecipeChefSheetPreview,
+  convertRecipeToBatchDraft,
   archiveRecipe,
   restoreRecipe,
   deleteRecipePermanently,
@@ -20654,6 +21433,11 @@ function RecipeWorkflowDetail({
               {record.status !== "draft" ? (
                 <button type="button" className="v2-secondary-button" onClick={() => moveRecipeToDraft(record.id)}>
                   Back to draft
+                </button>
+              ) : null}
+              {!record.archived ? (
+                <button type="button" className="v2-secondary-button" onClick={() => convertRecipeToBatchDraft(record.id)}>
+                  Convert to component draft
                 </button>
               ) : null}
               {record.archived ? (
@@ -21589,6 +22373,12 @@ function IngredientEditorFields({
       }
     : record;
   const pricingReadOnly = readOnly || pricingLocked;
+  const pricingGuidance = buildIngredientPricingGuidance(
+    record.packSize,
+    pricingRecord.costUnit,
+    pricingNote,
+    record.unitsInPack
+  );
 
   return (
     <>
@@ -21640,6 +22430,18 @@ function IngredientEditorFields({
           <label className="v2-field">
             <span>Pack size</span>
             <input value={record.packSize} onChange={(event) => onFieldChange("packSize", event.target.value)} disabled={readOnly} />
+          </label>
+          <label className="v2-field">
+            <span>Units in pack</span>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={record.unitsInPack ?? 1}
+              onChange={(event) => onFieldChange("unitsInPack", event.target.value)}
+              disabled={readOnly}
+            />
+            <div className="v2-micro-note">Default 1. Use this when one purchased pack contains multiple sale units.</div>
           </label>
           <label className="v2-field">
             <span>Supplier</span>
@@ -21701,7 +22503,7 @@ function IngredientEditorFields({
                 </option>
               ))}
             </select>
-            {pricingNote ? <div className="v2-micro-note">{pricingNote}</div> : null}
+            {pricingGuidance ? <div className="v2-micro-note">{pricingGuidance}</div> : null}
           </label>
           <label className="v2-field">
             <span>Purchase VAT %</span>
@@ -21789,6 +22591,7 @@ function IngredientMakerModal({
   onAliasesChange,
   onGenerateCode,
   codeConflict,
+  saving = false,
   onClose,
   onSave,
 }) {
@@ -21801,7 +22604,7 @@ function IngredientMakerModal({
             <div className="v2-eyebrow">Ingredient Maker</div>
             <h3>Create ingredient</h3>
           </div>
-          <button type="button" className="v2-secondary-button" onClick={onClose}>
+          <button type="button" className="v2-secondary-button" onClick={onClose} disabled={saving}>
             Close
           </button>
         </div>
@@ -21815,11 +22618,11 @@ function IngredientMakerModal({
           codeConflict={codeConflict}
         />
         <div className="v2-step-footer">
-          <button type="button" className="v2-secondary-button" onClick={onClose}>
+          <button type="button" className="v2-secondary-button" onClick={onClose} disabled={saving}>
             Cancel
           </button>
-          <button type="button" className="v2-primary-button" onClick={onSave} disabled={Boolean(codeConflict)}>
-            Save ingredient
+          <button type="button" className="v2-primary-button" onClick={onSave} disabled={Boolean(codeConflict) || saving}>
+            {saving ? "Saving..." : "Save ingredient"}
           </button>
         </div>
       </div>
@@ -22010,7 +22813,11 @@ function IngredientMergeModal({
 
         <div className="v2-inline-callout warn">
           <strong>Careful merge</strong>
-          <span>The keeper stays active and the duplicate is archived afterwards. This is for normal ingredient duplicates, not published component ingredients.</span>
+          <span>
+            The keeper stays active and the duplicate is archived afterwards. Normal/manual ingredients can merge into a
+            published component-derived keeper, but a published component-derived ingredient should not be archived away
+            from here.
+          </span>
         </div>
 
         <label className="v2-field">
@@ -22036,6 +22843,7 @@ function IngredientMergeModal({
                 <strong>{ingredient.name}</strong>
                 <span>{ingredient.code} · source {ingredient.sourceCode || "manual"} · {ingredient.category || "No category"}</span>
                 <div className="v2-tag-row">
+                  {ingredient.batchId ? <span className="v2-tag">Component-derived keeper</span> : null}
                   {ingredient.packSize ? <span className="v2-tag">{ingredient.packSize}</span> : null}
                   {ingredient.tradeCategory ? <span className="v2-tag">Trade: {ingredient.tradeCategory}</span> : null}
                   {referencePrice ? <span className="v2-tag">{formatIngredientReferencePrice(referencePrice, true)}</span> : null}
@@ -22532,6 +23340,7 @@ const IngredientRecordDetail = memo(function IngredientRecordDetail({
       <DetailHeader title={record.name} subtitle={`${record.code} · source ${effectiveSourceCode}`} status={record.status} />
       <div className="v2-detail-grid">
         <DetailStat label="Pack size" value={record.packSize} />
+        <DetailStat label="Units in pack" value={String(normalizeUnitsInPack(record.unitsInPack, record.packSize))} />
         <DetailStat label="Supplier" value={record.supplier} />
         <DetailStat label="Product category" value={record.category} />
         <DetailStat label="Trade category" value={record.tradeCategory || "Not set"} />
@@ -22542,7 +23351,13 @@ const IngredientRecordDetail = memo(function IngredientRecordDetail({
         <DetailStat label="Source record" value={record.sourceRecordLabel || "Manual ingredient creation"} />
         <DetailStat label="Last pricing import" value={record.lastImportedAt || "Not imported yet"} />
         <DetailStat
-          label={referencePrice?.unit === "l" ? "Price / litre" : "Price / kg"}
+          label={
+            referencePrice?.unit === "l"
+              ? "Price / litre"
+              : referencePrice?.unit === "piece"
+                ? "Price / piece"
+                : "Price / kg"
+          }
           value={referencePrice ? formatIngredientReferencePrice(referencePrice) : "Not available"}
         />
         <DetailStat label="Master review" value={masterReviewStatus === "review" ? "Needs review" : "Reviewed"} />
@@ -22749,6 +23564,7 @@ function RecordDetail({
   openRecipeChefSheetPreview,
   openBatchCostSheetPreview,
   openBatchChefSheetPreview,
+  convertRecipeToBatchDraft,
   learningRules,
   updateIngredientField,
   updateIngredientAliases,
@@ -22869,6 +23685,7 @@ function RecordDetail({
         openIngredientMaker={openIngredientMaker}
         openRecipeCostSheetPreview={openRecipeCostSheetPreview}
         openRecipeChefSheetPreview={openRecipeChefSheetPreview}
+        convertRecipeToBatchDraft={convertRecipeToBatchDraft}
         archiveRecipe={archiveRecipe}
         restoreRecipe={restoreRecipe}
         deleteRecipePermanently={deleteRecipePermanently}

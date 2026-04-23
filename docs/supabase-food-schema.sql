@@ -23,6 +23,8 @@ create table if not exists public.ingredients (
   ingredient_item_code text,
   internal_code text,
   unit_cost numeric(12,4) not null default 0,
+  cost_unit text,
+  units_in_pack numeric(12,4) not null default 1,
   purchase_vat_rate numeric(12,4) not null default 0.13,
   pack_size text,
   supplier text,
@@ -36,7 +38,9 @@ create table if not exists public.ingredients (
 );
 
 alter table if exists public.ingredients
-  add column if not exists purchase_vat_rate numeric(12,4) not null default 0.13;
+  add column if not exists purchase_vat_rate numeric(12,4) not null default 0.13,
+  add column if not exists cost_unit text,
+  add column if not exists units_in_pack numeric(12,4) not null default 1;
 
 create unique index if not exists ingredients_code_unique
   on public.ingredients ((upper(regexp_replace(coalesce(ingredient_item_code, ''), '\s+', '', 'g'))))
@@ -54,6 +58,10 @@ create table if not exists public.recipes (
   name text not null,
   category text,
   selling_item_code text,
+  menu_description text,
+  prep_notes text,
+  plating_notes text,
+  chef_notes text,
   current_sale_price numeric(12,4) not null default 0,
   roundup numeric(12,4) not null default 0,
   recipe_type text not null default 'dish',
@@ -73,7 +81,11 @@ create table if not exists public.recipes (
 
 alter table if exists public.recipes
   add column if not exists available_venues jsonb not null default '[]'::jsonb,
-  add column if not exists service_suitability jsonb not null default '[]'::jsonb;
+  add column if not exists service_suitability jsonb not null default '[]'::jsonb,
+  add column if not exists menu_description text,
+  add column if not exists prep_notes text,
+  add column if not exists plating_notes text,
+  add column if not exists chef_notes text;
 
 create index if not exists recipes_restaurant_idx on public.recipes (restaurant);
 create index if not exists recipes_type_idx on public.recipes (recipe_type);
@@ -133,6 +145,10 @@ begin
     name,
     category,
     selling_item_code,
+    menu_description,
+    prep_notes,
+    plating_notes,
+    chef_notes,
     current_sale_price,
     roundup,
     recipe_type,
@@ -156,6 +172,10 @@ begin
     coalesce(nullif(trim(p_recipe->>'name'), ''), 'Untitled recipe'),
     nullif(trim(p_recipe->>'category'), ''),
     nullif(trim(p_recipe->>'selling_item_code'), ''),
+    nullif(trim(p_recipe->>'menu_description'), ''),
+    nullif(trim(p_recipe->>'prep_notes'), ''),
+    nullif(trim(p_recipe->>'plating_notes'), ''),
+    nullif(trim(p_recipe->>'chef_notes'), ''),
     coalesce(nullif(p_recipe->>'current_sale_price', '')::numeric, 0),
     coalesce(nullif(p_recipe->>'roundup', '')::numeric, 0),
     coalesce(nullif(trim(p_recipe->>'recipe_type'), ''), 'dish'),
@@ -179,6 +199,10 @@ begin
     name = excluded.name,
     category = excluded.category,
     selling_item_code = excluded.selling_item_code,
+    menu_description = excluded.menu_description,
+    prep_notes = excluded.prep_notes,
+    plating_notes = excluded.plating_notes,
+    chef_notes = excluded.chef_notes,
     current_sale_price = excluded.current_sale_price,
     roundup = excluded.roundup,
     recipe_type = excluded.recipe_type,
