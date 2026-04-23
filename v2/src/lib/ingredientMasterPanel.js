@@ -22,15 +22,24 @@ export function buildIngredientsPanelState({
   const rowNeedsManualReview = (row) => getRowReviewAttentionReasons(row).includes("manual_review");
   const rowNeedsPriceReview = (row) => getRowReviewAttentionReasons(row).includes("price_review");
   const rowNeedsRuleCatchup = (row) => getRowReviewAttentionReasons(row).includes("rule_catchup");
+  const isComponentDerivedRow = (row) => Boolean(row?.batchId);
+  const isManualRow = (row) =>
+    !isComponentDerivedRow(row) &&
+    (String(row?.sourceType || "").trim().toLowerCase() === "manual" ||
+      String(row?.soft1Status || "").trim().toLowerCase() === "pending");
+  const isSimpleRow = (row) => !isComponentDerivedRow(row) && !isManualRow(row);
 
-  const simpleCatalogueCount = catalogueBaseRows.filter((row) => !row.archived && !row.batchId).length;
+  const simpleCatalogueCount = catalogueBaseRows.filter((row) => !row.archived && isSimpleRow(row)).length;
   const componentDerivedCatalogueCount = catalogueBaseRows.filter((row) => !row.archived && Boolean(row.batchId)).length;
+  const manualCatalogueCount = catalogueBaseRows.filter((row) => !row.archived && isManualRow(row)).length;
   const allCatalogueCount = catalogueBaseRows.filter((row) => !row.archived).length;
   const groupedCatalogueRows = catalogueBaseRows.filter((row) =>
     ingredientRecordFilter === "component_derived"
-      ? Boolean(row.batchId)
+      ? isComponentDerivedRow(row)
+      : ingredientRecordFilter === "manual"
+        ? isManualRow(row)
       : ingredientRecordFilter === "simple"
-        ? !row.batchId
+        ? isSimpleRow(row)
         : true
   );
   const archivedCatalogueCount = groupedCatalogueRows.filter((row) => row.archived).length;
@@ -83,6 +92,7 @@ export function buildIngredientsPanelState({
     rowNeedsRuleCatchup,
     simpleCatalogueCount,
     componentDerivedCatalogueCount,
+    manualCatalogueCount,
     allCatalogueCount,
     groupedCatalogueRows,
     archivedCatalogueCount,

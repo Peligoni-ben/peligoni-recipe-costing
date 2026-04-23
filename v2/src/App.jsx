@@ -2196,6 +2196,38 @@ function getPerPieceMeasurementBasis(packSize = "") {
   return null;
 }
 
+function getPackMeasurementBasis(packSize = "", sourceUnit = "") {
+  const parsedPack = parsePackSizeComponents(packSize);
+  if (parsedPack?.totalUnit === "kg" || parsedPack?.totalUnit === "l") {
+    const totalAmount = Number(parsedPack?.totalAmount || 0);
+    if (totalAmount > 0) {
+      return {
+        amount: totalAmount,
+        unit: parsedPack.totalUnit,
+      };
+    }
+  }
+
+  const perPieceBasis = getPerPieceMeasurementBasis(packSize);
+  if (perPieceBasis) {
+    return perPieceBasis;
+  }
+
+  const normalizedSourceUnit = normalizeImportPricingUnit(sourceUnit, packSize);
+  if (normalizedSourceUnit === "kg") {
+    return { amount: 1, unit: "kg" };
+  }
+  if (normalizedSourceUnit === "l") {
+    return { amount: 1, unit: "l" };
+  }
+
+  return null;
+}
+
+function isAmbiguousWeightedPackImport(packSize = "", costUnit = "", sourceType = "", unitsInPack = 1) {
+  return false;
+}
+
 function hasConcretePiecePackContext(packSize = "", unitsInPack = 1) {
   const normalizedPackSize = String(packSize || "").trim();
   const parsedPack = parsePackSizeComponents(normalizedPackSize);
@@ -2272,6 +2304,25 @@ function isLikelyMultipackSnackImport(rawName = "", unit = "", averagePrice = 0,
   return suspiciousSnackCue && Number(averagePrice || 0) >= 6;
 }
 
+function isLikelyBoxedFrozenDessertImport(rawName = "", unit = "", averagePrice = 0, sourceCode = "", packSize = "", unitsInPack = 1) {
+  if (getSoft1CodeFamily(sourceCode) !== "ICEC") return false;
+  if (normalizeUnitsInPack(unitsInPack, packSize || rawName) > 1) return false;
+
+  const normalizedUnit = normalizeImportPricingUnit(unit, packSize || rawName);
+  if (normalizedUnit !== "l") return false;
+
+  const measurementBasis = getPackMeasurementBasis(packSize || rawName, unit);
+  if (!measurementBasis || measurementBasis.unit !== "l") return false;
+
+  const amount = Number(measurementBasis.amount || 0);
+  if (!(amount > 0) || amount > 0.2) return false;
+
+  const text = normalizeIngredientParserText(rawName);
+  if (!/\bice cream\b|\bsorbet\b|\bgelato\b|\bclassic\b|\bcornetto\b|\bmagic\b/.test(text)) return false;
+
+  return Number(averagePrice || 0) >= 10;
+}
+
 function deriveImportedIngredientPricing({
   rawName = "",
   sourceUnit = "",
@@ -2282,8 +2333,8 @@ function deriveImportedIngredientPricing({
 } = {}) {
   const numericPrice = Number(averagePrice || 0);
   const normalizedSourceUnit = normalizeImportPricingUnit(sourceUnit, packSize);
-  const parsedPack = parsePackSizeComponents(packSize);
   const normalizedUnitsInPack = normalizeUnitsInPack(unitsInPack, packSize || rawName);
+  const packMeasurementBasis = getPackMeasurementBasis(packSize, sourceUnit);
   const packNeedsReview = requiresImportPackSizeReview(
     rawName,
     sourceUnit,
@@ -2294,6 +2345,14 @@ function deriveImportedIngredientPricing({
   const likelyMultipackWithoutCount =
     isLikelyMultipackSnackImport(rawName, sourceUnit, numericPrice, sourceCode, normalizedUnitsInPack) &&
     !(normalizedUnitsInPack > 1);
+  const likelyBoxedFrozenDessertWithoutCount = isLikelyBoxedFrozenDessertImport(
+    rawName,
+    sourceUnit,
+    numericPrice,
+    sourceCode,
+    packSize,
+    normalizedUnitsInPack
+  );
 
   if (!(numericPrice > 0)) {
     return {
@@ -2305,6 +2364,28 @@ function deriveImportedIngredientPricing({
   }
 
   if (normalizedSourceUnit === "kg" || normalizedSourceUnit === "l") {
+    if (
+      packMeasurementBasis &&
+      packMeasurementBasis.unit === normalizedSourceUnit &&
+      Number(packMeasurementBasis.amount || 0) > 0
+    ) {
+      return {
+        unitCost: numericPrice / packMeasurementBasis.amount,
+        costUnit: normalizedSourceUnit,
+        unitsInPack: normalizedUnitsInPack,
+        priceReviewReason: null,
+      };
+    }
+
+    if (likelyBoxedFrozenDessertWithoutCount) {
+      return {
+        unitCost: numericPrice,
+        costUnit: "piece",
+        unitsInPack: normalizedUnitsInPack,
+        priceReviewReason: "boxed_frozen_dessert_unknown",
+      };
+    }
+
     return {
       unitCost: numericPrice,
       costUnit: normalizedSourceUnit,
@@ -2348,6 +2429,28 @@ function deriveImportedIngredientPricing({
   };
 }
 
+function shouldAutoRecalculatePieceUnitCost(ingredient = {}) {
+  const sourceType = String(ingredient?.sourceType || "").trim().toLowerCase();
+  const soft1Status = String(ingredient?.soft1Status || "").trim().toLowerCase();
+  const costUnit = getNormalizedIngredientCostUnit(ingredient?.costUnit || "");
+  return costUnit === "piece" && (sourceType === "soft1" || soft1Status === "in_soft1");
+}
+
+function recalculatePieceUnitCostForUnitsInPack(ingredient = {}, nextUnitsInPack) {
+  if (!shouldAutoRecalculatePieceUnitCost(ingredient)) return Number(ingredient?.unitCost || 0);
+
+  const previousUnitsInPack = normalizeUnitsInPack(ingredient?.unitsInPack, ingredient?.packSize || "");
+  const normalizedNextUnitsInPack = normalizeUnitsInPack(nextUnitsInPack, ingredient?.packSize || "");
+  const currentUnitCost = Number(ingredient?.unitCost || 0);
+
+  if (!(currentUnitCost > 0) || !(normalizedNextUnitsInPack > 0) || !(previousUnitsInPack > 0)) {
+    return currentUnitCost;
+  }
+
+  const assumedPackPrice = currentUnitCost * previousUnitsInPack;
+  return assumedPackPrice / normalizedNextUnitsInPack;
+}
+
 function titleCaseCategory(value = "") {
   return String(value || "")
     .trim()
@@ -2379,13 +2482,16 @@ function parseSoft1IngredientUploadMatrix(rows = [], { sourceWorkbook = "", sour
     throw new Error("The Soft1 ingredient upload file is empty.");
   }
 
+  const hasAnyHeader = (normalizedHeaders = [], aliases = []) =>
+    aliases.some((alias) => normalizedHeaders.includes(normalizeIngredientUploadHeader(alias)));
+
   const headerRowIndex = rows.findIndex((row) => {
     const normalizedHeaders = row.map((header) => normalizeIngredientUploadHeader(header));
 
     const hasSoft1CostHeaders =
-      normalizedHeaders.includes("ingrsoft1code") &&
-      normalizedHeaders.includes("description") &&
-      normalizedHeaders.includes("averageprice");
+      hasAnyHeader(normalizedHeaders, ["Ingr. Soft1 Code", "Soft1Code", "Soft1 Code"]) &&
+      hasAnyHeader(normalizedHeaders, ["Description"]) &&
+      hasAnyHeader(normalizedHeaders, ["Average Price", "Av. Price", "Av Price"]);
     const hasNormalizedImportHeaders =
       normalizedHeaders.includes("ingredientname") &&
       normalizedHeaders.includes("ingredientitemcode") &&
@@ -2420,9 +2526,9 @@ function parseSoft1IngredientUploadMatrix(rows = [], { sourceWorkbook = "", sour
   };
 
   const isSoft1CostSheet =
-    headerIndex.has("ingrsoft1code") &&
-    headerIndex.has("description") &&
-    headerIndex.has("averageprice");
+    hasAnyHeader(normalizedHeaders, ["Ingr. Soft1 Code", "Soft1Code", "Soft1 Code"]) &&
+    hasAnyHeader(normalizedHeaders, ["Description"]) &&
+    hasAnyHeader(normalizedHeaders, ["Average Price", "Av. Price", "Av Price"]);
   const isNormalizedImport =
     headerIndex.has("ingredientname") &&
     headerIndex.has("ingredientitemcode") &&
@@ -2436,9 +2542,9 @@ function parseSoft1IngredientUploadMatrix(rows = [], { sourceWorkbook = "", sour
   const parsedRows = dataRows
     .map((row, index) => {
       if (isSoft1CostSheet) {
-        const sourceUnit = read(row, ["Unit", "pack_size"]);
+        const sourceUnit = read(row, ["Unit", "Unit of Measure", "pack_size"]);
         const rawName = read(row, ["Description", "Ingredient name", "ingredient_name"]);
-        const sourceCode = read(row, ["Ingr. Soft1 Code", "ingredient_item_code"]);
+        const sourceCode = read(row, ["Ingr. Soft1 Code", "Soft1Code", "Soft1 Code", "ingredient_item_code"]);
         const packSize = extractWholeEggPackSize(rawName, sourceCode) || extractPackSize(rawName, sourceUnit);
         const nameIndex = parseIngredientIndex(rawName, packSize, [], sourceCode);
         const pricing = deriveImportedIngredientPricing({
@@ -2446,7 +2552,7 @@ function parseSoft1IngredientUploadMatrix(rows = [], { sourceWorkbook = "", sour
           sourceUnit,
           packSize,
           sourceCode,
-          averagePrice: numberValue(read(row, ["Average Price", "unit_cost"]), 0),
+          averagePrice: numberValue(read(row, ["Average Price", "Av. Price", "Av Price", "unit_cost"]), 0),
         });
         return {
           id: `${rowIdPrefix}-${index + 1}`,
@@ -2459,23 +2565,23 @@ function parseSoft1IngredientUploadMatrix(rows = [], { sourceWorkbook = "", sour
           unitsInPack: pricing.unitsInPack,
           priceReviewReason: pricing.priceReviewReason,
           category: deriveImportCategoryFields({
-            productCategory: read(row, ["Product Category", "product_category"]),
-            tradeCategory: read(row, ["Εμπορ. κατηγορία", "Trade Category", "trade_category"]),
-            sourceCode: read(row, ["Ingr. Soft1 Code", "ingredient_item_code"]),
+            productCategory: read(row, ["Product Category", "Group", "product_category"]),
+            tradeCategory: read(row, ["Εμπορ. κατηγορία", "Commercial Category", "Trade Category", "trade_category"]),
+            sourceCode: read(row, ["Ingr. Soft1 Code", "Soft1Code", "Soft1 Code", "ingredient_item_code"]),
             rawName,
             nameIndex,
           }).category,
           productCategory: deriveImportCategoryFields({
-            productCategory: read(row, ["Product Category", "product_category"]),
-            tradeCategory: read(row, ["Εμπορ. κατηγορία", "Trade Category", "trade_category"]),
-            sourceCode: read(row, ["Ingr. Soft1 Code", "ingredient_item_code"]),
+            productCategory: read(row, ["Product Category", "Group", "product_category"]),
+            tradeCategory: read(row, ["Εμπορ. κατηγορία", "Commercial Category", "Trade Category", "trade_category"]),
+            sourceCode: read(row, ["Ingr. Soft1 Code", "Soft1Code", "Soft1 Code", "ingredient_item_code"]),
             rawName,
             nameIndex,
           }).productCategory,
           tradeCategory: deriveImportCategoryFields({
-            productCategory: read(row, ["Product Category", "product_category"]),
-            tradeCategory: read(row, ["Εμπορ. κατηγορία", "Trade Category", "trade_category"]),
-            sourceCode: read(row, ["Ingr. Soft1 Code", "ingredient_item_code"]),
+            productCategory: read(row, ["Product Category", "Group", "product_category"]),
+            tradeCategory: read(row, ["Εμπορ. κατηγορία", "Commercial Category", "Trade Category", "trade_category"]),
+            sourceCode: read(row, ["Ingr. Soft1 Code", "Soft1Code", "Soft1 Code", "ingredient_item_code"]),
             rawName,
             nameIndex,
           }).tradeCategory,
@@ -6303,6 +6409,34 @@ function getIngredientPriceReviewIssue(ingredient = {}) {
     };
   }
 
+  if (
+    pieceLikeUnit &&
+    isLikelyBoxedFrozenDessertImport(
+      ingredient?.name || "",
+      normalizedCostUnit,
+      unitCost,
+      ingredient?.sourceCode || "",
+      packSize,
+      unitsInPack
+    )
+  ) {
+    return {
+      kind: "boxed_frozen_dessert_unknown",
+      label: "Price review",
+      message:
+        "This looks like a box of individual ice creams or sorbets. Add the number of units in the box before trusting the per-piece price.",
+    };
+  }
+
+  if (isAmbiguousWeightedPackImport(packSize, normalizedCostUnit, sourceType, unitsInPack)) {
+    return {
+      kind: "weighted_pack_ambiguous",
+      label: "Price review",
+      message:
+        "This Soft1 ingredient is priced as a weight or volume item, but the description also names a concrete pack size. Review whether the imported price is truly per kg/litre or actually the pack price.",
+    };
+  }
+
   return null;
 }
 
@@ -8126,11 +8260,13 @@ function isSameMissingSharedSourceLineDetail(left = {}, right = {}) {
 }
 
 function getIngredientSourceType(ingredient = {}) {
+  if (String(ingredient.sourceCode || "").trim()) return "soft1";
   if (ingredient.sourceType) return ingredient.sourceType;
-  return ingredient.sourceCode ? "soft1" : "manual";
+  return "manual";
 }
 
 function getIngredientSoft1Status(ingredient = {}) {
+  if (String(ingredient.sourceCode || "").trim()) return "in_soft1";
   if (ingredient.soft1Status) return ingredient.soft1Status;
   return getIngredientSourceType(ingredient) === "manual" ? "pending" : "in_soft1";
 }
@@ -12706,6 +12842,10 @@ function App() {
         nextIngredient.unitsInPack = normalizeUnitsInPack("", String(value || "").trim());
       }
 
+      if (field === "unitsInPack") {
+        nextIngredient.unitCost = recalculatePieceUnitCostForUnitsInPack(ingredient, nextIngredient.unitsInPack);
+      }
+
       if (field === "sourceCode" || field === "sourceType") {
         if (isIngredientCodeLocked(nextIngredient)) {
           nextIngredient.code = String(nextIngredient.sourceCode || "").trim();
@@ -12877,6 +13017,10 @@ function App() {
 
           if (field === "packSize" && !(Number(current.draft?.unitsInPack || 0) > 1)) {
             nextDraft.unitsInPack = normalizeUnitsInPack("", String(value || "").trim());
+          }
+
+          if (field === "unitsInPack") {
+            nextDraft.unitCost = recalculatePieceUnitCostForUnitsInPack(current.draft, nextDraft.unitsInPack);
           }
 
           if ((field === "sourceCode" || field === "sourceType") && isIngredientCodeLocked(nextDraft)) {
@@ -15395,6 +15539,10 @@ function App() {
       if (lowerName.endsWith(".xlsx")) {
         const workbookSheets = await readXlsxWorkbookSheets(file);
         importedRows = workbookSheets.flatMap((sheet, sheetIndex) => {
+          const normalizedSheetName = String(sheet?.name || "").trim().toLowerCase();
+          if (normalizedSheetName === "sheet1") {
+            return [];
+          }
           try {
             return parseSoft1IngredientUploadMatrix(sheet.rows || [], {
               sourceWorkbook: file.name,
@@ -15436,17 +15584,24 @@ function App() {
 
         const nextUnitCost = numberValue(row.averagePrice, 0);
         const priceMissingFromImport = !(nextUnitCost > 0);
+        const nextSourceCode = String(row.sourceCode || matchedIngredient.sourceCode || "").trim();
         const updatedIngredient = {
           ...matchedIngredient,
-        unitCost: nextUnitCost > 0 ? nextUnitCost : matchedIngredient.unitCost,
-        costUnit: normalizeImportPricingUnit(
-          String(row.pricingUnit || matchedIngredient.costUnit || "").trim(),
-          String(row.packSize || matchedIngredient.packSize || "").trim()
-        ),
-        unitsInPack: normalizeUnitsInPack(row.unitsInPack ?? matchedIngredient.unitsInPack, row.packSize || matchedIngredient.packSize || ""),
-        lastImportedAt: String(row.importedAt || matchedIngredient.lastImportedAt || getTodayImportDate()).trim(),
-        sourceRecordLabel: String(row.sourceRecordLabel || matchedIngredient.sourceRecordLabel || "Soft1 import").trim(),
-        lastImportPriceMissing: priceMissingFromImport,
+          sourceCode: nextSourceCode,
+          sourceType: nextSourceCode ? "soft1" : matchedIngredient.sourceType || "manual",
+          soft1Status: nextSourceCode ? "in_soft1" : matchedIngredient.soft1Status || "pending",
+          unitCost: nextUnitCost > 0 ? nextUnitCost : matchedIngredient.unitCost,
+          costUnit: normalizeImportPricingUnit(
+            String(row.pricingUnit || matchedIngredient.costUnit || "").trim(),
+            String(row.packSize || matchedIngredient.packSize || "").trim()
+          ),
+          unitsInPack: normalizeUnitsInPack(
+            row.unitsInPack ?? matchedIngredient.unitsInPack,
+            row.packSize || matchedIngredient.packSize || ""
+          ),
+          lastImportedAt: String(row.importedAt || matchedIngredient.lastImportedAt || getTodayImportDate()).trim(),
+          sourceRecordLabel: String(row.sourceRecordLabel || matchedIngredient.sourceRecordLabel || "Soft1 import").trim(),
+          lastImportPriceMissing: priceMissingFromImport,
           masterReviewStatus: "ready",
           needsReviewFlag: false,
           sharedDirty: Boolean(matchedIngredient.sharedRecordId),
@@ -16745,13 +16900,21 @@ function App() {
       : String(ingredientSearchCorpusMap.get(item.id) || "").includes(query);
     const product = ingredientParsedIndexMap.get(item.id)?.product || "";
     const matchesProduct = ingredientProductFilter === "all" ? true : normalizeIngredientKey(product) === normalizeIngredientKey(ingredientProductFilter);
+    const isComponentDerived = Boolean(item.batchId);
+    const isManualSource =
+      !isComponentDerived && (sourceType === "manual" || soft1Status === "pending");
+    const isSimpleSource = !isComponentDerived && !isManualSource;
     const matchesSource =
       ingredientSourceFilter === "all"
         ? true
+        : ingredientSourceFilter === "component_derived"
+          ? isComponentDerived
         : ingredientSourceFilter === "manual"
-          ? sourceType === "manual"
-          : ingredientSourceFilter === "pending"
-            ? soft1Status === "pending"
+          ? isManualSource
+        : ingredientSourceFilter === "pending"
+            ? !isComponentDerived && soft1Status === "pending"
+          : ingredientSourceFilter === "simple"
+            ? isSimpleSource
             : sourceType === "soft1";
 
     return matchesQuery && matchesProduct && matchesSource;
@@ -16759,8 +16922,10 @@ function App() {
   const ingredientGroupRows = ingredientCatalogueBaseRows.filter((item) =>
     ingredientRecordFilter === "component_derived"
       ? Boolean(item.batchId)
+      : ingredientRecordFilter === "manual"
+        ? !item.batchId && (getIngredientSourceType(item) === "manual" || getIngredientSoft1Status(item) === "pending")
       : ingredientRecordFilter === "simple"
-        ? !item.batchId
+        ? !item.batchId && getIngredientSourceType(item) !== "manual" && getIngredientSoft1Status(item) !== "pending"
         : true
   );
   const ingredientRows = ingredientGroupRows.filter((item) =>
@@ -18051,6 +18216,7 @@ function IngredientsPanel({
     rowNeedsRuleCatchup,
     simpleCatalogueCount,
     componentDerivedCatalogueCount,
+    manualCatalogueCount,
     allCatalogueCount,
     archivedCatalogueCount,
     forReviewCatalogueCount,
@@ -18276,6 +18442,7 @@ function IngredientsPanel({
           allCatalogueCount={allCatalogueCount}
           simpleCatalogueCount={simpleCatalogueCount}
           componentDerivedCatalogueCount={componentDerivedCatalogueCount}
+          manualCatalogueCount={manualCatalogueCount}
           ingredientStatusFilter={ingredientStatusFilter}
           setIngredientStatusFilter={setIngredientStatusFilter}
           forReviewCatalogueCount={forReviewCatalogueCount}
@@ -18649,6 +18816,7 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
   allCatalogueCount,
   simpleCatalogueCount,
   componentDerivedCatalogueCount,
+  manualCatalogueCount,
   ingredientStatusFilter,
   setIngredientStatusFilter,
   forReviewCatalogueCount,
@@ -18703,7 +18871,14 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
           className={`v2-pill ${ingredientRecordFilter === "component_derived" ? "active" : ""}`}
           onClick={() => setIngredientRecordFilter("component_derived")}
         >
-          Component-derived ({componentDerivedCatalogueCount})
+          Component ({componentDerivedCatalogueCount})
+        </button>
+        <button
+          type="button"
+          className={`v2-pill ${ingredientRecordFilter === "manual" ? "active" : ""}`}
+          onClick={() => setIngredientRecordFilter("manual")}
+        >
+          Manual ({manualCatalogueCount})
         </button>
       </div>
       <div className="v2-workspace-switch">
@@ -18766,7 +18941,8 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
           <span>Filter by source</span>
           <select value={ingredientSourceFilter} onChange={(event) => setIngredientSourceFilter(event.target.value)}>
             <option value="all">All sources</option>
-            <option value="soft1">Soft1 / import</option>
+            <option value="simple">Simple</option>
+            <option value="component_derived">Component</option>
             <option value="manual">Manual</option>
             <option value="pending">Pending in Soft1</option>
           </select>
@@ -18794,6 +18970,11 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
           const needsRuleCatchup = rowNeedsRuleCatchup?.(row) || false;
           const needsPriceReview = rowNeedsPriceReview?.(row) || false;
           const displayName = getIngredientCatalogueDisplayName(row, catchupSuggestion);
+          const sourceTypeLabel = row.batchId
+            ? "Component"
+            : getIngredientSourceType(row) === "manual" || getIngredientSoft1Status(row) === "pending"
+              ? "Manual"
+              : "Simple";
           return (
             <button
               key={row.id}
@@ -18810,9 +18991,7 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
                   {row.aliases?.length ? ` · ${row.aliases.length} aliases` : ""}
                 </span>
                 <div className="v2-record-tags">
-                  <span className="v2-tag">
-                    {getIngredientSourceType(row) === "manual" ? "Manual record" : "Soft1-linked"}
-                  </span>
+                  <span className="v2-tag">{sourceTypeLabel}</span>
                   <span className="v2-tag">
                     {getIngredientSoft1Status(row) === "in_soft1" ? "Added to Soft1" : "Pending in Soft1"}
                   </span>
