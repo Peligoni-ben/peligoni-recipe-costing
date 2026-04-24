@@ -1661,11 +1661,43 @@ function getSuggestedIngredientsForMissingSharedSourceLine(detail = {}, ingredie
       score: scoreIngredientSearchMatch(ingredient, query),
     }))
     .filter((match) => match.score >= 60)
-    .sort((left, right) => {
-      if (right.score !== left.score) return right.score - left.score;
-      return left.ingredient.name.localeCompare(right.ingredient.name);
-    })
+    .sort(compareIngredientSearchMatches)
     .slice(0, limit);
+}
+
+function getIngredientReferencePriceSortKey(ingredient = {}) {
+  const referencePrice = getIngredientReferencePrice(ingredient);
+  if (!referencePrice) {
+    return {
+      unitRank: 99,
+      value: Number.POSITIVE_INFINITY,
+    };
+  }
+
+  const normalizedUnit = String(referencePrice.unit || "").trim().toLowerCase();
+  return {
+    unitRank: normalizedUnit === "kg" ? 0 : normalizedUnit === "l" ? 1 : normalizedUnit === "piece" ? 2 : 99,
+    value: Number(referencePrice.value || 0) > 0 ? Number(referencePrice.value) : Number.POSITIVE_INFINITY,
+  };
+}
+
+function compareIngredientsByReferencePrice(left = {}, right = {}) {
+  const leftPrice = getIngredientReferencePriceSortKey(left);
+  const rightPrice = getIngredientReferencePriceSortKey(right);
+
+  if (leftPrice.unitRank !== rightPrice.unitRank) return leftPrice.unitRank - rightPrice.unitRank;
+  if (leftPrice.value !== rightPrice.value) return leftPrice.value - rightPrice.value;
+
+  const leftCode = String(left.code || left.sourceCode || "").trim();
+  const rightCode = String(right.code || right.sourceCode || "").trim();
+  if (leftCode !== rightCode) return leftCode.localeCompare(rightCode);
+
+  return String(left.name || "").localeCompare(String(right.name || ""));
+}
+
+function compareIngredientSearchMatches(left, right) {
+  if (right.score !== left.score) return right.score - left.score;
+  return compareIngredientsByReferencePrice(left.ingredient, right.ingredient);
 }
 
 function scoreBatchSearchMatch(batch, rawQuery = "", ingredientMap = new Map()) {
@@ -16943,19 +16975,23 @@ function App() {
         ? !item.batchId && getIngredientSourceType(item) !== "manual" && getIngredientSoft1Status(item) !== "pending"
         : true
   );
-  const ingredientRows = ingredientGroupRows.filter((item) =>
-    ingredientStatusFilter === "archived"
-      ? Boolean(item.archived)
-      : ingredientStatusFilter === "manual_review"
-        ? !item.archived && getIngredientMasterReviewStatus(item) === "review"
-        : ingredientStatusFilter === "price_review"
-          ? !item.archived && Boolean(getIngredientPriceReviewIssue(item))
-          : ingredientStatusFilter === "rule_catchup"
-            ? !item.archived && ingredientRuleCatchupMap.has(item.id)
-            : ingredientStatusFilter === "needs_attention"
-              ? !item.archived && ingredientNeedsMasterReviewAttention(item)
-              : !item.archived
-  );
+  const ingredientRows = ingredientGroupRows
+    .filter((item) =>
+      ingredientStatusFilter === "archived"
+        ? Boolean(item.archived)
+        : ingredientStatusFilter === "manual_review"
+          ? !item.archived && getIngredientMasterReviewStatus(item) === "review"
+          : ingredientStatusFilter === "price_review"
+            ? !item.archived && Boolean(getIngredientPriceReviewIssue(item))
+            : ingredientStatusFilter === "rule_catchup"
+              ? !item.archived && ingredientRuleCatchupMap.has(item.id)
+              : ingredientStatusFilter === "needs_attention"
+                ? !item.archived && ingredientNeedsMasterReviewAttention(item)
+                : !item.archived
+    )
+    .sort((left, right) =>
+      trimmedSearchQuery ? compareIngredientsByReferencePrice(left, right) : 0
+    );
   const ingredientMasterReviewRows = ingredientMaster.filter((item) => {
     if (item.archived) return false;
     const query = trimmedSearchQuery;
@@ -20535,7 +20571,7 @@ function ImportRowDetail({
       ingredient,
       score: scoreMergeTargetCandidate(row, ingredient),
     }))
-    .sort((left, right) => right.score - left.score || left.ingredient.name.localeCompare(right.ingredient.name));
+    .sort((left, right) => right.score - left.score || compareIngredientsByReferencePrice(left.ingredient, right.ingredient));
 
   const likelyMergeTargets = mergeTargetOptions.filter((item) => item.score >= 35);
   const trimmedMergeTargetQuery = mergeTargetQuery.trim();
@@ -20550,7 +20586,7 @@ function ImportRowDetail({
           (left, right) =>
             right.searchScore - left.searchScore ||
             right.score - left.score ||
-            left.ingredient.name.localeCompare(right.ingredient.name)
+            compareIngredientsByReferencePrice(left.ingredient, right.ingredient)
         )
     : [];
   const visibleMergeTargets = trimmedMergeTargetQuery
@@ -21017,10 +21053,7 @@ function RecipeWorkflowDetail({
         score: scoreIngredientSearchMatch(ingredient, query),
       }))
       .filter((match) => match.score >= 50)
-      .sort((left, right) => {
-        if (right.score !== left.score) return right.score - left.score;
-        return left.ingredient.name.localeCompare(right.ingredient.name);
-      })
+      .sort(compareIngredientSearchMatches)
       .slice(0, 18);
   }, [deferredIngredientPickerQuery, ingredientMaster]);
   const batchPickerResults = useMemo(() => {
@@ -21888,10 +21921,7 @@ function BatchWorkflowDetail({
         score: scoreIngredientSearchMatch(ingredient, query),
       }))
       .filter((match) => match.score >= 50)
-      .sort((left, right) => {
-        if (right.score !== left.score) return right.score - left.score;
-        return left.ingredient.name.localeCompare(right.ingredient.name);
-      })
+      .sort(compareIngredientSearchMatches)
       .slice(0, 18);
   }, [ingredientMaster, deferredIngredientPickerQuery]);
   const missingIngredientSuggestions = useMemo(
@@ -22901,10 +22931,7 @@ function IngredientSubstitutionModal({
         score: scoreIngredientSearchMatch(ingredient, trimmedQuery),
       }))
       .filter((match) => match.score >= 50)
-      .sort((left, right) => {
-        if (right.score !== left.score) return right.score - left.score;
-        return left.ingredient.name.localeCompare(right.ingredient.name);
-      })
+      .sort(compareIngredientSearchMatches)
       .slice(0, 12)
       .map((match) => match.ingredient);
   }, [deferredQuery, trustedIngredients]);
@@ -23036,10 +23063,7 @@ function IngredientMergeModal({
         score: scoreIngredientSearchMatch(ingredient, trimmedQuery),
       }))
       .filter((match) => match.score >= 50)
-      .sort((left, right) => {
-        if (right.score !== left.score) return right.score - left.score;
-        return left.ingredient.name.localeCompare(right.ingredient.name);
-      })
+      .sort(compareIngredientSearchMatches)
       .slice(0, 14)
       .map((match) => match.ingredient);
   }, [deferredQuery, trustedIngredients]);
