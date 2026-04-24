@@ -207,6 +207,10 @@ function buildPersistableRecipeSnapshot(recipe = {}) {
       : [],
     serviceSuitability: dedupeTextList(recipe?.serviceSuitability || []),
     menuIds: dedupeTextList(recipe?.menuIds || []),
+    prepNotes: String(recipe?.prepNotes || "").trim(),
+    platingNotes: String(recipe?.platingNotes || "").trim(),
+    chefNotes: String(recipe?.chefNotes || "").trim(),
+    finishedDishImage: String(recipe?.finishedDishImage || "").trim(),
   });
 }
 
@@ -1320,6 +1324,7 @@ function hydrateSharedDataToV2({
           prepNotes: String(row.prep_notes || "").trim(),
           platingNotes: String(row.plating_notes || row.presentation_notes || "").trim(),
           chefNotes: String(row.chef_notes || "").trim(),
+          finishedDishImage: String(row.finished_dish_image || "").trim(),
           portions: Math.max(1, numberValue(row.portion_count, 1)),
           salePrice: numberValue(row.current_sale_price),
           serviceSuitability: dedupeTextList(Array.isArray(row.service_suitability) ? row.service_suitability : []),
@@ -10124,7 +10129,9 @@ function App() {
     const normalized = String(message || "").toLowerCase();
     return (
       normalized.includes("recipes") &&
-      ["menu_description", "prep_notes", "plating_notes", "chef_notes"].some((column) => normalized.includes(column))
+      ["menu_description", "prep_notes", "plating_notes", "chef_notes", "finished_dish_image"].some((column) =>
+        normalized.includes(column)
+      )
     );
   };
 
@@ -10427,6 +10434,7 @@ function App() {
       prepNotes: String(record.prepNotes || "").trim(),
       platingNotes: String(record.platingNotes || "").trim(),
       chefNotes: String(record.chefNotes || "").trim(),
+      finishedDishImage: String(record.finishedDishImage || "").trim(),
       serviceSuitability: dedupeTextList(record.serviceSuitability || []),
       portions: Number(record.portions || 0),
       salePrice: Number(record.salePrice || 0),
@@ -10507,6 +10515,7 @@ function App() {
       payload.prep_notes = String(record.prepNotes || "").trim() || null;
       payload.plating_notes = recordType === "dish" ? String(record.platingNotes || "").trim() || null : null;
       payload.chef_notes = recordType === "dish" ? String(record.chefNotes || "").trim() || null : null;
+      payload.finished_dish_image = recordType === "dish" ? String(record.finishedDishImage || "").trim() || null : null;
     }
 
     return payload;

@@ -62,6 +62,7 @@ create table if not exists public.recipes (
   prep_notes text,
   plating_notes text,
   chef_notes text,
+  finished_dish_image text,
   current_sale_price numeric(12,4) not null default 0,
   roundup numeric(12,4) not null default 0,
   recipe_type text not null default 'dish',
@@ -85,7 +86,8 @@ alter table if exists public.recipes
   add column if not exists menu_description text,
   add column if not exists prep_notes text,
   add column if not exists plating_notes text,
-  add column if not exists chef_notes text;
+  add column if not exists chef_notes text,
+  add column if not exists finished_dish_image text;
 
 create index if not exists recipes_restaurant_idx on public.recipes (restaurant);
 create index if not exists recipes_type_idx on public.recipes (recipe_type);
@@ -149,6 +151,7 @@ begin
     prep_notes,
     plating_notes,
     chef_notes,
+    finished_dish_image,
     current_sale_price,
     roundup,
     recipe_type,
@@ -176,6 +179,7 @@ begin
     nullif(trim(p_recipe->>'prep_notes'), ''),
     nullif(trim(p_recipe->>'plating_notes'), ''),
     nullif(trim(p_recipe->>'chef_notes'), ''),
+    nullif(trim(p_recipe->>'finished_dish_image'), ''),
     coalesce(nullif(p_recipe->>'current_sale_price', '')::numeric, 0),
     coalesce(nullif(p_recipe->>'roundup', '')::numeric, 0),
     coalesce(nullif(trim(p_recipe->>'recipe_type'), ''), 'dish'),
@@ -203,6 +207,7 @@ begin
     prep_notes = excluded.prep_notes,
     plating_notes = excluded.plating_notes,
     chef_notes = excluded.chef_notes,
+    finished_dish_image = excluded.finished_dish_image,
     current_sale_price = excluded.current_sale_price,
     roundup = excluded.roundup,
     recipe_type = excluded.recipe_type,
