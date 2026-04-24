@@ -6643,6 +6643,11 @@ function createClientUuid() {
   });
 }
 
+function createTemporaryPassword(length = 12) {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@$%";
+  return Array.from({ length }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
+}
+
 function getRestaurantServicePool(restaurant = {}) {
   return dedupeTextList([
     ...(restaurant.primaryServices || []),
@@ -14807,17 +14812,80 @@ function App() {
     }));
   };
 
-  const addUser = (draft) => {
-    const nextUser = {
-      id: `usr-${Date.now()}`,
-      name: String(draft?.name || "").trim(),
-      email: String(draft?.email || "").trim(),
-      role: String(draft?.role || "Chef").trim() || "Chef",
-      status: String(draft?.status || "active").trim() || "active",
-      isSharedProfile: false,
+  const addUser = async (draft) => {
+    const cleanName = String(draft?.name || "").trim();
+    const cleanEmail = String(draft?.email || "").trim().toLowerCase();
+    const cleanRole = String(draft?.role || "Chef").trim() || "Chef";
+    const cleanStatus = String(draft?.status || "active").trim() || "active";
+    const cleanPassword = String(draft?.password || "").trim();
+
+    if (!(cleanName && cleanEmail && cleanPassword)) return false;
+
+    const duplicateUser = users.find((user) => normalizeSharedKey(user.email) === normalizeSharedKey(cleanEmail));
+    if (duplicateUser) {
+      setUserSyncState("error");
+      setUserSyncMessage("A user with that email already exists.");
+      return false;
+    }
+
+    if (!supabaseEnabled || !supabase) {
+      const nextUser = {
+        id: `usr-${Date.now()}`,
+        name: cleanName,
+        email: cleanEmail,
+        role: cleanRole,
+        status: cleanStatus,
+        isSharedProfile: false,
+      };
+      setUsers((current) => [nextUser, ...current]);
+      setUserSyncState("idle");
+      setUserSyncMessage("Shared auth is disabled, so this user was added locally only.");
+      return true;
+    }
+
+    if (currentUserRole !== "Admin") {
+      setUserSyncState("error");
+      setUserSyncMessage("Only Admin users can create shared logins.");
+      return false;
+    }
+
+    setUserSyncState("syncing");
+    setUserSyncMessage("Creating shared user...");
+
+    const { data, error } = await supabase.functions.invoke("create-user", {
+      body: {
+        email: cleanEmail,
+        password: cleanPassword,
+        role: mapV2RoleToProfileRole(cleanRole),
+        full_name: cleanName,
+      },
+    });
+
+    const functionErrorMessage =
+      data && typeof data === "object" && !Array.isArray(data) && typeof data.error === "string" ? data.error : "";
+
+    if (error || functionErrorMessage) {
+      const fallbackMessage =
+        functionErrorMessage ||
+        error?.message ||
+        "Could not create user. Check that the create-user edge function is deployed.";
+      setUserSyncState("error");
+      setUserSyncMessage(fallbackMessage);
+      return false;
+    }
+
+    const mappedUser = {
+      id: String((data && typeof data === "object" && !Array.isArray(data) ? data.id : "") || createClientUuid()),
+      name: cleanName,
+      email: cleanEmail,
+      role: cleanRole,
+      status: cleanStatus,
+      isSharedProfile: true,
     };
-    if (!(nextUser.name && nextUser.email)) return false;
-    setUsers((current) => [nextUser, ...current]);
+
+    setUsers((current) => [mappedUser, ...current.filter((user) => user.id !== mappedUser.id)]);
+    setUserSyncState("saved");
+    setUserSyncMessage(`Created ${mappedUser.name} with ${mappedUser.role} access.`);
     return true;
   };
 
@@ -19939,6 +20007,7 @@ function SettingsPanel({
     email: "",
     role: "Chef",
     status: "active",
+    password: createTemporaryPassword(),
   });
   const [restaurantDraft, setRestaurantDraft] = useState({
     name: "",
@@ -20012,14 +20081,15 @@ function SettingsPanel({
     }));
   };
 
-  const handleCreateUser = () => {
-    const didAdd = addUser(userDraft);
+  const handleCreateUser = async () => {
+    const didAdd = await addUser(userDraft);
     if (!didAdd) return;
     setUserDraft({
       name: "",
       email: "",
       role: "Chef",
       status: "active",
+      password: createTemporaryPassword(),
     });
   };
 
@@ -20247,7 +20317,7 @@ function SettingsPanel({
             <div className="v2-info-card">
               <strong>Add user</strong>
               <span>
-                This currently creates a local placeholder row in v2 only. To give someone real sign-in and edit rights, they must also exist in Supabase Authentication with a matching shared profile.
+                Create a real shared login here when the <code>create-user</code> Supabase edge function is deployed. Set a temporary password, then share it securely with the new user.
               </span>
               <div className="v2-form-grid">
                 <label className="v2-field">
@@ -20268,13 +20338,33 @@ function SettingsPanel({
                     ))}
                   </select>
                 </label>
+                <label className="v2-field">
+                  <span>Temporary password</span>
+                  <input
+                    type="text"
+                    value={userDraft.password}
+                    onChange={(event) => setUserDraft((current) => ({ ...current, password: event.target.value }))}
+                  />
+                </label>
               </div>
               <div className="v2-link-list">
                 <button
                   type="button"
+                  className="v2-secondary-button"
+                  onClick={() => setUserDraft((current) => ({ ...current, password: createTemporaryPassword() }))}
+                >
+                  Generate password
+                </button>
+                <button
+                  type="button"
                   className="v2-primary-button"
                   onClick={handleCreateUser}
-                  disabled={!String(userDraft.name || "").trim() || !String(userDraft.email || "").trim()}
+                  disabled={
+                    currentUserRole !== "Admin" ||
+                    !String(userDraft.name || "").trim() ||
+                    !String(userDraft.email || "").trim() ||
+                    !String(userDraft.password || "").trim()
+                  }
                 >
                   Add user
                 </button>

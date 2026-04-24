@@ -64,6 +64,7 @@ Deno.serve(async (request) => {
     const body = await request.json();
     const email = String(body?.email || "").trim().toLowerCase();
     const password = String(body?.password || "");
+    const fullName = String(body?.full_name || "").trim();
     const role = ["manager", "editor", "viewer"].includes(String(body?.role || ""))
       ? String(body.role)
       : "viewer";
@@ -79,6 +80,7 @@ Deno.serve(async (request) => {
       email,
       password,
       email_confirm: true,
+      user_metadata: fullName ? { full_name: fullName } : undefined,
     });
 
     if (createError || !createdUser.user) {
@@ -92,6 +94,7 @@ Deno.serve(async (request) => {
       {
         id: createdUser.user.id,
         email,
+        full_name: fullName || null,
         role,
         updated_at: new Date().toISOString(),
       },
@@ -110,6 +113,7 @@ Deno.serve(async (request) => {
         ok: true,
         id: createdUser.user.id,
         email,
+        full_name: fullName,
         role,
       }),
       {
