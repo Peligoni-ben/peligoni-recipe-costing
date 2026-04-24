@@ -6,6 +6,12 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Content-Type": "application/json",
+};
 
 const adminClient = createClient(supabaseUrl, serviceRoleKey, {
   auth: {
@@ -16,11 +22,18 @@ const adminClient = createClient(supabaseUrl, serviceRoleKey, {
 
 Deno.serve(async (request) => {
   try {
+    if (request.method === "OPTIONS") {
+      return new Response("ok", {
+        status: 200,
+        headers: corsHeaders,
+      });
+    }
+
     const authHeader = request.headers.get("Authorization");
     if (!authHeader) {
       return new Response(JSON.stringify({ error: "Missing Authorization header." }), {
         status: 401,
-        headers: { "Content-Type": "application/json" },
+        headers: corsHeaders,
       });
     }
 
@@ -44,7 +57,7 @@ Deno.serve(async (request) => {
     if (callerError || !caller) {
       return new Response(JSON.stringify({ error: "Could not verify caller." }), {
         status: 401,
-        headers: { "Content-Type": "application/json" },
+        headers: corsHeaders,
       });
     }
 
@@ -57,7 +70,7 @@ Deno.serve(async (request) => {
     if (profileError || callerProfile?.role !== "manager") {
       return new Response(JSON.stringify({ error: "Only managers can create users." }), {
         status: 403,
-        headers: { "Content-Type": "application/json" },
+        headers: corsHeaders,
       });
     }
 
@@ -72,7 +85,7 @@ Deno.serve(async (request) => {
     if (!email || !password) {
       return new Response(JSON.stringify({ error: "Email and password are required." }), {
         status: 400,
-        headers: { "Content-Type": "application/json" },
+        headers: corsHeaders,
       });
     }
 
@@ -86,7 +99,7 @@ Deno.serve(async (request) => {
     if (createError || !createdUser.user) {
       return new Response(JSON.stringify({ error: createError?.message || "Could not create user." }), {
         status: 400,
-        headers: { "Content-Type": "application/json" },
+        headers: corsHeaders,
       });
     }
 
@@ -104,7 +117,7 @@ Deno.serve(async (request) => {
     if (upsertError) {
       return new Response(JSON.stringify({ error: upsertError.message }), {
         status: 400,
-        headers: { "Content-Type": "application/json" },
+        headers: corsHeaders,
       });
     }
 
@@ -118,7 +131,7 @@ Deno.serve(async (request) => {
       }),
       {
         status: 200,
-        headers: { "Content-Type": "application/json" },
+        headers: corsHeaders,
       }
     );
   } catch (error) {
@@ -128,7 +141,7 @@ Deno.serve(async (request) => {
       }),
       {
         status: 500,
-        headers: { "Content-Type": "application/json" },
+        headers: corsHeaders,
       }
     );
   }

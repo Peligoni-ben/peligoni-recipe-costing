@@ -6648,6 +6648,14 @@ function createTemporaryPassword(length = 12) {
   return Array.from({ length }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
 }
 
+function urlContainsSupabaseRecoveryToken() {
+  if (typeof window === "undefined") return false;
+
+  const searchParams = new URLSearchParams(window.location.search || "");
+  const hashParams = new URLSearchParams(String(window.location.hash || "").replace(/^#/, ""));
+  return searchParams.get("type") === "recovery" || hashParams.get("type") === "recovery";
+}
+
 function getRestaurantServicePool(restaurant = {}) {
   return dedupeTextList([
     ...(restaurant.primaryServices || []),
@@ -8877,7 +8885,11 @@ function App() {
   const [authLoading, setAuthLoading] = useState(supabaseEnabled);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [authResetPassword, setAuthResetPassword] = useState("");
+  const [authResetPasswordConfirm, setAuthResetPasswordConfirm] = useState("");
+  const [authFlowMode, setAuthFlowMode] = useState(() => (urlContainsSupabaseRecoveryToken() ? "reset_password" : "sign_in"));
   const [authError, setAuthError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
   const [sharedDataLoading, setSharedDataLoading] = useState(supabaseEnabled);
   const [sharedDataLoadFailed, setSharedDataLoadFailed] = useState(false);
   const [sharedDataStatus, setSharedDataStatus] = useState(
@@ -8976,6 +8988,15 @@ function App() {
   const deferredSearch = useDeferredValue(search);
 
   useEffect(() => {
+    if (!supabaseEnabled) return;
+    if (urlContainsSupabaseRecoveryToken()) {
+      setAuthFlowMode("reset_password");
+      setAuthError("");
+      setAuthNotice("Set a new password to finish the reset.");
+    }
+  }, []);
+
+  useEffect(() => {
     if (!supabaseEnabled || !supabase) {
       setAuthLoading(false);
       setSharedDataLoading(false);
@@ -8996,6 +9017,9 @@ function App() {
 
         setAuthSession(data.session || null);
         setAuthUser(data.session?.user || null);
+        if (data.session?.user?.email) {
+          setAuthEmail(String(data.session.user.email).trim().toLowerCase());
+        }
         setAuthLoading(false);
       })
       .catch((error) => {
@@ -9006,11 +9030,28 @@ function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       if (isCancelled) return;
       setAuthSession(session || null);
       setAuthUser(session?.user || null);
-      setAuthError("");
+      if (session?.user?.email) {
+        setAuthEmail(String(session.user.email).trim().toLowerCase());
+      }
+      if (event === "PASSWORD_RECOVERY") {
+        setAuthFlowMode("reset_password");
+        setAuthNotice("Set a new password to finish the reset.");
+        setAuthError("");
+      } else if (event === "SIGNED_OUT") {
+        setAuthFlowMode("sign_in");
+        setAuthNotice("");
+        setAuthError("");
+      } else if (event === "SIGNED_IN" && !urlContainsSupabaseRecoveryToken()) {
+        setAuthFlowMode("sign_in");
+        setAuthNotice("");
+        setAuthError("");
+      } else {
+        setAuthError("");
+      }
       setAuthLoading(false);
     });
 
@@ -9301,6 +9342,7 @@ function App() {
   const signInToSharedData = async () => {
     if (!supabaseEnabled || !supabase) return;
     setAuthError("");
+    setAuthNotice("");
     const { error } = await supabase.auth.signInWithPassword({
       email: authEmail.trim(),
       password: authPassword,
@@ -9308,6 +9350,69 @@ function App() {
     if (error) {
       setAuthError(error.message || "Could not sign in.");
     }
+  };
+
+  const sendPasswordResetEmail = async () => {
+    if (!supabaseEnabled || !supabase) return;
+    const cleanEmail = authEmail.trim().toLowerCase();
+    if (!cleanEmail) {
+      setAuthError("Enter an email first, then send the reset link.");
+      setAuthNotice("");
+      return false;
+    }
+
+    setAuthError("");
+    setAuthNotice("Sending reset email...");
+
+    const redirectTo =
+      typeof window !== "undefined"
+        ? `${window.location.origin}${window.location.pathname}`
+        : undefined;
+    const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, redirectTo ? { redirectTo } : undefined);
+    if (error) {
+      setAuthError(error.message || "Could not send reset email.");
+      setAuthNotice("");
+      return false;
+    }
+
+    setAuthNotice(`Password reset email sent to ${cleanEmail}.`);
+    return true;
+  };
+
+  const completePasswordReset = async () => {
+    if (!supabaseEnabled || !supabase) return false;
+    const nextPassword = String(authResetPassword || "");
+    const confirmPassword = String(authResetPasswordConfirm || "");
+
+    if (!nextPassword.trim()) {
+      setAuthError("Enter a new password.");
+      setAuthNotice("");
+      return false;
+    }
+    if (nextPassword !== confirmPassword) {
+      setAuthError("The new passwords do not match.");
+      setAuthNotice("");
+      return false;
+    }
+
+    setAuthError("");
+    setAuthNotice("Saving new password...");
+
+    const { error } = await supabase.auth.updateUser({ password: nextPassword });
+    if (error) {
+      setAuthError(error.message || "Could not update password.");
+      setAuthNotice("");
+      return false;
+    }
+
+    if (typeof window !== "undefined" && (window.location.hash || window.location.search)) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    setAuthResetPassword("");
+    setAuthResetPasswordConfirm("");
+    setAuthFlowMode("sign_in");
+    setAuthNotice("Password updated. You can continue into the app.");
+    return true;
   };
 
   const signOutOfSharedData = async () => {
@@ -17590,12 +17695,37 @@ function App() {
       <SharedDataAuthScreen
         title="Sign in to shared data"
         message="Use the same Supabase login as v1 to load the live ingredients, components, recipes, menus, and users into v2."
+        mode={authFlowMode}
         email={authEmail}
         password={authPassword}
+        confirmPassword={authResetPasswordConfirm}
         setEmail={setAuthEmail}
-        setPassword={setAuthPassword}
+        setPassword={authFlowMode === "reset_password" ? setAuthResetPassword : setAuthPassword}
+        setConfirmPassword={setAuthResetPasswordConfirm}
         error={authError}
-        onSubmit={signInToSharedData}
+        notice={authNotice}
+        onSubmit={authFlowMode === "reset_password" ? completePasswordReset : signInToSharedData}
+        onSendResetEmail={sendPasswordResetEmail}
+        drinksLink={appSwitcherLinks.drinks}
+      />
+    );
+  }
+
+  if (supabaseEnabled && authFlowMode === "reset_password") {
+    return (
+      <SharedDataAuthScreen
+        title="Set new password"
+        message="Finish your password reset here, then continue into the shared workspace."
+        mode="reset_password"
+        email={authEmail}
+        password={authResetPassword}
+        confirmPassword={authResetPasswordConfirm}
+        setEmail={setAuthEmail}
+        setPassword={setAuthResetPassword}
+        setConfirmPassword={setAuthResetPasswordConfirm}
+        error={authError}
+        notice={authNotice}
+        onSubmit={completePasswordReset}
         drinksLink={appSwitcherLinks.drinks}
       />
     );
@@ -24430,12 +24560,17 @@ function StatusBadge({ status, label }) {
 function SharedDataAuthScreen({
   title,
   message,
+  mode = "sign_in",
   email = "",
   password = "",
+  confirmPassword = "",
   setEmail,
   setPassword,
+  setConfirmPassword,
   error = "",
+  notice = "",
   onSubmit,
+  onSendResetEmail,
   drinksLink = "",
 }) {
   return (
@@ -24449,23 +24584,48 @@ function SharedDataAuthScreen({
             {typeof onSubmit === "function" ? (
               <div className="v2-stack v2-auth-form">
                 <label className="v2-field">
-                  <span>Email</span>
-                  <input value={email} onChange={(event) => setEmail?.(event.target.value)} />
+                  <span>{mode === "reset_password" ? "Email" : "Email"}</span>
+                  <input value={email} onChange={(event) => setEmail?.(event.target.value)} readOnly={mode === "reset_password"} />
                 </label>
                 <label className="v2-field">
-                  <span>Password</span>
+                  <span>{mode === "reset_password" ? "New password" : "Password"}</span>
                   <input type="password" value={password} onChange={(event) => setPassword?.(event.target.value)} />
                 </label>
+                {mode === "reset_password" ? (
+                  <label className="v2-field">
+                    <span>Confirm new password</span>
+                    <input
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(event) => setConfirmPassword?.(event.target.value)}
+                    />
+                  </label>
+                ) : null}
                 {error ? <div className="v2-inline-callout warn"><span>{error}</span></div> : null}
+                {notice ? <div className="v2-inline-callout"><span>{notice}</span></div> : null}
                 <div className="v2-link-list">
                   <button
                     type="button"
                     className="v2-primary-button"
                     onClick={onSubmit}
-                    disabled={!String(email || "").trim() || !String(password || "").trim()}
+                    disabled={
+                      mode === "reset_password"
+                        ? !String(password || "").trim() || !String(confirmPassword || "").trim()
+                        : !String(email || "").trim() || !String(password || "").trim()
+                    }
                   >
-                    Sign in
+                    {mode === "reset_password" ? "Set password" : "Sign in"}
                   </button>
+                  {mode !== "reset_password" && typeof onSendResetEmail === "function" ? (
+                    <button
+                      type="button"
+                      className="v2-secondary-button"
+                      onClick={onSendResetEmail}
+                      disabled={!String(email || "").trim()}
+                    >
+                      Send reset email
+                    </button>
+                  ) : null}
                   {drinksLink ? (
                     <a href={drinksLink} className="v2-secondary-button">
                       Drinks app
