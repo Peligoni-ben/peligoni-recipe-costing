@@ -946,6 +946,7 @@ function hydrateSharedDataToV2({
     });
     const hasBchIngredientCode = hasBchCode(rawIngredientCode || row.id || "");
     const hasSoft1SourceCode = Boolean(soft1SourceCode);
+    const originApp = getSharedIngredientOriginApp(row);
     const storedReviewState = sharedRecordId ? ingredientReviewState[sharedRecordId] || null : null;
     const storedTradeCategory = sharedRecordId ? ingredientTradeCategoryState[sharedRecordId]?.value || "" : "";
     const categoryFields = deriveImportCategoryFields({
@@ -966,9 +967,9 @@ function hydrateSharedDataToV2({
       supplier: String(row.supplier || "").trim(),
       category: categoryFields.category,
       tradeCategory: categoryFields.tradeCategory,
-      sourceType: hasSoft1SourceCode ? "soft1" : "manual",
-      soft1Status: hasSoft1SourceCode ? "in_soft1" : "pending",
-      sourceRecordLabel: resolvedComponentLink.sourceRecordLabel,
+      sourceType: getSharedIngredientSourceType(row),
+      soft1Status: getSharedIngredientSoft1Status(row),
+      sourceRecordLabel: getSharedIngredientSourceRecordLabel(row, resolvedComponentLink.sourceRecordLabel),
       lastImportedAt: String(row.last_updated || "").trim(),
       unitCost: numberValue(row.unit_cost),
       purchaseVatRate: normalizeVatPercent(row.purchase_vat_rate, 13),
@@ -977,6 +978,8 @@ function hydrateSharedDataToV2({
       portionCostHint: numberValue(row.unit_cost),
       usedInRecipeIds: [],
       batchId: resolvedComponentLink.batchId,
+      originApp,
+      linkedDrinkItemId: String(row.linked_drink_item_id || "").trim(),
       archived: Boolean(row.is_archived),
       notes: "",
       needsSubstitutionReview: Boolean(
@@ -2297,6 +2300,82 @@ function extractPackSize(rawName = "", unit = "") {
   if (normalizedUnit === "l") return "1l";
   if (normalizedUnit === "pc") return "1pc";
   return normalizedUnit || "";
+}
+
+function getSharedDrinkItemDisplayName(row = {}) {
+  return (
+    String(row?.item_name || "").trim() ||
+    String(row?.description || "").trim() ||
+    String(row?.code || "").trim() ||
+    "Unnamed drinks item"
+  );
+}
+
+function getSharedDrinkItemUnitCost(row = {}) {
+  const direct = numberValue(row?.price_per_kilo);
+  if (direct > 0) return direct;
+  const cost = numberValue(row?.cost_without_vat);
+  const volumeWeight = numberValue(row?.volume_weight);
+  if (cost > 0 && volumeWeight > 0) {
+    return (cost / volumeWeight) * 1000;
+  }
+  return cost;
+}
+
+function mapSharedDrinkItemToIngredientSource(row = {}) {
+  const name = getSharedDrinkItemDisplayName(row);
+  const packSize = extractPackSize(`${name} ${String(row?.description || "").trim()}`);
+  const unitCost = getSharedDrinkItemUnitCost(row);
+
+  return {
+    id: `drink-item:${String(row?.id || name).trim()}`,
+    linkedDrinkItemId: String(row?.id || "").trim(),
+    originApp: "drinks",
+    externalRecordType: "drink_item",
+    name,
+    code: String(row?.code || row?.id || "").trim(),
+    sourceCode: "",
+    aliases: [],
+    referenceRawName: "",
+    status: "ready",
+    packSize,
+    supplier: "Shared drinks item",
+    category: "Drinks item",
+    tradeCategory: "",
+    sourceType: "drinks",
+    soft1Status: "shared",
+    sourceRecordLabel: "Shared drinks item",
+    lastImportedAt: String(row?.updated_at || row?.created_at || "").trim(),
+    unitCost,
+    purchaseVatRate: normalizeVatPercent(row?.vat_rate, 13),
+    costUnit: normalizeImportPricingUnit("", packSize),
+    unitsInPack: 1,
+    portionCostHint: unitCost,
+    usedInRecipeIds: [],
+    batchId: "",
+    archived: false,
+    sharedRecordId: "",
+    sharedUpdatedAt: String(row?.updated_at || "").trim(),
+    lastImportPriceMissing: false,
+    masterReviewStatus: "ready",
+    sharedDirty: false,
+    notes: String(row?.description || "").trim(),
+  };
+}
+
+function findIngredientMatchForSharedDrinkItem(drinkItem = {}, ingredients = []) {
+  const drinkCode = normalizeIngredientKey(drinkItem?.code || "");
+  const drinkName = normalizeIngredientKey(drinkItem?.name || "");
+  const activeIngredients = (ingredients || []).filter((ingredient) => !ingredient?.archived);
+  return (
+    (drinkCode
+      ? activeIngredients.find((ingredient) => normalizeIngredientKey(ingredient?.code || "") === drinkCode) || null
+      : null) ||
+    (drinkName
+      ? activeIngredients.find((ingredient) => normalizeIngredientKey(ingredient?.name || "") === drinkName) || null
+      : null) ||
+    null
+  );
 }
 
 function isWholeEggImportRow(rawName = "", sourceCode = "") {
@@ -8383,14 +8462,46 @@ function isSameMissingSharedSourceLineDetail(left = {}, right = {}) {
   );
 }
 
+function getSharedIngredientOriginApp(record = {}, fallback = "food") {
+  const explicitOrigin = String(record?.origin_app || record?.originApp || "").trim().toLowerCase();
+  if (explicitOrigin) return explicitOrigin;
+  if (String(record?.linked_drink_item_id || record?.linkedDrinkItemId || "").trim()) return "drinks";
+  return String(fallback || "food").trim().toLowerCase() || "food";
+}
+
+function getSharedIngredientSourceType(record = {}, fallback = "manual") {
+  if (String(getSharedSoft1Code(record) || record?.sourceCode || "").trim()) return "soft1";
+  const explicitSourceType = String(record?.sourceType || "").trim().toLowerCase();
+  if (explicitSourceType === "drinks") return "drinks";
+  if (getSharedIngredientOriginApp(record, fallback) === "drinks") return "drinks";
+  return explicitSourceType || String(fallback || "").trim().toLowerCase() || "manual";
+}
+
+function getSharedIngredientSoft1Status(record = {}, fallback = "") {
+  if (String(getSharedSoft1Code(record) || record?.sourceCode || "").trim()) return "in_soft1";
+  const explicitStatus = String(record?.soft1Status || "").trim().toLowerCase();
+  if (explicitStatus) return explicitStatus;
+  return getSharedIngredientSourceType(record, fallback) === "manual" ? "pending" : "shared";
+}
+
+function getSharedIngredientSourceRecordLabel(record = {}, resolvedLabel = "Shared ingredients") {
+  const safeResolvedLabel = String(resolvedLabel || "").trim() || "Shared ingredients";
+  if (safeResolvedLabel !== "Shared ingredients") return safeResolvedLabel;
+  return getSharedIngredientOriginApp(record) === "drinks" ? "Shared drinks item" : safeResolvedLabel;
+}
+
 function getIngredientSourceType(ingredient = {}) {
   if (String(ingredient.sourceCode || "").trim()) return "soft1";
+  if (ingredient.originApp === "drinks" || String(ingredient.linkedDrinkItemId || "").trim()) return "drinks";
   if (ingredient.sourceType) return ingredient.sourceType;
   return "manual";
 }
 
 function getIngredientSoft1Status(ingredient = {}) {
   if (String(ingredient.sourceCode || "").trim()) return "in_soft1";
+  if (getIngredientSourceType(ingredient) === "drinks") {
+    return String(ingredient.soft1Status || "").trim() || "shared";
+  }
   if (ingredient.soft1Status) return ingredient.soft1Status;
   return getIngredientSourceType(ingredient) === "manual" ? "pending" : "in_soft1";
 }
@@ -8954,6 +9065,7 @@ function App() {
   const [menus, setMenusRaw] = useState(initialMenus.map((menu) => syncMenuRecord(menu)));
   const [pendingMenuDeletionIds, setPendingMenuDeletionIds] = useState([]);
   const [users, setUsers] = useState(initialUsers);
+  const [sharedDrinkItems, setSharedDrinkItems] = useState([]);
   const [authSession, setAuthSession] = useState(null);
   const [authUser, setAuthUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(supabaseEnabled);
@@ -9139,6 +9251,7 @@ function App() {
     if (!supabaseEnabled || !supabase) return undefined;
     if (authLoading) return undefined;
     if (!authUser) {
+      setSharedDrinkItems([]);
       setSharedDataLoading(false);
       setSharedDataLoadFailed(false);
       setSharedDataStatus("Sign in to load shared data.");
@@ -9160,6 +9273,7 @@ function App() {
           { data: menuRows, error: menuError },
           { data: menuLineRows, error: menuLineError },
           { data: venueRows, error: venueError },
+          { data: drinkItemRows, error: drinkItemError },
         ] = await Promise.all([
           fetchAllSupabaseRows({
             label: "Shared ingredients",
@@ -9190,6 +9304,11 @@ function App() {
             label: "Shared venues",
             fetchPage: (from, to) =>
               supabase.from("venues").select("*").order("id").range(from, to),
+          }),
+          fetchAllSupabaseRows({
+            label: "Shared drinks items",
+            fetchPage: (from, to) =>
+              supabase.from("drink_items").select("*").order("id").range(from, to),
           }),
         ]);
 
@@ -9240,6 +9359,7 @@ function App() {
         if (menuError) throw menuError;
         if (menuLineError) throw menuLineError;
         if (venueError) throw venueError;
+        if (drinkItemError && !isMissingTableError(drinkItemError, "drink_items")) throw drinkItemError;
         const mergedIngredientReviewState = {
           ...ingredientMasterReviewState,
           ...(ingredientWorkflowError
@@ -9338,6 +9458,9 @@ function App() {
         setIngredientSubstitutionState(mergedIngredientSubstitutionState);
         setIngredientTradeCategoryState(mergedIngredientTradeCategoryState);
         setIngredientSourceCodeRedirectState(mergedIngredientSourceCodeRedirectState);
+        setSharedDrinkItems(
+          Array.isArray(drinkItemRows) ? drinkItemRows.map(mapSharedDrinkItemToIngredientSource) : []
+        );
         setIgnoredImportRows(mergedIgnoredImportRows);
         setRecipeReviewFlagState(mergedRecipeReviewFlagState);
         setBatchReviewFlagState(mergedBatchReviewFlagState);
@@ -11834,8 +11957,9 @@ function App() {
         packSize: String(data?.pack_size || current.packSize).trim(),
         supplier: String(data?.supplier || "").trim(),
         category: String(data?.category || suggestedCategory).trim(),
-        sourceType: getSharedSoft1Code(data) ? "soft1" : "manual",
-        soft1Status: getSharedSoft1Code(data) ? "in_soft1" : "pending",
+        sourceType: getSharedIngredientSourceType(data, current.sourceType || current.originApp || "manual"),
+        soft1Status: getSharedIngredientSoft1Status(data, current.soft1Status || current.sourceType || current.originApp || ""),
+        sourceRecordLabel: getSharedIngredientSourceRecordLabel(data, current.sourceRecordLabel),
         purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, current.purchaseVatRate ?? 13),
         costUnit: normalizeImportPricingUnit(
           String(data?.cost_unit || current.costUnit || "").trim(),
@@ -11846,6 +11970,8 @@ function App() {
           String(data?.pack_size || current.packSize || "").trim()
         ),
         lastImportedAt: String(data?.last_updated || current.lastImportedAt).trim(),
+        originApp: getSharedIngredientOriginApp(data, current.originApp || "food"),
+        linkedDrinkItemId: String(data?.linked_drink_item_id || current.linkedDrinkItemId || "").trim(),
         sharedUpdatedAt: nextSharedUpdatedAt,
         sharedDirty: false,
       }));
@@ -11902,6 +12028,7 @@ function App() {
 
     const nextSharedUpdatedAt = String(data?.updated_at || data?.last_updated || getTodayImportDate()).trim();
     const nextSharedRecordId = String(data?.id || ingredient.sharedRecordId || "").trim();
+    const nextOriginApp = getSharedIngredientOriginApp(data, ingredient.originApp || "food");
     const storedTradeCategory =
       ingredientTradeCategoryState[nextSharedRecordId || ingredient.sharedRecordId || ingredient.id]?.value ||
       ingredient.tradeCategory ||
@@ -11915,8 +12042,9 @@ function App() {
       supplier: String(data?.supplier || "").trim(),
       category: String(data?.category || "").trim(),
       tradeCategory: storedTradeCategory,
-      sourceType: getSharedSoft1Code(data) ? "soft1" : "manual",
-      soft1Status: getSharedSoft1Code(data) ? "in_soft1" : "pending",
+      sourceType: getSharedIngredientSourceType(data, ingredient.sourceType || nextOriginApp),
+      soft1Status: getSharedIngredientSoft1Status(data, ingredient.soft1Status || ingredient.sourceType || nextOriginApp),
+      sourceRecordLabel: getSharedIngredientSourceRecordLabel(data, ingredient.sourceRecordLabel),
       purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, ingredient.purchaseVatRate ?? 13),
       costUnit: normalizeImportPricingUnit(
         String(data?.cost_unit || ingredient.costUnit || "").trim(),
@@ -11927,6 +12055,8 @@ function App() {
         String(data?.pack_size || ingredient.packSize || "").trim()
       ),
       lastImportedAt: String(data?.last_updated || ingredient.lastImportedAt).trim(),
+      originApp: nextOriginApp,
+      linkedDrinkItemId: String(data?.linked_drink_item_id || ingredient.linkedDrinkItemId || "").trim(),
       sharedRecordId: nextSharedRecordId,
       sharedUpdatedAt: nextSharedUpdatedAt,
       archived: Boolean(data?.is_archived),
@@ -12003,6 +12133,7 @@ function App() {
     });
     const hasBchIngredientCode = hasBchCode(rawIngredientCode || row.id || "");
     const hasSoft1SourceCode = Boolean(soft1SourceCode);
+    const originApp = getSharedIngredientOriginApp(row);
     const storedReviewState = sharedRecordId ? ingredientMasterReviewState[sharedRecordId] || null : null;
     const storedTradeCategory = sharedRecordId ? ingredientTradeCategoryState[sharedRecordId]?.value || "" : "";
     const categoryFields = deriveImportCategoryFields({
@@ -12023,9 +12154,9 @@ function App() {
       supplier: String(row.supplier || "").trim(),
       category: categoryFields.category,
       tradeCategory: categoryFields.tradeCategory,
-      sourceType: hasSoft1SourceCode ? "soft1" : "manual",
-      soft1Status: hasSoft1SourceCode ? "in_soft1" : "pending",
-      sourceRecordLabel: resolvedComponentLink.sourceRecordLabel,
+      sourceType: getSharedIngredientSourceType(row),
+      soft1Status: getSharedIngredientSoft1Status(row),
+      sourceRecordLabel: getSharedIngredientSourceRecordLabel(row, resolvedComponentLink.sourceRecordLabel),
       lastImportedAt: String(row.last_updated || "").trim(),
       unitCost: numberValue(row.unit_cost),
       purchaseVatRate: normalizeVatPercent(row.purchase_vat_rate, 13),
@@ -12034,6 +12165,8 @@ function App() {
       portionCostHint: numberValue(row.unit_cost),
       usedInRecipeIds: [],
       batchId: resolvedComponentLink.batchId,
+      originApp,
+      linkedDrinkItemId: String(row.linked_drink_item_id || "").trim(),
       archived: false,
       notes: "",
       needsSubstitutionReview: Boolean(
@@ -12139,8 +12272,9 @@ function App() {
                 supplier: String(data?.supplier || "").trim(),
                 category: String(data?.category || "").trim(),
                 tradeCategory: row.tradeCategory || ingredient.tradeCategory || "",
-                sourceType: getSharedSoft1Code(data) ? "soft1" : "manual",
-                soft1Status: getSharedSoft1Code(data) ? "in_soft1" : "pending",
+                sourceType: getSharedIngredientSourceType(data, ingredient.sourceType || ingredient.originApp || "manual"),
+                soft1Status: getSharedIngredientSoft1Status(data, ingredient.soft1Status || ingredient.sourceType || ingredient.originApp || ""),
+                sourceRecordLabel: getSharedIngredientSourceRecordLabel(data, ingredient.sourceRecordLabel),
                 purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, ingredient.purchaseVatRate ?? 13),
                 costUnit: normalizeImportPricingUnit(
                   String(data?.cost_unit || ingredient.costUnit || "").trim(),
@@ -12152,6 +12286,8 @@ function App() {
                 ),
                 lastImportedAt: String(data?.last_updated || ingredient.lastImportedAt).trim(),
                 lastImportPriceMissing: !(Number(row.averagePrice || 0) > 0),
+                originApp: getSharedIngredientOriginApp(data, ingredient.originApp || "food"),
+                linkedDrinkItemId: String(data?.linked_drink_item_id || ingredient.linkedDrinkItemId || "").trim(),
                 sharedUpdatedAt: nextSharedUpdatedAt,
                 sharedDirty: false,
               }
@@ -13218,10 +13354,15 @@ function App() {
     }
   };
 
-  const openIngredientMaker = ({ attachToRecipeId = "", attachToBatchId = "", openRecordAfterSave = true } = {}) => {
+  const openIngredientMaker = ({
+    attachToRecipeId = "",
+    attachToBatchId = "",
+    openRecordAfterSave = true,
+    initialDraft = null,
+  } = {}) => {
     setIngredientMakerModal({
       isOpen: true,
-      draft: createEmptyIngredient(ingredientMaster.length),
+      draft: sanitizeIngredientDraft(initialDraft || createEmptyIngredient(ingredientMaster.length), ingredientMaster.length),
       attachToRecipeId,
       attachToBatchId,
       openRecordAfterSave,
@@ -13362,6 +13503,59 @@ function App() {
     }));
   };
 
+  const buildIngredientDraftFromSharedDrinkItem = (drinkItem) => {
+    const fallback = createEmptyIngredient(ingredientMaster.length);
+    const nextCode =
+      String(drinkItem?.code || "").trim() ||
+      generateIngredientCodeFromDraft(
+        {
+          ...fallback,
+          name: String(drinkItem?.name || fallback.name).trim(),
+          category: String(drinkItem?.category || "Drinks item").trim(),
+        },
+        ingredientMaster,
+        ""
+      );
+
+    return sanitizeIngredientDraft(
+      {
+        ...fallback,
+        id: `ing-${Date.now()}`,
+        name: String(drinkItem?.name || fallback.name).trim(),
+        code: nextCode,
+        packSize: String(drinkItem?.packSize || "").trim(),
+        supplier: "Shared drinks item",
+        category: String(drinkItem?.category || "Drinks item").trim() || "Drinks item",
+        sourceType: "manual",
+        soft1Status: "shared",
+        sourceRecordLabel: "Copied from shared drinks items",
+        unitCost: Number(drinkItem?.unitCost || 0),
+        purchaseVatRate: normalizeVatPercent(drinkItem?.purchaseVatRate, 13),
+        costUnit: normalizeImportPricingUnit(
+          String(drinkItem?.costUnit || "").trim(),
+          String(drinkItem?.packSize || "").trim()
+        ),
+        unitsInPack: normalizeUnitsInPack(drinkItem?.unitsInPack, drinkItem?.packSize || ""),
+        portionCostHint: Number(drinkItem?.portionCostHint || drinkItem?.unitCost || 0),
+        notes: `Copied from shared drinks item ${String(drinkItem?.code || drinkItem?.name || "").trim()}.`,
+      },
+      ingredientMaster.length
+    );
+  };
+
+  const openIngredientMakerFromDrinkItem = (
+    drinkItem,
+    { attachToRecipeId = "", attachToBatchId = "", openRecordAfterSave = true } = {}
+  ) => {
+    if (!drinkItem) return;
+    openIngredientMaker({
+      attachToRecipeId,
+      attachToBatchId,
+      openRecordAfterSave,
+      initialDraft: buildIngredientDraftFromSharedDrinkItem(drinkItem),
+    });
+  };
+
   const saveIngredientMaker = async () => {
     if (ingredientMakerModal.saving) return;
 
@@ -13410,8 +13604,9 @@ function App() {
           packSize: String(data?.pack_size || nextIngredient.packSize).trim(),
           supplier: String(data?.supplier || "").trim(),
           category: String(data?.category || nextIngredient.category).trim(),
-          sourceType: getSharedSoft1Code(data) ? "soft1" : "manual",
-          soft1Status: getSharedSoft1Code(data) ? "in_soft1" : "pending",
+          sourceType: getSharedIngredientSourceType(data, nextIngredient.sourceType || nextIngredient.originApp || "manual"),
+          soft1Status: getSharedIngredientSoft1Status(data, nextIngredient.soft1Status || nextIngredient.sourceType || nextIngredient.originApp || ""),
+          sourceRecordLabel: getSharedIngredientSourceRecordLabel(data, nextIngredient.sourceRecordLabel),
           purchaseVatRate: normalizeVatPercent(data?.purchase_vat_rate, nextIngredient.purchaseVatRate ?? 13),
           costUnit: normalizeImportPricingUnit(
             String(data?.cost_unit || nextIngredient.costUnit || "").trim(),
@@ -13422,6 +13617,8 @@ function App() {
             String(data?.pack_size || nextIngredient.packSize || "").trim()
           ),
           lastImportedAt: String(data?.last_updated || nextIngredient.lastImportedAt || getTodayImportDate()).trim(),
+          originApp: getSharedIngredientOriginApp(data, nextIngredient.originApp || "food"),
+          linkedDrinkItemId: String(data?.linked_drink_item_id || nextIngredient.linkedDrinkItemId || "").trim(),
           sharedRecordId: nextSharedRecordId,
           sharedUpdatedAt: nextSharedUpdatedAt,
           archived: Boolean(data?.is_archived),
@@ -17226,6 +17423,33 @@ function App() {
       ),
     [ingredientParsedIndexMap]
   );
+  const sharedDrinkItemSearchCorpusMap = useMemo(
+    () =>
+      new Map(
+        sharedDrinkItems.map((item) => [
+          item.id,
+          [item.name, item.code, item.packSize, item.category, item.notes]
+            .map(normalizeSearchText)
+            .filter(Boolean)
+            .join(" "),
+        ])
+      ),
+    [sharedDrinkItems]
+  );
+  const sharedDrinkCatalogueRows = useMemo(
+    () =>
+      sharedDrinkItems
+        .map((item) => ({
+          ...item,
+          matchedIngredient: findIngredientMatchForSharedDrinkItem(item, ingredientMaster),
+        }))
+        .filter((item) =>
+          !trimmedSearchQuery ? true : String(sharedDrinkItemSearchCorpusMap.get(item.id) || "").includes(trimmedSearchQuery)
+        )
+        .sort((left, right) => compareIngredientsByReferencePrice(left, right)),
+    [sharedDrinkItems, ingredientMaster, trimmedSearchQuery, sharedDrinkItemSearchCorpusMap]
+  );
+  const drinksSourceCatalogueCount = sharedDrinkItems.length;
 
   const ingredientCatalogueBaseRows = ingredientMaster.filter((item) => {
     const sharedRecordId = String(item.sharedRecordId || "").trim();
@@ -17274,6 +17498,8 @@ function App() {
       ? Boolean(item.batchId)
       : ingredientRecordFilter === "manual"
         ? !item.batchId && (getIngredientSourceType(item) === "manual" || getIngredientSoft1Status(item) === "pending")
+      : ingredientRecordFilter === "drinks_source"
+        ? false
       : ingredientRecordFilter === "simple"
         ? !item.batchId && getIngredientSourceType(item) !== "manual" && getIngredientSoft1Status(item) !== "pending"
         : true
@@ -17972,6 +18198,8 @@ function App() {
                 rows={ingredientRows}
                 allIngredients={ingredientMaster}
                 catalogueBaseRows={ingredientCatalogueBaseRows}
+                drinksRows={sharedDrinkCatalogueRows}
+                drinksSourceCatalogueCount={drinksSourceCatalogueCount}
                 batchMap={recordMaps.batch}
                 importRows={ingredientImportRows}
                 importSummary={importSummary}
@@ -17990,6 +18218,7 @@ function App() {
                 acceptGroup={acceptGroup}
                 discardImportGroup={discardImportGroup}
                 openIngredientMaker={openIngredientMaker}
+                openIngredientMakerFromDrinkItem={openIngredientMakerFromDrinkItem}
                 openIngredientSubstitution={openIngredientSubstitution}
                 exportManualIngredients={exportManualIngredients}
                 pendingManualIngredientCount={pendingManualIngredientCount}
@@ -18177,6 +18406,7 @@ function App() {
                 menuEditorStep={menuEditorStep}
                 setMenuEditorStep={setMenuEditorStep}
                 ingredientMaster={trustedIngredientMaster}
+                sharedDrinkItems={sharedDrinkItems}
                 ingredientCategoryOptions={ingredientCategoryOptions}
                 ingredientTradeCategoryOptions={ingredientTradeCategoryOptions}
                 batches={batches}
@@ -18199,6 +18429,7 @@ function App() {
               toggleRecipeIngredientLink={toggleRecipeIngredientLink}
               toggleRecipeBatchLink={toggleRecipeBatchLink}
               openIngredientMaker={openIngredientMaker}
+              openIngredientMakerFromDrinkItem={openIngredientMakerFromDrinkItem}
               openIngredientSubstitution={openIngredientSubstitution}
               openIngredientMerge={openIngredientMerge}
 	              openRecipeCostSheetPreview={openRecipeCostSheetPreview}
@@ -18353,6 +18584,7 @@ function App() {
                 menuEditorStep={menuEditorStep}
                 setMenuEditorStep={setMenuEditorStep}
                 ingredientMaster={trustedIngredientMaster}
+                sharedDrinkItems={sharedDrinkItems}
                 batches={batches}
                 updateRecipeField={updateRecipeField}
                 markRecipeReady={markRecipeReady}
@@ -18373,6 +18605,7 @@ function App() {
                 toggleRecipeIngredientLink={toggleRecipeIngredientLink}
                 toggleRecipeBatchLink={toggleRecipeBatchLink}
                 openIngredientMaker={openIngredientMaker}
+                openIngredientMakerFromDrinkItem={openIngredientMakerFromDrinkItem}
                 openIngredientMerge={openIngredientMerge}
 		                openRecipeCostSheetPreview={openRecipeCostSheetPreview}
 		                openRecipeChefSheetPreview={openRecipeChefSheetPreview}
@@ -18514,6 +18747,8 @@ function IngredientsPanel({
   rows,
   allIngredients,
   catalogueBaseRows,
+  drinksRows,
+  drinksSourceCatalogueCount,
   batchMap,
   importRows,
   importSummary,
@@ -18532,6 +18767,7 @@ function IngredientsPanel({
   acceptGroup,
   discardImportGroup,
   openIngredientMaker,
+  openIngredientMakerFromDrinkItem,
   exportManualIngredients,
   pendingManualIngredientCount,
   learningRules,
@@ -18827,6 +19063,7 @@ function IngredientsPanel({
           simpleCatalogueCount={simpleCatalogueCount}
           componentDerivedCatalogueCount={componentDerivedCatalogueCount}
           manualCatalogueCount={manualCatalogueCount}
+          drinksSourceCatalogueCount={drinksSourceCatalogueCount}
           ingredientStatusFilter={ingredientStatusFilter}
           setIngredientStatusFilter={setIngredientStatusFilter}
           forReviewCatalogueCount={forReviewCatalogueCount}
@@ -18842,6 +19079,7 @@ function IngredientsPanel({
           visibleArchivedRowIds={visibleArchivedRowIds}
           bulkDeleteArchivedIngredients={bulkDeleteArchivedIngredients}
           rows={rows}
+          drinksRows={drinksRows}
           rowNeedsManualReview={rowNeedsManualReview}
           rowNeedsPriceReview={rowNeedsPriceReview}
           rowNeedsRuleCatchup={rowNeedsRuleCatchup}
@@ -18852,6 +19090,7 @@ function IngredientsPanel({
           batchMap={batchMap}
           selectedRecord={selectedRecord}
           openRecord={openRecord}
+          openIngredientMakerFromDrinkItem={openIngredientMakerFromDrinkItem}
         />
       ) : null}
     </>
@@ -19201,6 +19440,7 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
   simpleCatalogueCount,
   componentDerivedCatalogueCount,
   manualCatalogueCount,
+  drinksSourceCatalogueCount,
   ingredientStatusFilter,
   setIngredientStatusFilter,
   forReviewCatalogueCount,
@@ -19216,6 +19456,7 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
   visibleArchivedRowIds,
   bulkDeleteArchivedIngredients,
   rows,
+  drinksRows,
   rowNeedsManualReview,
   rowNeedsPriceReview,
   rowNeedsRuleCatchup,
@@ -19226,6 +19467,7 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
   batchMap,
   selectedRecord,
   openRecord,
+  openIngredientMakerFromDrinkItem,
 }) {
   return (
     <div className="v2-stack">
@@ -19264,75 +19506,91 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
         >
           Manual ({manualCatalogueCount})
         </button>
-      </div>
-      <div className="v2-workspace-switch">
         <button
           type="button"
-          className={`v2-pill ${ingredientStatusFilter === "all" ? "active" : ""}`}
-          onClick={() => setIngredientStatusFilter("all")}
+          className={`v2-pill ${ingredientRecordFilter === "drinks_source" ? "active" : ""}`}
+          onClick={() => setIngredientRecordFilter("drinks_source")}
         >
-          Active
-        </button>
-        <button
-          type="button"
-          className={`v2-pill ${ingredientStatusFilter === "needs_attention" ? "active" : ""}`}
-          onClick={() => setIngredientStatusFilter("needs_attention")}
-        >
-          Needs attention ({forReviewCatalogueCount})
-        </button>
-        <button
-          type="button"
-          className={`v2-pill ${ingredientStatusFilter === "manual_review" ? "active" : ""}`}
-          onClick={() => setIngredientStatusFilter("manual_review")}
-        >
-          Manual review ({manualReviewCatalogueCount})
-        </button>
-        <button
-          type="button"
-          className={`v2-pill ${ingredientStatusFilter === "price_review" ? "active" : ""}`}
-          onClick={() => setIngredientStatusFilter("price_review")}
-        >
-          Price review ({priceReviewCatalogueCount})
-        </button>
-        <button
-          type="button"
-          className={`v2-pill ${ingredientStatusFilter === "rule_catchup" ? "active" : ""}`}
-          onClick={() => setIngredientStatusFilter("rule_catchup")}
-        >
-          Rule catch-up ({ruleCatchupCatalogueCount})
-        </button>
-        <button
-          type="button"
-          className={`v2-pill ${ingredientStatusFilter === "archived" ? "active" : ""}`}
-          onClick={() => setIngredientStatusFilter("archived")}
-        >
-          Archived ({archivedCatalogueCount})
+          Drinks ({drinksSourceCatalogueCount})
         </button>
       </div>
-      <div className="v2-form-grid">
-        <label className="v2-field">
-          <span>Filter by product</span>
-          <select value={ingredientProductFilter} onChange={(event) => setIngredientProductFilter(event.target.value)}>
-            <option value="all">All products</option>
-            {ingredientProductOptions.map((product) => (
-              <option key={product} value={product}>
-                {product}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="v2-field">
-          <span>Filter by source</span>
-          <select value={ingredientSourceFilter} onChange={(event) => setIngredientSourceFilter(event.target.value)}>
-            <option value="all">All sources</option>
-            <option value="simple">Simple</option>
-            <option value="component_derived">Component</option>
-            <option value="manual">Manual</option>
-            <option value="pending">Pending in Soft1</option>
-          </select>
-        </label>
-      </div>
-      {ingredientStatusFilter === "archived" ? (
+      {ingredientRecordFilter === "drinks_source" ? (
+        <div className="v2-inline-callout">
+          <strong>Shared drinks items stay separate</strong>
+          <span>Use this list to find items from the drinks app, then copy one into food ingredients only when you actually need it.</span>
+        </div>
+      ) : (
+        <>
+          <div className="v2-workspace-switch">
+            <button
+              type="button"
+              className={`v2-pill ${ingredientStatusFilter === "all" ? "active" : ""}`}
+              onClick={() => setIngredientStatusFilter("all")}
+            >
+              Active
+            </button>
+            <button
+              type="button"
+              className={`v2-pill ${ingredientStatusFilter === "needs_attention" ? "active" : ""}`}
+              onClick={() => setIngredientStatusFilter("needs_attention")}
+            >
+              Needs attention ({forReviewCatalogueCount})
+            </button>
+            <button
+              type="button"
+              className={`v2-pill ${ingredientStatusFilter === "manual_review" ? "active" : ""}`}
+              onClick={() => setIngredientStatusFilter("manual_review")}
+            >
+              Manual review ({manualReviewCatalogueCount})
+            </button>
+            <button
+              type="button"
+              className={`v2-pill ${ingredientStatusFilter === "price_review" ? "active" : ""}`}
+              onClick={() => setIngredientStatusFilter("price_review")}
+            >
+              Price review ({priceReviewCatalogueCount})
+            </button>
+            <button
+              type="button"
+              className={`v2-pill ${ingredientStatusFilter === "rule_catchup" ? "active" : ""}`}
+              onClick={() => setIngredientStatusFilter("rule_catchup")}
+            >
+              Rule catch-up ({ruleCatchupCatalogueCount})
+            </button>
+            <button
+              type="button"
+              className={`v2-pill ${ingredientStatusFilter === "archived" ? "active" : ""}`}
+              onClick={() => setIngredientStatusFilter("archived")}
+            >
+              Archived ({archivedCatalogueCount})
+            </button>
+          </div>
+          <div className="v2-form-grid">
+            <label className="v2-field">
+              <span>Filter by product</span>
+              <select value={ingredientProductFilter} onChange={(event) => setIngredientProductFilter(event.target.value)}>
+                <option value="all">All products</option>
+                {ingredientProductOptions.map((product) => (
+                  <option key={product} value={product}>
+                    {product}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="v2-field">
+              <span>Filter by source</span>
+              <select value={ingredientSourceFilter} onChange={(event) => setIngredientSourceFilter(event.target.value)}>
+                <option value="all">All sources</option>
+                <option value="simple">Simple</option>
+                <option value="component_derived">Component</option>
+                <option value="manual">Manual</option>
+                <option value="pending">Pending in Soft1</option>
+              </select>
+            </label>
+          </div>
+        </>
+      )}
+      {ingredientRecordFilter !== "drinks_source" && ingredientStatusFilter === "archived" ? (
         <div className="v2-link-list">
           <button
             type="button"
@@ -19344,7 +19602,49 @@ const IngredientsCatalogueWorkspace = memo(function IngredientsCatalogueWorkspac
           </button>
         </div>
       ) : null}
-      {rows.length ? (
+      {ingredientRecordFilter === "drinks_source" ? (
+        drinksRows.length ? (
+          drinksRows.map((row) => {
+            const referencePrice = getIngredientReferencePrice(row);
+            const matchedIngredient = row.matchedIngredient || null;
+            return (
+              <div key={row.id} className="v2-info-card">
+                <strong>{row.name}</strong>
+                <span>
+                  {[row.code, row.packSize, row.category].filter(Boolean).join(" · ")}
+                </span>
+                <div className="v2-tag-row">
+                  <span className="v2-tag">Shared drinks item</span>
+                  {referencePrice ? <span className="v2-tag">{formatIngredientReferencePrice(referencePrice, true)}</span> : null}
+                  {matchedIngredient ? <span className="v2-tag">Already in food ingredients</span> : null}
+                </div>
+                {matchedIngredient ? (
+                  <span>Matched to {matchedIngredient.name} in the food ingredient master.</span>
+                ) : (
+                  <span>Not yet copied into the food ingredient master.</span>
+                )}
+                <div className="v2-link-list">
+                  {matchedIngredient ? (
+                    <button type="button" className="v2-secondary-button" onClick={() => openRecord("ingredient", matchedIngredient.id)}>
+                      Open food ingredient
+                    </button>
+                  ) : (
+                    <button type="button" className="v2-primary-button" onClick={() => openIngredientMakerFromDrinkItem?.(row)}>
+                      Copy into food ingredients
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div className="v2-empty-state">
+            <div className="v2-eyebrow">No matches</div>
+            <h3>No shared drinks items match the current search</h3>
+            <p>Try a broader search, or switch back to the food ingredient master.</p>
+          </div>
+        )
+      ) : rows.length ? (
         rows.map((row) => {
           const parsedIndex =
             ingredientParsedIndexMap?.get(row.id) || getIngredientMasterParsedIndex(row, learningRules, soft1SourceRows);
@@ -21334,6 +21634,7 @@ function RecipeWorkflowDetail({
   recipeEditorStep,
   setRecipeEditorStep,
   ingredientMaster,
+  sharedDrinkItems = [],
   batches,
   updateRecipeField,
   markRecipeReady,
@@ -21354,6 +21655,7 @@ function RecipeWorkflowDetail({
   toggleRecipeIngredientLink,
   toggleRecipeBatchLink,
   openIngredientMaker,
+  openIngredientMakerFromDrinkItem,
   openRecipeCostSheetPreview,
   openRecipeChefSheetPreview,
   convertRecipeToBatchDraft,
@@ -21369,6 +21671,7 @@ function RecipeWorkflowDetail({
   const [ingredientPickerQuery, setIngredientPickerQuery] = useState("");
   const [batchPickerQuery, setBatchPickerQuery] = useState("");
   const [activePicker, setActivePicker] = useState("");
+  const [ingredientPickerSource, setIngredientPickerSource] = useState("food");
   const [showRecipePersistenceTrace, setShowRecipePersistenceTrace] = useState(false);
   const deferredIngredientPickerQuery = useDeferredValue(ingredientPickerQuery);
   const deferredBatchPickerQuery = useDeferredValue(batchPickerQuery);
@@ -21412,6 +21715,25 @@ function RecipeWorkflowDetail({
       .sort(compareIngredientSearchMatches)
       .slice(0, 18);
   }, [deferredIngredientPickerQuery, ingredientMaster]);
+  const drinksIngredientPickerResults = useMemo(() => {
+    const query = deferredIngredientPickerQuery.trim();
+    if (!query) return [];
+
+    return sharedDrinkItems
+      .map((drinkItem) => ({
+        drinkItem: {
+          ...drinkItem,
+          matchedIngredient: findIngredientMatchForSharedDrinkItem(drinkItem, ingredientMaster),
+        },
+        score: scoreIngredientSearchMatch(drinkItem, query),
+      }))
+      .filter((match) => match.score >= 50)
+      .sort((left, right) => {
+        if (right.score !== left.score) return right.score - left.score;
+        return compareIngredientsByReferencePrice(left.drinkItem, right.drinkItem);
+      })
+      .slice(0, 18);
+  }, [deferredIngredientPickerQuery, ingredientMaster, sharedDrinkItems]);
   const batchPickerResults = useMemo(() => {
     const query = deferredBatchPickerQuery.trim();
     if (!query) return [];
@@ -21441,6 +21763,7 @@ function RecipeWorkflowDetail({
 
   const openIngredientPicker = () => {
     setIngredientPickerQuery("");
+    setIngredientPickerSource("food");
     setActivePicker("ingredient");
   };
 
@@ -21463,6 +21786,22 @@ function RecipeWorkflowDetail({
   const createIngredientFromPicker = () => {
     closePicker();
     openIngredientMaker({ attachToRecipeId: record.id, openRecordAfterSave: false });
+  };
+  const chooseDrinkItemFromPicker = async (drinkItem) => {
+    const matchedIngredient = findIngredientMatchForSharedDrinkItem(drinkItem, ingredientMaster);
+    if (matchedIngredient) {
+      if ((record.ingredientIds || []).includes(matchedIngredient.id)) {
+        closePicker();
+        return;
+      }
+      await chooseIngredientFromPicker(matchedIngredient);
+      return;
+    }
+    closePicker();
+    openIngredientMakerFromDrinkItem?.(drinkItem, {
+      attachToRecipeId: record.id,
+      openRecordAfterSave: false,
+    });
   };
   const menuRestaurants = Array.from(new Set(menuLinks.map((menu) => menu.restaurant).filter(Boolean))).sort();
   const menuServices = Array.from(new Set(menuLinks.map((menu) => menu.service).filter(Boolean))).sort();
@@ -22118,14 +22457,68 @@ function RecipeWorkflowDetail({
             </div>
           </div>
           <label className="v2-field">
-            <span>Search ingredients</span>
+            <span>{ingredientPickerSource === "drinks" ? "Search drinks items" : "Search food ingredients"}</span>
             <input
               value={ingredientPickerQuery}
               onChange={(event) => setIngredientPickerQuery(event.target.value)}
               placeholder="Start with a broad product like beef, milk, or bread"
             />
           </label>
-          {!ingredientPickerQuery.trim() ? null : ingredientPickerResults.length ? (
+          <div className="v2-workspace-switch">
+            <button
+              type="button"
+              className={`v2-pill ${ingredientPickerSource === "food" ? "active" : ""}`}
+              onClick={() => setIngredientPickerSource("food")}
+            >
+              Food ingredients
+            </button>
+            <button
+              type="button"
+              className={`v2-pill ${ingredientPickerSource === "drinks" ? "active" : ""}`}
+              onClick={() => setIngredientPickerSource("drinks")}
+            >
+              Drinks items
+            </button>
+          </div>
+          {ingredientPickerSource === "drinks" ? (
+            !ingredientPickerQuery.trim() ? (
+              <div className="v2-micro-note">Search shared drinks items from the drinks app. Copy one into food ingredients only when you need it here.</div>
+            ) : drinksIngredientPickerResults.length ? (
+              <div className="v2-select-list v2-picker-list">
+                {drinksIngredientPickerResults.map(({ drinkItem, score }) => {
+                  const matchedIngredient = drinkItem.matchedIngredient || null;
+                  const isActive = matchedIngredient ? (record.ingredientIds || []).includes(matchedIngredient.id) : false;
+                  const referencePrice = getIngredientReferencePrice(drinkItem);
+                  return (
+                    <button
+                      key={drinkItem.id}
+                      type="button"
+                      className={`v2-select-row ${isActive ? "active" : ""}`}
+                      onClick={() => chooseDrinkItemFromPicker(drinkItem)}
+                    >
+                      <strong>{drinkItem.name}</strong>
+                      <span>{drinkItem.code} · {drinkItem.packSize} · {drinkItem.category}</span>
+                      <div className="v2-tag-row">
+                        <span className="v2-tag">Shared drinks item</span>
+                        {referencePrice ? <span className="v2-tag">{formatIngredientReferencePrice(referencePrice, true)}</span> : null}
+                        {matchedIngredient ? <span className="v2-tag">Already in food ingredients</span> : null}
+                      </div>
+                      <span>
+                        {matchedIngredient
+                          ? isActive
+                            ? `Already added via ${matchedIngredient.name}`
+                            : `Use existing food ingredient ${matchedIngredient.name}`
+                          : "Copy into food ingredients"}
+                      </span>
+                      <span>Search confidence {Math.round(score)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="v2-micro-note">No drinks items match that search.</div>
+            )
+          ) : !ingredientPickerQuery.trim() ? null : ingredientPickerResults.length ? (
             <div className="v2-select-list v2-picker-list">
               {ingredientPickerResults.map(({ ingredient, score }) => {
                 const isActive = (record.ingredientIds || []).includes(ingredient.id);
@@ -22175,6 +22568,7 @@ function BatchWorkflowDetail({
   batchEditorStep,
   setBatchEditorStep,
   ingredientMaster,
+  sharedDrinkItems = [],
   updateBatchField,
   updateBatchIngredientLine,
   toggleBatchIngredientLink,
@@ -22189,6 +22583,7 @@ function BatchWorkflowDetail({
   returnBatchToReady,
   publishBatchToIngredient,
   openIngredientMaker,
+  openIngredientMakerFromDrinkItem,
   openIngredientSubstitution,
   openBatchCostSheetPreview,
   openBatchChefSheetPreview,
@@ -22211,6 +22606,7 @@ function BatchWorkflowDetail({
   const safeMethodSteps = Array.isArray(record?.methodSteps) ? record.methodSteps : [];
   const [ingredientPickerQuery, setIngredientPickerQuery] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [ingredientPickerSource, setIngredientPickerSource] = useState("food");
   const deferredIngredientPickerQuery = useDeferredValue(ingredientPickerQuery);
   const publishedIngredient = record.publishedIngredientId ? maps.ingredient.get(record.publishedIngredientId) : null;
   const ingredientLinks = safeIngredientLines
@@ -22288,6 +22684,25 @@ function BatchWorkflowDetail({
       .sort(compareIngredientSearchMatches)
       .slice(0, 18);
   }, [ingredientMaster, deferredIngredientPickerQuery]);
+  const drinksIngredientPickerResults = useMemo(() => {
+    const query = deferredIngredientPickerQuery.trim();
+    if (!query) return [];
+
+    return sharedDrinkItems
+      .map((drinkItem) => ({
+        drinkItem: {
+          ...drinkItem,
+          matchedIngredient: findIngredientMatchForSharedDrinkItem(drinkItem, ingredientMaster),
+        },
+        score: scoreIngredientSearchMatch(drinkItem, query),
+      }))
+      .filter((match) => match.score >= 50)
+      .sort((left, right) => {
+        if (right.score !== left.score) return right.score - left.score;
+        return compareIngredientsByReferencePrice(left.drinkItem, right.drinkItem);
+      })
+      .slice(0, 18);
+  }, [deferredIngredientPickerQuery, ingredientMaster, sharedDrinkItems]);
   const missingIngredientSuggestions = useMemo(
     () =>
       (record.sharedMissingLineDetails || [])
@@ -22409,6 +22824,22 @@ function BatchWorkflowDetail({
   const chooseIngredientFromPicker = async (ingredient) => {
     await toggleBatchIngredientLink(record.id, ingredient);
     closePicker();
+  };
+  const chooseDrinkItemFromPicker = async (drinkItem) => {
+    const matchedIngredient = findIngredientMatchForSharedDrinkItem(drinkItem, ingredientMaster);
+    if (matchedIngredient) {
+      if ((record.ingredientIds || []).includes(matchedIngredient.id)) {
+        closePicker();
+        return;
+      }
+      await chooseIngredientFromPicker(matchedIngredient);
+      return;
+    }
+    closePicker();
+    openIngredientMakerFromDrinkItem?.(drinkItem, {
+      attachToBatchId: record.id,
+      openRecordAfterSave: false,
+    });
   };
 
   const createIngredientFromPicker = () => {
@@ -22592,7 +23023,14 @@ function BatchWorkflowDetail({
               <div className="v2-micro-note">No ingredient lines linked yet.</div>
             )}
             <div className="v2-link-list">
-              <button type="button" className="v2-primary-button" onClick={() => setPickerOpen(true)}>
+              <button
+                type="button"
+                className="v2-primary-button"
+                onClick={() => {
+                  setIngredientPickerSource("food");
+                  setPickerOpen(true);
+                }}
+              >
                 Add ingredient
               </button>
             </div>
@@ -22930,14 +23368,68 @@ function BatchWorkflowDetail({
             </div>
           </div>
           <label className="v2-field">
-            <span>Search ingredients</span>
+            <span>{ingredientPickerSource === "drinks" ? "Search drinks items" : "Search food ingredients"}</span>
             <input
               value={ingredientPickerQuery}
               onChange={(event) => setIngredientPickerQuery(event.target.value)}
               placeholder="Start with a broad product like beef, milk, or bread"
             />
           </label>
-          {!ingredientPickerQuery.trim() ? null : ingredientPickerResults.length ? (
+          <div className="v2-workspace-switch">
+            <button
+              type="button"
+              className={`v2-pill ${ingredientPickerSource === "food" ? "active" : ""}`}
+              onClick={() => setIngredientPickerSource("food")}
+            >
+              Food ingredients
+            </button>
+            <button
+              type="button"
+              className={`v2-pill ${ingredientPickerSource === "drinks" ? "active" : ""}`}
+              onClick={() => setIngredientPickerSource("drinks")}
+            >
+              Drinks items
+            </button>
+          </div>
+          {ingredientPickerSource === "drinks" ? (
+            !ingredientPickerQuery.trim() ? (
+              <div className="v2-micro-note">Search shared drinks items from the drinks app. Copy one into food ingredients only when you need it in this component.</div>
+            ) : drinksIngredientPickerResults.length ? (
+              <div className="v2-select-list v2-picker-list">
+                {drinksIngredientPickerResults.map(({ drinkItem, score }) => {
+                  const matchedIngredient = drinkItem.matchedIngredient || null;
+                  const isActive = matchedIngredient ? (record.ingredientIds || []).includes(matchedIngredient.id) : false;
+                  const referencePrice = getIngredientReferencePrice(drinkItem);
+                  return (
+                    <button
+                      key={drinkItem.id}
+                      type="button"
+                      className={`v2-select-row ${isActive ? "active" : ""}`}
+                      onClick={() => chooseDrinkItemFromPicker(drinkItem)}
+                    >
+                      <strong>{drinkItem.name}</strong>
+                      <span>{drinkItem.code} · {drinkItem.packSize} · {drinkItem.category}</span>
+                      <div className="v2-tag-row">
+                        <span className="v2-tag">Shared drinks item</span>
+                        {referencePrice ? <span className="v2-tag">{formatIngredientReferencePrice(referencePrice, true)}</span> : null}
+                        {matchedIngredient ? <span className="v2-tag">Already in food ingredients</span> : null}
+                      </div>
+                      <span>
+                        {matchedIngredient
+                          ? isActive
+                            ? `Already added via ${matchedIngredient.name}`
+                            : `Use existing food ingredient ${matchedIngredient.name}`
+                          : "Copy into food ingredients"}
+                      </span>
+                      <span>Search confidence {Math.round(score)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="v2-micro-note">No drinks items match that search.</div>
+            )
+          ) : !ingredientPickerQuery.trim() ? null : ingredientPickerResults.length ? (
             <div className="v2-select-list v2-picker-list">
               {ingredientPickerResults.map(({ ingredient, score }) => {
                 const isActive = (record.ingredientIds || []).includes(ingredient.id);
@@ -24172,6 +24664,7 @@ function RecordDetail({
   menuEditorStep,
   setMenuEditorStep,
   ingredientMaster,
+  sharedDrinkItems,
   ingredientCategoryOptions,
   ingredientTradeCategoryOptions,
   ingredientRuleCatchupMap,
@@ -24195,6 +24688,7 @@ function RecordDetail({
   toggleRecipeIngredientLink,
   toggleRecipeBatchLink,
   openIngredientMaker,
+  openIngredientMakerFromDrinkItem,
   openIngredientSubstitution,
   openIngredientMerge,
   openRecipeCostSheetPreview,
@@ -24301,6 +24795,7 @@ function RecordDetail({
         recipeEditorStep={recipeEditorStep}
         setRecipeEditorStep={setRecipeEditorStep}
         ingredientMaster={ingredientMaster}
+        sharedDrinkItems={sharedDrinkItems}
         batches={batches}
         updateRecipeField={updateRecipeField}
         markRecipeReady={markRecipeReady}
@@ -24321,6 +24816,7 @@ function RecordDetail({
         toggleRecipeIngredientLink={toggleRecipeIngredientLink}
         toggleRecipeBatchLink={toggleRecipeBatchLink}
         openIngredientMaker={openIngredientMaker}
+        openIngredientMakerFromDrinkItem={openIngredientMakerFromDrinkItem}
         openRecipeCostSheetPreview={openRecipeCostSheetPreview}
         openRecipeChefSheetPreview={openRecipeChefSheetPreview}
         convertRecipeToBatchDraft={convertRecipeToBatchDraft}
@@ -24341,6 +24837,7 @@ function RecordDetail({
         batchEditorStep={batchEditorStep}
         setBatchEditorStep={setBatchEditorStep}
         ingredientMaster={ingredientMaster}
+        sharedDrinkItems={sharedDrinkItems}
         updateBatchField={updateBatchField}
         updateBatchIngredientLine={updateBatchIngredientLine}
         toggleBatchIngredientLink={toggleBatchIngredientLink}
@@ -24354,6 +24851,7 @@ function RecordDetail({
         moveBatchToDraft={moveBatchToDraft}
         returnBatchToReady={returnBatchToReady}
         publishBatchToIngredient={publishBatchToIngredient}
+        openIngredientMakerFromDrinkItem={openIngredientMakerFromDrinkItem}
         openIngredientSubstitution={openIngredientSubstitution}
         deleteBatchAndPublishedIngredient={deleteBatchAndPublishedIngredient}
         deletePublishedIngredientFromBatch={deletePublishedIngredientFromBatch}
