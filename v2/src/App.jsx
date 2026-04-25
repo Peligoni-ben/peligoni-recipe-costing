@@ -1203,8 +1203,13 @@ function hydrateSharedDataToV2({
     if (!ingredient.batchId) return;
     const linkedBatch = batchById.get(ingredient.batchId);
     if (!linkedBatch) return;
+    const linkedBatchCostSource = getBatchCostSource(linkedBatch, mappedIngredientsById);
     const isPublishedIngredient = String(linkedBatch.publishedIngredientId || "").trim() === String(ingredient.id || "").trim();
     ingredient.status = isPublishedIngredient ? "ready" : linkedBatch.status === "draft" ? "draft" : linkedBatch.status === "review" ? "review" : "ready";
+    ingredient.packSize = String(linkedBatch.yieldLabel || formatBatchYieldLabel(linkedBatch.yieldAmount, linkedBatch.yieldUnit) || ingredient.packSize).trim();
+    ingredient.costUnit = String(linkedBatchCostSource?.costUnit || linkedBatch.yieldUnit || ingredient.costUnit || "").trim() || ingredient.costUnit;
+    ingredient.unitCost = Number(linkedBatchCostSource?.unitCost || ingredient.unitCost || 0);
+    ingredient.portionCostHint = Number(linkedBatchCostSource?.portionCostHint || ingredient.portionCostHint || 0);
   });
   const dishRecipeRows = (recipeRows || []).filter((row) => String(row.recipe_type || "").trim() !== "batch");
 
