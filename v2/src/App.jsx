@@ -18428,6 +18428,7 @@ function App() {
                 addRecipeMethodStep={addRecipeMethodStep}
                 saveRecipeToSharedData={saveRecipeToSharedData}
                 getLatestRecipeSnapshot={(recipeId) => getRecipeEditorSnapshot(recipeId)}
+                getPersistedRecipeSnapshot={(recipeId) => recipesRef.current.find((item) => item.id === recipeId) || null}
                 recipeHasUnsavedChanges={(recipeId, draftRecord, persistedRecord) => doesRecipeDraftNeedSave(recipeId, draftRecord, persistedRecord)}
                 recipeSharedSyncState={selectedRecord.type === "recipe" ? recipeSharedSyncState[selectedRecord.id] || "" : ""}
                 toggleRecipeReviewFlag={toggleRecipeReviewFlag}
@@ -18604,6 +18605,7 @@ function App() {
                 addRecipeMethodStep={addRecipeMethodStep}
                 saveRecipeToSharedData={saveRecipeToSharedData}
                 getLatestRecipeSnapshot={(recipeId) => getRecipeEditorSnapshot(recipeId)}
+                getPersistedRecipeSnapshot={(recipeId) => recipesRef.current.find((item) => item.id === recipeId) || null}
                 recipeHasUnsavedChanges={(recipeId, draftRecord, persistedRecord) => doesRecipeDraftNeedSave(recipeId, draftRecord, persistedRecord)}
                 recipeSharedSyncState={recordPreviewModal.type === "recipe" ? recipeSharedSyncState[recordPreviewModal.id] || "" : ""}
                 toggleRecipeReviewFlag={toggleRecipeReviewFlag}
@@ -21654,6 +21656,7 @@ function RecipeWorkflowDetail({
   addRecipeMethodStep,
   saveRecipeToSharedData,
   getLatestRecipeSnapshot,
+  getPersistedRecipeSnapshot,
   recipeHasUnsavedChanges,
   recipeSharedSyncState,
   toggleRecipeReviewFlag,
@@ -21814,8 +21817,12 @@ function RecipeWorkflowDetail({
   const menuServices = Array.from(new Set(menuLinks.map((menu) => menu.service).filter(Boolean))).sort();
   const recipeSaveState = String(recipeSharedSyncState || "").trim();
   const latestEditableRecipe = getLatestRecipeSnapshot ? getLatestRecipeSnapshot(record.id) || record : record;
+  const persistedRecipe =
+    (getPersistedRecipeSnapshot ? getPersistedRecipeSnapshot(record.id) : null) ||
+    maps.recipe?.get(record.id) ||
+    null;
   const hasUnsavedRecipeChanges = recipeHasUnsavedChanges
-    ? recipeHasUnsavedChanges(record.id, latestEditableRecipe, record)
+    ? recipeHasUnsavedChanges(record.id, latestEditableRecipe, persistedRecipe)
     : Boolean(latestEditableRecipe?.sharedDirty);
   const footerPrimaryLabel = nextStep
     ? "Next step"
@@ -21841,14 +21848,14 @@ function RecipeWorkflowDetail({
   const persistVisibleRecipe = async (source = "recipe-workflow") => {
     let latestRecord = (getLatestRecipeSnapshot ? getLatestRecipeSnapshot(record.id) : null) || latestEditableRecipe || record;
     const latestNeedsSave = recipeHasUnsavedChanges
-      ? recipeHasUnsavedChanges(record.id, latestRecord, record)
+      ? recipeHasUnsavedChanges(record.id, latestRecord, persistedRecipe)
       : Boolean(latestRecord?.sharedDirty);
     if (!latestNeedsSave) return true;
     if (recipeSaveState === "syncing") {
       await waitForRecordSync("dish", latestRecord.id);
       latestRecord = (getLatestRecipeSnapshot ? getLatestRecipeSnapshot(record.id) : null) || latestEditableRecipe || record;
       const stillNeedsSave = recipeHasUnsavedChanges
-        ? recipeHasUnsavedChanges(record.id, latestRecord, record)
+        ? recipeHasUnsavedChanges(record.id, latestRecord, persistedRecipe)
         : Boolean(latestRecord?.sharedDirty);
       if (!stillNeedsSave) {
         return true;
@@ -24687,6 +24694,7 @@ function RecordDetail({
   addRecipeMethodStep,
   saveRecipeToSharedData,
   getLatestRecipeSnapshot,
+  getPersistedRecipeSnapshot,
   recipeHasUnsavedChanges,
   recipeSharedSyncState,
   toggleRecipeReviewFlag,
@@ -24815,6 +24823,7 @@ function RecordDetail({
         addRecipeMethodStep={addRecipeMethodStep}
         saveRecipeToSharedData={saveRecipeToSharedData}
         getLatestRecipeSnapshot={getLatestRecipeSnapshot}
+        getPersistedRecipeSnapshot={getPersistedRecipeSnapshot}
         recipeHasUnsavedChanges={recipeHasUnsavedChanges}
         recipeSharedSyncState={recipeSharedSyncState}
         toggleRecipeReviewFlag={toggleRecipeReviewFlag}
