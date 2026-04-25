@@ -14331,7 +14331,7 @@ function App() {
   };
 
   const markRecipeReady = (recipeId) => {
-    const recipe = recipes.find((item) => item.id === recipeId);
+    const recipe = getRecipeEditorSnapshot(recipeId, recipesRef.current.find((item) => item.id === recipeId) || null);
     if (!recipe) return false;
     if (!isRecipeReadyToPublish(recipe)) {
       if (typeof window !== "undefined") {
@@ -14348,8 +14348,15 @@ function App() {
   };
 
   const publishRecipeLive = (recipeId) => {
-    const recipe = recipes.find((item) => item.id === recipeId);
-    if (!recipe || !isRecipeReadyToPublish(recipe)) return false;
+    const recipe = getRecipeEditorSnapshot(recipeId, recipesRef.current.find((item) => item.id === recipeId) || null);
+    if (!recipe) return false;
+    if (!isRecipeReadyToPublish(recipe)) {
+      if (typeof window !== "undefined") {
+        const missing = getRecipeWorkflowMissingItems(recipe);
+        window.alert(`This recipe is not ready yet. Finish: ${missing.join(", ")}.`);
+      }
+      return false;
+    }
     if (typeof window !== "undefined") {
       const confirmed = window.confirm("Publish this recipe live?");
       if (!confirmed) return false;
