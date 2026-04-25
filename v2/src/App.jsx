@@ -1226,10 +1226,7 @@ function hydrateSharedDataToV2({
           ingredientLines.push({
             ingredientId: publishedIngredient.id,
             quantity: formatEditableQuantity(numberValue(component.qty)),
-            unit: mapSharedSourceYieldTypeToLineUnit(
-              component.source_yield_type,
-              batch?.yieldUnit || publishedIngredient.costUnit || "portion"
-            ),
+            unit: resolveSharedIngredientLineUnit(component, publishedIngredient),
             estimatedCost: numberValue(component.cost),
           });
         } else {
@@ -6351,16 +6348,60 @@ function parseReferencePackSize(packSize = "") {
   return null;
 }
 
+function getRecoveredWeightedImportReferencePrice(ingredient = {}, unitCost = 0) {
+  const sourceType = getIngredientSourceType(ingredient);
+  if (sourceType !== "soft1") return null;
+
+  const packSize = String(ingredient?.packSize || "").trim();
+  const parsedPack = parseReferencePackSize(packSize);
+  if (!(parsedPack?.amount > 0)) return null;
+
+  const unitsInPack = normalizeUnitsInPack(ingredient?.unitsInPack, packSize);
+  if (unitsInPack > 1) return null;
+
+  if (
+    isLikelyBoxedFrozenDessertImport(
+      ingredient?.name || "",
+      "piece",
+      unitCost,
+      ingredient?.sourceCode || "",
+      packSize,
+      unitsInPack
+    )
+  ) {
+    return null;
+  }
+
+  if (
+    isLikelyMultipackSnackImport(
+      ingredient?.name || "",
+      "piece",
+      unitCost,
+      ingredient?.sourceCode || "",
+      unitsInPack
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    value: unitCost / parsedPack.amount,
+    unit: parsedPack.unit,
+  };
+}
+
 function getIngredientReferencePrice(ingredient = {}) {
   const unitCost = Number(ingredient?.unitCost || 0);
   if (!(unitCost > 0)) return null;
 
   const costUnit = String(ingredient?.costUnit || "").trim().toLowerCase();
   if (costUnit === "piece") {
-    return {
-      value: unitCost,
-      unit: "piece",
-    };
+    return (
+      getRecoveredWeightedImportReferencePrice(ingredient, unitCost) || {
+        value: unitCost,
+        unit: "piece",
+      }
+    );
   }
   if (costUnit === "kg" || costUnit === "l") {
     return {
@@ -8222,9 +8263,37 @@ function getIngredientUsageLineUnit(ingredient = {}) {
   return "g";
 }
 
+function shouldRecoverLegacyIngredientLineUnit(component = {}, ingredient = null) {
+  const explicitSourceUnit = String(component?.source_yield_type || "").trim().toLowerCase();
+  if (!explicitSourceUnit || !ingredient) return false;
+
+  const preferredUsageUnit = getIngredientUsageLineUnit(ingredient);
+  if (!preferredUsageUnit || explicitSourceUnit === preferredUsageUnit) return false;
+
+  const explicitUnitFamily = getMeasurementUnitFamily(explicitSourceUnit);
+  const preferredUnitFamily = getMeasurementUnitFamily(preferredUsageUnit);
+  if (explicitUnitFamily !== preferredUnitFamily) return false;
+
+  const quantity = numberValue(component?.qty);
+  if (!(quantity > 0)) return false;
+
+  if (explicitSourceUnit === "kg" && preferredUsageUnit === "g") {
+    return quantity >= 20;
+  }
+
+  if (explicitSourceUnit === "l" && preferredUsageUnit === "ml") {
+    return quantity >= 20;
+  }
+
+  return false;
+}
+
 function resolveSharedIngredientLineUnit(component = {}, ingredient = null) {
   const explicitSourceUnit = String(component?.source_yield_type || "").trim();
   if (explicitSourceUnit) {
+    if (shouldRecoverLegacyIngredientLineUnit(component, ingredient)) {
+      return getIngredientUsageLineUnit(ingredient);
+    }
     return mapSharedSourceYieldTypeToLineUnit(explicitSourceUnit, ingredient?.packSize || ingredient?.costUnit || "");
   }
 
@@ -10596,6 +10665,20 @@ function App() {
       })),
     });
 
+  const doesRecipeDraftNeedSave = (recipeId, draftRecord = null, persistedRecord = null) => {
+    const safeRecipeId = String(recipeId || "").trim();
+    if (!safeRecipeId) return false;
+
+    const draft = draftRecord || recipeDraftsRef.current[safeRecipeId] || null;
+    if (!draft || draft.archived) return false;
+
+    const persisted =
+      persistedRecord || recipesRef.current.find((item) => item.id === safeRecipeId) || null;
+    if (!persisted) return Boolean(draft.sharedDirty);
+
+    return getRecordSharedSyncSignature(draft, "dish") !== getRecordSharedSyncSignature(persisted, "dish");
+  };
+
   const buildSharedRecipePayload = (
     record = {},
     recordType = "dish",
@@ -11133,9 +11216,52 @@ function App() {
               )
             );
           }
+          let keptNewerDraft = false;
+          setRecipeDraftsState((current) => {
+            const existingDraft = current[String(syncedRecord.id)];
+            if (!existingDraft) return current;
+
+            const savedRevision = Number(syncedRecord.localEditRevision || 0);
+            const currentRevision = Number(existingDraft.localEditRevision || 0);
+            if (currentRevision <= savedRevision) {
+              const nextDrafts = { ...current };
+              delete nextDrafts[String(syncedRecord.id)];
+              return nextDrafts;
+            }
+
+            const nextDraftSnapshot = syncRecipeRelations({
+              ...existingDraft,
+              sharedPersisted: true,
+              sharedUpdatedAt: persistedRecipeUpdatedAt,
+              sharedDirty: true,
+            });
+            const stillNeedsSave =
+              getRecordSharedSyncSignature(nextDraftSnapshot, "dish") !==
+              getRecordSharedSyncSignature(
+                {
+                  ...syncedRecord,
+                  sharedDirty: false,
+                  sharedPersisted: true,
+                  sharedUpdatedAt: persistedRecipeUpdatedAt,
+                },
+                "dish"
+              );
+
+            if (!stillNeedsSave) {
+              const nextDrafts = { ...current };
+              delete nextDrafts[String(syncedRecord.id)];
+              return nextDrafts;
+            }
+
+            keptNewerDraft = true;
+            return {
+              ...current,
+              [String(syncedRecord.id)]: nextDraftSnapshot,
+            };
+          });
           setRecipeSharedSyncState((current) => ({
             ...current,
-            [syncedRecord.id]: "saved",
+            [syncedRecord.id]: keptNewerDraft ? "" : "saved",
           }));
           persistLocalRecipePersistenceTrace(syncedRecord.id, {
             lastSaveSucceededAt: new Date().toISOString(),
@@ -11165,7 +11291,6 @@ function App() {
                 .filter(Boolean)
             ),
           });
-          clearRecipeDraft(syncedRecord.id);
           return true;
         }
 
@@ -13345,7 +13470,7 @@ function App() {
             {
               ingredientId: savedIngredient.id,
               quantity: "1",
-              unit: inferMeasurementUnit(savedIngredient.packSize),
+              unit: getIngredientUsageLineUnit(savedIngredient),
               estimatedCost: Number(savedIngredient.portionCostHint || 0),
             },
           ],
@@ -13368,7 +13493,7 @@ function App() {
               {
                 ingredientId: savedIngredient.id,
                 quantity: "1",
-                unit: inferMeasurementUnit(savedIngredient.packSize),
+                unit: getIngredientUsageLineUnit(savedIngredient),
                 estimatedCost: Number(savedIngredient.portionCostHint || 0),
               },
             ],
@@ -13910,7 +14035,7 @@ function App() {
               {
                 ingredientId: ingredient.id,
                 quantity: "1",
-                unit: inferMeasurementUnit(ingredient.packSize),
+                unit: getIngredientUsageLineUnit(ingredient),
                 estimatedCost: Number(ingredient.portionCostHint || 0),
               },
             ],
@@ -14302,7 +14427,7 @@ function App() {
               {
                 ingredientId: ingredient.id,
                 quantity: "1",
-                unit: inferMeasurementUnit(ingredient.packSize),
+                unit: getIngredientUsageLineUnit(ingredient),
                 estimatedCost: Number(ingredient.portionCostHint || 0),
               },
             ],
@@ -14325,7 +14450,7 @@ function App() {
             {
               ingredientId: ingredient.id,
               quantity: String(detail?.quantity || "1").trim() || "1",
-              unit: String(detail?.unit || "").trim() || inferMeasurementUnit(ingredient.packSize),
+              unit: String(detail?.unit || "").trim() || getIngredientUsageLineUnit(ingredient),
               estimatedCost: Number(detail?.cost || ingredient.portionCostHint || 0),
             },
           ];
@@ -17539,7 +17664,10 @@ function App() {
   const syncingBatchCount = Object.values(batchSharedSyncState).filter((value) => value === "syncing").length;
   const syncingMenuCount = Object.values(menuSharedSyncState).filter((value) => value === "syncing").length;
   const dirtyRecipeCount = Object.entries(recipeDrafts).filter(
-    ([recipeId, recipe]) => recipe?.sharedDirty && !recipe?.archived && recipeSharedSyncState[recipeId] !== "syncing"
+    ([recipeId, recipe]) =>
+      !recipe?.archived &&
+      recipeSharedSyncState[recipeId] !== "syncing" &&
+      doesRecipeDraftNeedSave(recipeId, recipe)
   ).length;
   const dirtyBatchCount = batches.filter(
     (batch) => batch.sharedDirty && !batch.archived && batchSharedSyncState[batch.id] !== "syncing"
@@ -17551,7 +17679,7 @@ function App() {
     if (!value || value === "syncing" || value === "saved") return false;
     const draftRecipe = recipeDrafts[recipeId];
     const persistedRecipe = recipes.find((recipe) => recipe.id === recipeId);
-    return Boolean(draftRecipe?.sharedDirty || persistedRecipe?.sharedDirty);
+    return Boolean(doesRecipeDraftNeedSave(recipeId, draftRecipe, persistedRecipe) || persistedRecipe?.sharedDirty);
   }).length;
   const batchSaveIssueCount = Object.entries(batchSharedSyncState).filter(([batchId, value]) => {
     if (!value || value === "syncing" || value === "saved") return false;
@@ -18058,6 +18186,7 @@ function App() {
                 addRecipeMethodStep={addRecipeMethodStep}
                 saveRecipeToSharedData={saveRecipeToSharedData}
                 getLatestRecipeSnapshot={(recipeId) => getRecipeEditorSnapshot(recipeId)}
+                recipeHasUnsavedChanges={(recipeId, draftRecord, persistedRecord) => doesRecipeDraftNeedSave(recipeId, draftRecord, persistedRecord)}
                 recipeSharedSyncState={selectedRecord.type === "recipe" ? recipeSharedSyncState[selectedRecord.id] || "" : ""}
                 toggleRecipeReviewFlag={toggleRecipeReviewFlag}
                 updateRecipeIngredientLine={updateRecipeIngredientLine}
@@ -18231,6 +18360,7 @@ function App() {
                 addRecipeMethodStep={addRecipeMethodStep}
                 saveRecipeToSharedData={saveRecipeToSharedData}
                 getLatestRecipeSnapshot={(recipeId) => getRecipeEditorSnapshot(recipeId)}
+                recipeHasUnsavedChanges={(recipeId, draftRecord, persistedRecord) => doesRecipeDraftNeedSave(recipeId, draftRecord, persistedRecord)}
                 recipeSharedSyncState={recordPreviewModal.type === "recipe" ? recipeSharedSyncState[recordPreviewModal.id] || "" : ""}
                 toggleRecipeReviewFlag={toggleRecipeReviewFlag}
                 updateRecipeIngredientLine={updateRecipeIngredientLine}
@@ -21211,6 +21341,7 @@ function RecipeWorkflowDetail({
   addRecipeMethodStep,
   saveRecipeToSharedData,
   getLatestRecipeSnapshot,
+  recipeHasUnsavedChanges,
   recipeSharedSyncState,
   toggleRecipeReviewFlag,
   updateRecipeIngredientLine,
@@ -21332,7 +21463,9 @@ function RecipeWorkflowDetail({
   const menuServices = Array.from(new Set(menuLinks.map((menu) => menu.service).filter(Boolean))).sort();
   const recipeSaveState = String(recipeSharedSyncState || "").trim();
   const latestEditableRecipe = getLatestRecipeSnapshot ? getLatestRecipeSnapshot(record.id) || record : record;
-  const hasUnsavedRecipeChanges = Boolean(latestEditableRecipe?.sharedDirty);
+  const hasUnsavedRecipeChanges = recipeHasUnsavedChanges
+    ? recipeHasUnsavedChanges(record.id, latestEditableRecipe, record)
+    : Boolean(latestEditableRecipe?.sharedDirty);
   const footerPrimaryLabel = nextStep
     ? "Next step"
     : record.status === "draft"
@@ -21356,11 +21489,17 @@ function RecipeWorkflowDetail({
   }, [record.id, recipeSaveState, safeIngredientLines.length, safeBatchLines.length, record.sharedMissingLineCount]);
   const persistVisibleRecipe = async (source = "recipe-workflow") => {
     let latestRecord = (getLatestRecipeSnapshot ? getLatestRecipeSnapshot(record.id) : null) || latestEditableRecipe || record;
-    if (!latestRecord.sharedDirty) return true;
+    const latestNeedsSave = recipeHasUnsavedChanges
+      ? recipeHasUnsavedChanges(record.id, latestRecord, record)
+      : Boolean(latestRecord?.sharedDirty);
+    if (!latestNeedsSave) return true;
     if (recipeSaveState === "syncing") {
       await waitForRecordSync("dish", latestRecord.id);
       latestRecord = (getLatestRecipeSnapshot ? getLatestRecipeSnapshot(record.id) : null) || latestEditableRecipe || record;
-      if (!latestRecord?.sharedDirty) {
+      const stillNeedsSave = recipeHasUnsavedChanges
+        ? recipeHasUnsavedChanges(record.id, latestRecord, record)
+        : Boolean(latestRecord?.sharedDirty);
+      if (!stillNeedsSave) {
         return true;
       }
     }
@@ -24043,6 +24182,7 @@ function RecordDetail({
   addRecipeMethodStep,
   saveRecipeToSharedData,
   getLatestRecipeSnapshot,
+  recipeHasUnsavedChanges,
   recipeSharedSyncState,
   toggleRecipeReviewFlag,
   updateRecipeIngredientLine,
@@ -24168,6 +24308,7 @@ function RecordDetail({
         addRecipeMethodStep={addRecipeMethodStep}
         saveRecipeToSharedData={saveRecipeToSharedData}
         getLatestRecipeSnapshot={getLatestRecipeSnapshot}
+        recipeHasUnsavedChanges={recipeHasUnsavedChanges}
         recipeSharedSyncState={recipeSharedSyncState}
         toggleRecipeReviewFlag={toggleRecipeReviewFlag}
         updateRecipeIngredientLine={updateRecipeIngredientLine}
