@@ -17901,12 +17901,21 @@ function App() {
   const syncingRecipeCount = Object.values(recipeSharedSyncState).filter((value) => value === "syncing").length;
   const syncingBatchCount = Object.values(batchSharedSyncState).filter((value) => value === "syncing").length;
   const syncingMenuCount = Object.values(menuSharedSyncState).filter((value) => value === "syncing").length;
-  const dirtyRecipeCount = Object.entries(recipeDrafts).filter(
+  const dirtyRecipeEntries = Object.entries(recipeDrafts).filter(
     ([recipeId, recipe]) =>
       !recipe?.archived &&
       recipeSharedSyncState[recipeId] !== "syncing" &&
       doesRecipeDraftNeedSave(recipeId, recipe)
-  ).length;
+  );
+  const dirtyRecipeCount = dirtyRecipeEntries.length;
+  const dirtyRecipeIds = dirtyRecipeEntries.map(([recipeId]) => recipeId);
+  const dirtyRecipeLabels = dirtyRecipeEntries
+    .map(([, recipe]) => String(recipe?.name || recipe?.code || "").trim())
+    .filter(Boolean);
+  const selectedRecipeHasUnsavedChanges =
+    selectedRecord.type === "recipe" &&
+    selectedRecord.id &&
+    dirtyRecipeIds.includes(String(selectedRecord.id));
   const dirtyBatchCount = batches.filter(
     (batch) => batch.sharedDirty && !batch.archived && batchSharedSyncState[batch.id] !== "syncing"
   ).length;
@@ -17952,7 +17961,20 @@ function App() {
     if (dirtyIngredientCount) parts.push(`${dirtyIngredientCount} ingredient edit${dirtyIngredientCount === 1 ? "" : "s"} need saving`);
     if (pendingIngredientDeletionCount) parts.push(`${pendingIngredientDeletionCount} ingredient delete action${pendingIngredientDeletionCount === 1 ? "" : "s"} syncing`);
     if (readyImportRowCount) parts.push(`${readyImportRowCount} ingredient review row${readyImportRowCount === 1 ? "" : "s"} ready to publish`);
-    if (dirtyRecipeCount) parts.push(`${dirtyRecipeCount} recipe edit${dirtyRecipeCount === 1 ? "" : "s"} need saving`);
+    if (dirtyRecipeCount) {
+      if (selectedRecipeHasUnsavedChanges) {
+        parts.push(`${dirtyRecipeCount} recipe edit${dirtyRecipeCount === 1 ? "" : "s"} need saving`);
+      } else {
+        const otherRecipePreview = dirtyRecipeLabels.slice(0, 2).join(", ");
+        const otherRecipeSuffix =
+          dirtyRecipeCount > 2 && otherRecipePreview
+            ? ` (${otherRecipePreview} +${dirtyRecipeCount - 2} more)`
+            : otherRecipePreview
+              ? ` (${otherRecipePreview})`
+              : "";
+        parts.push(`${dirtyRecipeCount} other recipe edit${dirtyRecipeCount === 1 ? "" : "s"} need saving${otherRecipeSuffix}`);
+      }
+    }
     if (syncingRecipeCount) parts.push(`${syncingRecipeCount} recipe save${syncingRecipeCount === 1 ? "" : "s"} syncing`);
     if (recipeSaveIssueCount) parts.push(`${recipeSaveIssueCount} recipe save issue${recipeSaveIssueCount === 1 ? "" : "s"}`);
     if (dirtyBatchCount) parts.push(`${dirtyBatchCount} component edit${dirtyBatchCount === 1 ? "" : "s"} need saving`);
@@ -17968,6 +17990,8 @@ function App() {
     pendingIngredientDeletionCount,
     readyImportRowCount,
     dirtyRecipeCount,
+    dirtyRecipeLabels,
+    selectedRecipeHasUnsavedChanges,
     syncingRecipeCount,
     recipeSaveIssueCount,
     dirtyBatchCount,
