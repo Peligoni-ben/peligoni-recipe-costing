@@ -7066,6 +7066,52 @@ function slugifyLabel(value = "") {
     .replace(/^-+|-+$/g, "") || "export";
 }
 
+function getCsvDialect() {
+  const decimalSeparator =
+    typeof Intl !== "undefined"
+      ? new Intl.NumberFormat(
+          typeof navigator !== "undefined" ? navigator.language || undefined : undefined
+        )
+          .formatToParts(1.1)
+          .find((part) => part.type === "decimal")?.value || "."
+      : ".";
+
+  return {
+    delimiter: decimalSeparator === "," ? ";" : ",",
+    decimalSeparator,
+  };
+}
+
+function formatCsvNumber(value = 0, fractionDigits = 2, dialect = getCsvDialect()) {
+  const numericValue = Number(value || 0);
+  if (!Number.isFinite(numericValue)) return "";
+  const fixed = numericValue.toFixed(fractionDigits);
+  return dialect.decimalSeparator === "," ? fixed.replace(".", ",") : fixed;
+}
+
+function localizeCsvInlineNumber(value = "", dialect = getCsvDialect()) {
+  const text = String(value ?? "");
+  if (dialect.decimalSeparator !== ",") return text;
+  return text.replace(/(-?\d+)\.(\d+)(?=(?:\s|$))/g, "$1,$2");
+}
+
+function escapeCsvCell(value, delimiter = ",") {
+  const text = String(value ?? "");
+  if (text.includes(delimiter) || text.includes('"') || text.includes("\n") || text.includes("\r")) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function buildCsvContent(rows = [], { includeSeparatorHint = true, dialect = getCsvDialect() } = {}) {
+  const delimiter = dialect.delimiter;
+  const lines = rows.map((row) => row.map((cell) => escapeCsvCell(cell, delimiter)).join(delimiter));
+  if (includeSeparatorHint) {
+    lines.unshift(`sep=${delimiter}`);
+  }
+  return lines.join("\r\n");
+}
+
 function buildMenuPreviewGroups(menu, recipeMap = new Map()) {
   const knownCourseOrder = ["Starters", "Mains", "Desserts"];
   const enrichedItems = (menu?.items || []).map((item) => {
@@ -7092,6 +7138,7 @@ function buildMenuPreviewGroups(menu, recipeMap = new Map()) {
 }
 
 function buildRecipeCostingCsv(recipe, ingredientMap = new Map(), batchMap = new Map()) {
+  const csvDialect = getCsvDialect();
   const pricing = getRecipePricingMetrics(recipe, ingredientMap, batchMap);
   const portionCount = getDishPortionCount(recipe);
   const ingredientRows = (recipe.ingredientLines || []).map((line) => {
@@ -7155,24 +7202,24 @@ function buildRecipeCostingCsv(recipe, ingredientMap = new Map(), batchMap = new
     ["recipe_code", recipe.code],
     ["category", recipe.category],
     ["portions", recipe.portions],
-    ["gross_sale_price", Number(recipe.salePrice || 0).toFixed(2)],
-    ["net_sale_price", pricing.netSalePrice.toFixed(2)],
-    ["recipe_cost_per_portion", pricing.recipeCost.toFixed(2)],
-    ["component_total", pricing.totalComponentCost.toFixed(2)],
-    ["gp_net_percent", (pricing.grossProfit * 100).toFixed(1)],
+    ["gross_sale_price", formatCsvNumber(recipe.salePrice || 0, 2, csvDialect)],
+    ["net_sale_price", formatCsvNumber(pricing.netSalePrice, 2, csvDialect)],
+    ["recipe_cost_per_portion", formatCsvNumber(pricing.recipeCost, 2, csvDialect)],
+    ["component_total", formatCsvNumber(pricing.totalComponentCost, 2, csvDialect)],
+    ["gp_net_percent", formatCsvNumber(pricing.grossProfit * 100, 1, csvDialect)],
     [],
     ["line_type", "name", "code", "qty", "unit", "estimated_cost"],
     ...[...ingredientRows, ...batchRows].map((row) => [
       row.lineType,
       row.name,
       row.code,
-      row.qty,
+      localizeCsvInlineNumber(row.qty, csvDialect),
       row.unit,
-      row.estimatedCost.toFixed(2),
+      formatCsvNumber(row.estimatedCost, 2, csvDialect),
     ]),
   ];
 
-  return rows.map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(",")).join("\n");
+  return buildCsvContent(rows, { dialect: csvDialect });
 }
 
 function buildRecipeChefSheetText(recipe, ingredientMap = new Map(), batchMap = new Map()) {
@@ -7219,6 +7266,7 @@ function buildRecipeChefSheetText(recipe, ingredientMap = new Map(), batchMap = 
 }
 
 function buildMenuExportCsv(menu, recipeMap = new Map()) {
+  const csvDialect = getCsvDialect();
   const rows = [
     ["menu_name", menu.name],
     ["restaurant", menu.restaurant],
@@ -7234,15 +7282,16 @@ function buildMenuExportCsv(menu, recipeMap = new Map()) {
         group.course,
         item.dishName || item.recipe?.name || "",
         item.description || item.recipe?.menuDescription || "",
-        Number(item.price || 0).toFixed(2),
+        formatCsvNumber(item.price || 0, 2, csvDialect),
       ]);
     });
   });
 
-  return rows.map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(",")).join("\n");
+  return buildCsvContent(rows, { dialect: csvDialect });
 }
 
 function buildIngredientMasterExportCsv(ingredients = []) {
+  const csvDialect = getCsvDialect();
   const rows = [
     [
       "ingredient_name",
@@ -7271,10 +7320,10 @@ function buildIngredientMasterExportCsv(ingredients = []) {
       ingredient.category || "",
       ingredient.packSize || "",
       ingredient.supplier || "",
-      String(ingredient.unitCost ?? 0),
-      String(ingredient.purchaseVatRate ?? 13),
+      formatCsvNumber(ingredient.unitCost ?? 0, 2, csvDialect),
+      formatCsvNumber(ingredient.purchaseVatRate ?? 13, 2, csvDialect),
       ingredient.costUnit || "",
-      String(ingredient.portionCostHint ?? 0),
+      formatCsvNumber(ingredient.portionCostHint ?? 0, 2, csvDialect),
       ingredient.status || "",
       getIngredientSourceType(ingredient),
       getIngredientSoft1Status(ingredient) === "in_soft1" ? "yes" : "no",
@@ -7286,13 +7335,7 @@ function buildIngredientMasterExportCsv(ingredients = []) {
     ]),
   ];
 
-  return rows
-    .map((row) =>
-      row
-        .map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`)
-        .join(",")
-    )
-    .join("\n");
+  return buildCsvContent(rows, { dialect: csvDialect });
 }
 
 function buildIngredientMasterExportHtml(ingredients = []) {
@@ -7602,16 +7645,15 @@ function buildBatchCostSheetRowsV2(batch, ingredientMap = new Map(), batchMap = 
   });
 }
 
-function buildCostSheetCsvBlock({ code = "", name = "", itemCode = "", totalCost = 0, componentRows = [] }) {
-  const escapeCsv = (value) => {
-    const text = String(value ?? "");
-    if (text.includes(",") || text.includes('"') || text.includes("\n") || text.includes("\r")) {
-      return `"${text.replace(/"/g, '""')}"`;
-    }
-    return text;
-  };
-
-  const csvMoney = (value) => Number(value || 0).toFixed(2);
+function buildCostSheetCsvBlock({
+  code = "",
+  name = "",
+  itemCode = "",
+  totalCost = 0,
+  componentRows = [],
+  includeSeparatorHint = true,
+}) {
+  const csvDialect = getCsvDialect();
 
   const rows = [
     ["Recipe code", code, "Descr.", name, "Item code", itemCode],
@@ -7620,14 +7662,14 @@ function buildCostSheetCsvBlock({ code = "", name = "", itemCode = "", totalCost
       row.ingredientCode || "",
       row.description || "",
       row.unitOfMeasure || "",
-      csvMoney(row.unitPrice || 0),
-      row.quantityUsed || "",
-      csvMoney(row.cost || 0),
+      formatCsvNumber(row.unitPrice || 0, 2, csvDialect),
+      localizeCsvInlineNumber(row.quantityUsed || "", csvDialect),
+      formatCsvNumber(row.cost || 0, 2, csvDialect),
     ]),
-    ["Total", "", "", "", "Mixed units", csvMoney(totalCost)],
+    ["Total", "", "", "", "Mixed units", formatCsvNumber(totalCost, 2, csvDialect)],
   ];
 
-  return ["sep=,", ...rows.map((row) => row.map(escapeCsv).join(","))].join("\r\n");
+  return buildCsvContent(rows, { includeSeparatorHint, dialect: csvDialect });
 }
 
 function buildCostSheetHtmlV2({ title, code = "", name = "", itemCode = "", totalCost = 0, roundup = "", componentRows = [] }) {
@@ -16637,6 +16679,7 @@ function App() {
 
   const exportManualIngredients = () => {
     if (typeof window === "undefined") return;
+    const csvDialect = getCsvDialect();
 
     const pendingManualIngredients = ingredientMaster.filter(
       (ingredient) =>
@@ -16669,10 +16712,10 @@ function App() {
         ingredient.packSize || "",
         ingredient.supplier || "",
         ingredient.category || "",
-        String(ingredient.unitCost ?? 0),
-        String(ingredient.purchaseVatRate ?? 13),
+        formatCsvNumber(ingredient.unitCost ?? 0, 2, csvDialect),
+        formatCsvNumber(ingredient.purchaseVatRate ?? 13, 2, csvDialect),
         ingredient.costUnit || "",
-        String(ingredient.portionCostHint ?? 0),
+        formatCsvNumber(ingredient.portionCostHint ?? 0, 2, csvDialect),
         getIngredientSourceType(ingredient),
         getIngredientSoft1Status(ingredient) === "in_soft1" ? "yes" : "no",
         (ingredient.aliases || []).join(" | "),
@@ -16680,21 +16723,8 @@ function App() {
       ]),
     ];
 
-    const csv = rows
-      .map((row) =>
-        row
-          .map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`)
-          .join(",")
-      )
-      .join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = window.URL.createObjectURL(blob);
-    const anchor = window.document.createElement("a");
-    anchor.href = url;
-    anchor.download = "manual-ingredients-for-soft1.csv";
-    anchor.click();
-    window.URL.revokeObjectURL(url);
+    const csv = buildCsvContent(rows, { dialect: csvDialect });
+    downloadTextFile("manual-ingredients-for-soft1.csv", csv, "text/csv;charset=utf-8;");
   };
 
   const runIngredientCleanupOverReviewMaster = () => {
@@ -17115,7 +17145,7 @@ function App() {
     const recipesForMenu = (menu.recipeIds || []).map((recipeId) => recordMaps.recipe.get(recipeId)).filter(Boolean);
     if (!recipesForMenu.length) return;
     const csvContent = recipesForMenu
-      .map((recipe) => {
+      .map((recipe, index) => {
         const componentRows = buildRecipeCostSheetRowsV2(recipe, recordMaps.ingredient, recordMaps.batch);
         const pricing = getRecipePricingMetrics(recipe, recordMaps.ingredient, recordMaps.batch);
         return buildCostSheetCsvBlock({
@@ -17124,6 +17154,7 @@ function App() {
           itemCode: recipe.code,
           totalCost: pricing.recipeCost,
           componentRows,
+          includeSeparatorHint: index === 0,
         });
       })
       .join("\n\n");
