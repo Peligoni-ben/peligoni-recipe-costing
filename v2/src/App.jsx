@@ -7802,10 +7802,10 @@ function buildCostSheetPackHtmlV2(menu, recipesForMenu = [], ingredientMap = new
   </html>`;
 }
 
-function buildChefSheetHtmlV2(record, componentRows = [], options = {}) {
+function buildChefSheetSectionHtmlV2(record, componentRows = [], options = {}) {
   const isBatch = options.type === "batch";
   const methodLines = (record.methodSteps || []).map((step) => String(step || "").trim()).filter(Boolean);
-  const componentsHtml = componentRows
+  const componentsHtml = (componentRows
     .map(
       (row) => `
         <tr>
@@ -7817,7 +7817,7 @@ function buildChefSheetHtmlV2(record, componentRows = [], options = {}) {
         </tr>
       `
     )
-    .join("");
+    .join("")) || `<tr><td colspan="5">No ingredient lines added yet.</td></tr>`;
   const methodHtml = methodLines.length ? methodLines.map((line) => `<li>${line}</li>`).join("") : "<li>Add method notes in the app before printing.</li>";
   const imageHtml =
     !isBatch && record.finishedDishImage
@@ -7848,6 +7848,56 @@ function buildChefSheetHtmlV2(record, componentRows = [], options = {}) {
     )
     .join("");
 
+  return `
+    <section class="sheet">
+      <div class="header">
+        <div>
+          <div class="eyebrow">Peligoni chef sheet</div>
+          <h1>${record.name}</h1>
+          <div>
+            <span class="tag">${isBatch ? "Component recipe" : "Dish recipe"}</span>
+            <span class="tag">${isBatch ? record.productType || "No product type" : record.category || "No category"}</span>
+          </div>
+        </div>
+        <div><div class="eyebrow">Item code</div><strong>${record.code || "Missing"}</strong></div>
+      </div>
+      <div class="meta">
+        ${metaHtml}
+      </div>
+      <div class="layout">
+        <div>
+          <div class="card">
+            <div class="eyebrow">Ingredients</div>
+            <table>
+              <thead><tr><th>Ingredient</th><th>Code</th><th>Qty</th><th>Unit</th><th>Cost</th></tr></thead>
+              <tbody>${componentsHtml}</tbody>
+            </table>
+          </div>
+          <div class="card">
+            <div class="eyebrow">Method</div>
+            <ul>${methodHtml}</ul>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <div class="eyebrow">${isBatch ? "Reference" : "Presentation"}</div>
+            ${imageHtml}
+          </div>
+          <div class="card">
+            <div class="eyebrow">${isBatch ? "Prep notes" : "Plating notes"}</div>
+            <ul><li>${isBatch ? (record.prepNotes || "Add notes in the app before printing.") : (record.platingNotes || "Add plating notes in the app before printing.")}</li></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function buildChefSheetDocumentHtmlV2(title, sectionsHtml, header = {}) {
+  const eyebrow = String(header.eyebrow || "Peligoni chef sheet").trim();
+  const heading = String(header.heading || "").trim();
+  const subheading = String(header.subheading || "").trim();
+
   return `<!doctype html>
   <html lang="en">
     <head>
@@ -7856,15 +7906,20 @@ function buildChefSheetHtmlV2(record, componentRows = [], options = {}) {
       <style>
         body { font-family: "Helvetica Neue", Arial, sans-serif; margin: 0; color: #0f172a; background: #f8fafc; }
         .page { max-width: 980px; margin: 0 auto; padding: 32px; }
+        .page-header { margin-bottom: 24px; }
         .header { display: flex; justify-content: space-between; gap: 24px; align-items: start; margin-bottom: 24px; }
         .eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: #64748b; font-weight: 700; }
         h1 { margin: 6px 0 10px; font-size: 34px; }
+        .page-header h1 { margin-bottom: 6px; }
+        .page-header p { margin: 0; color: #64748b; }
         .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
         .stat { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 14px; }
         .stat span { display: block; font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
         .stat strong { font-size: 20px; }
         .layout { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 20px; }
         .card { background: white; border: 1px solid #e2e8f0; border-radius: 18px; padding: 20px; margin-bottom: 20px; }
+        .sheet { margin-bottom: 24px; page-break-after: always; }
+        .sheet:last-child { page-break-after: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 14px; }
         th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e2e8f0; }
         th { color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
@@ -7876,44 +7931,183 @@ function buildChefSheetHtmlV2(record, componentRows = [], options = {}) {
     </head>
     <body>
       <div class="page">
-        <div class="header">
-          <div>
-            <div class="eyebrow">Peligoni chef sheet</div>
-            <h1>${record.name}</h1>
-            <div>
-              <span class="tag">${isBatch ? "Component recipe" : "Dish recipe"}</span>
-              <span class="tag">${isBatch ? record.productType || "No product type" : record.category || "No category"}</span>
-            </div>
+        ${heading ? `<div class="page-header"><div class="eyebrow">${eyebrow}</div><h1>${heading}</h1>${subheading ? `<p>${subheading}</p>` : ""}</div>` : ""}
+        ${sectionsHtml}
+      </div>
+    </body>
+  </html>`;
+}
+
+function buildChefSheetHtmlV2(record, componentRows = [], options = {}) {
+  return buildChefSheetDocumentHtmlV2(
+    `${record.name} chef sheet`,
+    buildChefSheetSectionHtmlV2(record, componentRows, options)
+  );
+}
+
+function buildMenuChefSheetPackHtmlV2(menu, recipes = [], ingredientMap = new Map(), batchMap = new Map()) {
+  const sectionsHtml = recipes
+    .map((recipe) => {
+      const componentRows = buildRecipeChefSheetRowsV2(recipe, ingredientMap, batchMap);
+      const pricing = getRecipePricingMetrics(recipe, ingredientMap, batchMap);
+      return buildChefSheetSectionHtmlV2(recipe, componentRows, {
+        type: "recipe",
+        totalCost: pricing.recipeCost,
+        grossProfit: pricing.grossProfit,
+      });
+    })
+    .join("");
+
+  return buildChefSheetDocumentHtmlV2(
+    `${menu.name} chef sheet pack`,
+    sectionsHtml,
+    {
+      eyebrow: "Menu chef sheet pack",
+      heading: menu.name,
+      subheading: [menu.restaurant, menu.service].filter(Boolean).join(" · "),
+    }
+  );
+}
+
+function buildOperationsGuideHtml() {
+  return `<!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <title>Peligoni Food Ops guide</title>
+      <style>
+        body { margin: 0; font-family: "Helvetica Neue", Arial, sans-serif; background: #f6f3ee; color: #201814; }
+        .page { max-width: 980px; margin: 0 auto; padding: 32px; }
+        .hero { background: linear-gradient(135deg, #201814 0%, #4f3525 100%); color: #fff7ed; border-radius: 28px; padding: 32px; margin-bottom: 24px; }
+        .eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; opacity: 0.8; font-weight: 700; }
+        h1 { margin: 8px 0 10px; font-size: 36px; }
+        p { line-height: 1.6; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; margin: 24px 0; }
+        .card { background: #fffdf8; border: 1px solid #e8dccb; border-radius: 22px; padding: 22px; box-shadow: 0 12px 30px rgba(32, 24, 20, 0.05); }
+        .card h2 { margin: 0 0 10px; font-size: 22px; }
+        .card h3 { margin: 0 0 8px; font-size: 18px; }
+        .section { background: #fffdf8; border: 1px solid #e8dccb; border-radius: 24px; padding: 24px; margin-bottom: 20px; }
+        .section h2 { margin: 0 0 12px; font-size: 24px; }
+        .section h3 { margin: 18px 0 8px; font-size: 18px; }
+        .tag-row { margin-top: 14px; }
+        .tag { display: inline-block; margin: 0 8px 8px 0; padding: 6px 12px; border-radius: 999px; background: #f3eadc; font-size: 12px; font-weight: 700; }
+        ol, ul { margin: 8px 0 0 20px; line-height: 1.7; }
+        .tip { background: #f7efe4; border-left: 4px solid #8a5a31; padding: 14px 16px; border-radius: 12px; }
+        @media print {
+          body { background: white; }
+          .page { padding: 0; }
+          .hero, .card, .section { box-shadow: none; }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="page">
+        <div class="hero">
+          <div class="eyebrow">Peligoni Food Ops V2</div>
+          <h1>Getting started guide</h1>
+          <p>This guide is for first-time users coming to the app from a chef, restaurant manager, or cost controller perspective. It explains what lives where, which actions matter most, and how to move confidently through ingredients, components, recipes, menus, and exports.</p>
+          <div class="tag-row">
+            <span class="tag">Ingredients</span>
+            <span class="tag">Components</span>
+            <span class="tag">Recipes</span>
+            <span class="tag">Menus</span>
+            <span class="tag">Exports</span>
           </div>
-          <div><div class="eyebrow">Item code</div><strong>${record.code || "Missing"}</strong></div>
         </div>
-        <div class="meta">
-          ${metaHtml}
+
+        <div class="grid">
+          <div class="card">
+            <h2>Chef view</h2>
+            <p>Use the app to build prep bases and dish recipes, print chef sheets, and keep methods, notes, and portioning aligned with service.</p>
+          </div>
+          <div class="card">
+            <h2>Manager view</h2>
+            <p>Use it to link dishes to menus, see what is live, check restaurant and service coverage, and print the packs needed for briefings.</p>
+          </div>
+          <div class="card">
+            <h2>Cost controller view</h2>
+            <p>Use it to keep ingredients current, publish components cleanly, review price issues, and check that recipe and menu margins still make sense.</p>
+          </div>
         </div>
-        <div class="layout">
-          <div>
-            <div class="card">
-              <div class="eyebrow">Ingredients</div>
-              <table>
-                <thead><tr><th>Ingredient</th><th>Code</th><th>Qty</th><th>Unit</th><th>Cost</th></tr></thead>
-                <tbody>${componentsHtml}</tbody>
-              </table>
-            </div>
-            <div class="card">
-              <div class="eyebrow">Method</div>
-              <ul>${methodHtml}</ul>
-            </div>
-          </div>
-          <div>
-            <div class="card">
-              <div class="eyebrow">${isBatch ? "Reference" : "Presentation"}</div>
-              ${imageHtml}
-            </div>
-            <div class="card">
-              <div class="eyebrow">${isBatch ? "Prep notes" : "Plating notes"}</div>
-              <ul><li>${isBatch ? (record.prepNotes || "Add notes in the app before printing.") : (record.platingNotes || "Add plating notes in the app before printing.")}</li></ul>
-            </div>
-          </div>
+
+        <div class="section">
+          <h2>How the workspace is organised</h2>
+          <h3>Ingredients</h3>
+          <p>The ingredient master is your shared source of truth. Food ingredients stay in the food list, drinks items stay in the drinks list, and you can explicitly copy drinks items into food only when needed.</p>
+          <h3>Components</h3>
+          <p>Use components for prep bases, sauces, mixes, and anything reusable. Publish a finished component to create a component-derived ingredient for recipes.</p>
+          <h3>Recipes</h3>
+          <p>Recipes are dishes built from ingredients. Work through Basics, Ingredients, Method, Portions & pricing, then Usage. Ready and Live reflect workflow state, not just whether a dish exists.</p>
+          <h3>Menus</h3>
+          <p>Menus link recipes to a restaurant and service. They are your proofing and bulk export point.</p>
+          <h3>Exports</h3>
+          <p>Exports give you printable chef sheets, cost sheets, menu proofs, and bulk packs without leaving the app.</p>
+        </div>
+
+        <div class="section">
+          <h2>Chef quick start</h2>
+          <ol>
+            <li>Create or open a component if you are building a reusable prep base.</li>
+            <li>Create or open a recipe if you are building a finished dish.</li>
+            <li>Add ingredients from the master. Use the separate Drinks items tab only when a drinks item genuinely belongs in food.</li>
+            <li>Use the scaling tools to reset a dish to the practical portion count or a component to the practical yield you actually produce.</li>
+            <li>Add method steps, prep notes, plating notes, and an image where helpful.</li>
+            <li>Save, mark ready, and print a chef sheet before service.</li>
+          </ol>
+          <div class="tip"><strong>Chef tip:</strong> Components should be reusable yields like kg, litres, or pieces. Recipes should be portion-based.</div>
+        </div>
+
+        <div class="section">
+          <h2>Restaurant manager quick start</h2>
+          <ol>
+            <li>Open Menus and create or update the menu for the right restaurant and service.</li>
+            <li>Link the recipes you want the team to run.</li>
+            <li>Use the menu proof to check names, descriptions, and order.</li>
+            <li>Use the costing pack or chef sheet pack when you want one printable set for the whole menu.</li>
+            <li>Only publish live when the recipes and menu have been reviewed.</li>
+          </ol>
+          <div class="tip"><strong>Manager tip:</strong> The top banner is workspace-wide. It may be warning about drafts in other recipes even if the open record is already saved.</div>
+        </div>
+
+        <div class="section">
+          <h2>Cost controller quick start</h2>
+          <ol>
+            <li>Keep Soft1-linked ingredients refreshed and review any price-review items that still need human judgement.</li>
+            <li>Check that manual ingredients are really pending Soft1 rather than duplicates of existing simple items.</li>
+            <li>Review component yields so published component-derived ingredients carry the right pack size and unit pricing.</li>
+            <li>Open recipe and menu cost sheets to validate margin before anything goes live.</li>
+            <li>Use the ingredient master export when you need a clean printable or CSV view of the current shared ingredient list.</li>
+          </ol>
+        </div>
+
+        <div class="section">
+          <h2>Common workflows</h2>
+          <h3>Turn a component into an ingredient</h3>
+          <ul>
+            <li>Cost the component fully.</li>
+            <li>Set the yield you actually make.</li>
+            <li>Publish to ingredient.</li>
+          </ul>
+          <h3>Turn a recipe into a component draft</h3>
+          <ul>
+            <li>Open the recipe Usage step.</li>
+            <li>Choose Convert to component draft.</li>
+            <li>Review yield, product type, and publish as an ingredient when ready.</li>
+          </ul>
+          <h3>Prepare documents for service</h3>
+          <ul>
+            <li>Single dish: open chef sheet from the recipe.</li>
+            <li>Whole menu: open the menu chef sheet pack or costing pack.</li>
+          </ul>
+        </div>
+
+        <div class="section">
+          <h2>What to watch for</h2>
+          <ul>
+            <li>If a recipe line comes back in the wrong unit, correct it and save again before publishing.</li>
+            <li>If the app says a record is live but still shows unsaved edits, use Update live rather than assuming the change already stuck.</li>
+            <li>If an ingredient is unclear on price basis, leave it in Price review until the pack, count, or yield is known.</li>
+          </ul>
         </div>
       </div>
     </body>
@@ -14151,6 +14345,31 @@ function App() {
     }));
   };
 
+  const scaleRecipePortions = (recipeId, targetPortions) => {
+    const recipe = getRecipeEditorSnapshot(recipeId);
+    const nextPortions = Math.max(1, Math.round(Number(targetPortions || 0)));
+    const currentPortions = Math.max(1, Math.round(Number(recipe?.portions || 0)));
+    if (!recipe || !(nextPortions > 0) || !(currentPortions > 0)) return false;
+    const ratio = nextPortions / currentPortions;
+    if (!(ratio > 0)) return false;
+
+    updateRecipe(recipeId, (current) => ({
+      ...current,
+      portions: nextPortions,
+      ingredientLines: (current.ingredientLines || []).map((line) => ({
+        ...line,
+        quantity: formatEditableQuantity(parseNumericQuantity(line.quantity) * ratio),
+        estimatedCost: Number(line.estimatedCost || 0) * ratio,
+      })),
+      batchLines: (current.batchLines || []).map((line) => ({
+        ...line,
+        quantity: formatEditableQuantity(parseNumericQuantity(line.quantity) * ratio),
+        estimatedCost: Number(line.estimatedCost || 0) * ratio,
+      })),
+    }));
+    return true;
+  };
+
   const toggleRecipeServiceSuitability = (recipeId, service) => {
     updateRecipe(recipeId, (recipe) => {
       const currentValues = recipe.serviceSuitability || [];
@@ -14452,6 +14671,26 @@ function App() {
       ...batch,
       [field]: numericFields.has(field) ? Number(value || 0) : value,
     }));
+  };
+
+  const scaleBatchYield = (batchId, targetYieldAmount) => {
+    const batch = batchesRef.current.find((item) => item.id === batchId);
+    const nextYieldAmount = Number(targetYieldAmount || 0);
+    const currentYieldAmount = Number(batch?.yieldAmount || 0);
+    if (!batch || !(nextYieldAmount > 0) || !(currentYieldAmount > 0)) return false;
+    const ratio = nextYieldAmount / currentYieldAmount;
+    if (!(ratio > 0)) return false;
+
+    updateBatch(batchId, (current) => ({
+      ...current,
+      yieldAmount: nextYieldAmount,
+      ingredientLines: (current.ingredientLines || []).map((line) => ({
+        ...line,
+        quantity: formatEditableQuantity(parseNumericQuantity(line.quantity) * ratio),
+        estimatedCost: Number(line.estimatedCost || 0) * ratio,
+      })),
+    }));
+    return true;
   };
 
   const updateBatchMethodStep = (batchId, stepIndex, value) => {
@@ -16812,6 +17051,19 @@ function App() {
     });
   };
 
+  const openMenuBulkChefSheetPreview = (menuId) => {
+    const menu = recordMaps.menu.get(menuId);
+    if (!menu) return;
+    const recipesForMenu = (menu.recipeIds || []).map((recipeId) => recordMaps.recipe.get(recipeId)).filter(Boolean);
+    if (!recipesForMenu.length) return;
+    openExportPreview({
+      title: `${menu.name} chef sheet pack`,
+      html: buildMenuChefSheetPackHtmlV2(menu, recipesForMenu, recordMaps.ingredient, recordMaps.batch),
+      csvContent: "",
+      csvFileName: "",
+    });
+  };
+
   const openBatchCostSheetPreview = (batchId) => {
     const batch = recordMaps.batch.get(batchId);
     if (!batch) return;
@@ -16880,6 +17132,15 @@ function App() {
       html,
       csvContent,
       csvFileName: `${slugifyLabel(menu.name || "menu")}-costing-pack.csv`,
+    });
+  };
+
+  const openOperationsGuidePreview = () => {
+    openExportPreview({
+      title: "Food Ops getting started guide",
+      html: buildOperationsGuideHtml(),
+      csvContent: "",
+      csvFileName: "",
     });
   };
 
@@ -18344,6 +18605,7 @@ function App() {
                 ingredientExportSummary={ingredientExportSummary}
                 selectedRecord={selectedRecord}
                 selectExportRecord={(type, id) => setSelectedRecord({ type, id })}
+                openOperationsGuidePreview={openOperationsGuidePreview}
               />
             ) : null}
             {activeSection === "settings" ? (
@@ -18409,8 +18671,10 @@ function App() {
                 openRecipeCostSheetPreview={openRecipeCostSheetPreview}
                 openRecipeChefSheetPreview={openRecipeChefSheetPreview}
                 openMenuSheetPreview={openMenuSheetPreview}
+                openMenuBulkChefSheetPreview={openMenuBulkChefSheetPreview}
                 openMenuBulkCostSheetPreview={openMenuBulkCostSheetPreview}
                 openIngredientMasterExportPreview={openIngredientMasterExportPreview}
+                openOperationsGuidePreview={openOperationsGuidePreview}
               />
             ) : activeSection === "exports" && selectedData ? (
               <ExportDetail
@@ -18420,8 +18684,10 @@ function App() {
                 openRecipeCostSheetPreview={openRecipeCostSheetPreview}
                 openRecipeChefSheetPreview={openRecipeChefSheetPreview}
                 openMenuSheetPreview={openMenuSheetPreview}
+                openMenuBulkChefSheetPreview={openMenuBulkChefSheetPreview}
                 openMenuBulkCostSheetPreview={openMenuBulkCostSheetPreview}
                 openIngredientMasterExportPreview={openIngredientMasterExportPreview}
+                openOperationsGuidePreview={openOperationsGuidePreview}
               />
             ) : selectedData ? (
               <RecordDetail
@@ -18442,6 +18708,7 @@ function App() {
                 ingredientTradeCategoryOptions={ingredientTradeCategoryOptions}
                 batches={batches}
                 updateRecipeField={updateRecipeField}
+                scaleRecipePortions={scaleRecipePortions}
                 markRecipeReady={markRecipeReady}
                 publishRecipeLive={publishRecipeLive}
                 moveRecipeToDraft={moveRecipeToDraft}
@@ -20290,6 +20557,7 @@ function ExportsPanel({
   ingredientExportSummary,
   selectedRecord,
   selectExportRecord,
+  openOperationsGuidePreview,
 }) {
   return (
     <>
@@ -20297,6 +20565,15 @@ function ExportsPanel({
         <div>
           <div className="v2-eyebrow">Exports</div>
           <h3>Choose what to export</h3>
+        </div>
+      </div>
+      <div className="v2-line-card">
+        <strong>Getting started guide</strong>
+        <p>Open a printable overview for chefs, restaurant managers, and cost controllers who are coming into the app for the first time.</p>
+        <div className="v2-link-list">
+          <button type="button" className="v2-secondary-button" onClick={openOperationsGuidePreview}>
+            Open app guide
+          </button>
         </div>
       </div>
       <div className="v2-workspace-switch">
@@ -20422,8 +20699,10 @@ function ExportDetail({
   openRecipeCostSheetPreview,
   openRecipeChefSheetPreview,
   openMenuSheetPreview,
+  openMenuBulkChefSheetPreview,
   openMenuBulkCostSheetPreview,
   openIngredientMasterExportPreview,
+  openOperationsGuidePreview,
 }) {
   if (recordType === "ingredient_master") {
     return (
@@ -20441,6 +20720,15 @@ function ExportDetail({
         </div>
         <DetailSection title="Export options">
           <div className="v2-stack">
+            <div className="v2-line-card">
+              <strong>Getting started guide</strong>
+              <p>Printable orientation guide for chefs, restaurant managers, and cost controllers.</p>
+              <div className="v2-link-list">
+                <button type="button" className="v2-primary-button" onClick={openOperationsGuidePreview}>
+                  Open app guide
+                </button>
+              </div>
+            </div>
             <div className="v2-line-card">
               <strong>Full ingredient list</strong>
               <p>Preview the ingredient master, then print/save PDF or download the complete CSV from the same pop-out.</p>
@@ -20556,6 +20844,15 @@ function ExportDetail({
               <div className="v2-link-list">
                 <button type="button" className="v2-primary-button" onClick={() => openMenuBulkCostSheetPreview(record.id)}>
                   Open costing pack
+                </button>
+              </div>
+            </div>
+            <div className="v2-line-card">
+              <strong>Chef sheet pack</strong>
+              <p>Bulk print chef sheets for every recipe linked to this menu, ready to preview and print as one pack.</p>
+              <div className="v2-link-list">
+                <button type="button" className="v2-primary-button" onClick={() => openMenuBulkChefSheetPreview(record.id)}>
+                  Open chef sheet pack
                 </button>
               </div>
             </div>
@@ -21670,6 +21967,7 @@ function RecipeWorkflowDetail({
   sharedDrinkItems = [],
   batches,
   updateRecipeField,
+  scaleRecipePortions,
   markRecipeReady,
   publishRecipeLive,
   moveRecipeToDraft,
@@ -21707,6 +22005,7 @@ function RecipeWorkflowDetail({
   const [activePicker, setActivePicker] = useState("");
   const [ingredientPickerSource, setIngredientPickerSource] = useState("food");
   const [showRecipePersistenceTrace, setShowRecipePersistenceTrace] = useState(false);
+  const [targetPortionCount, setTargetPortionCount] = useState(String(Math.max(1, Number(record?.portions || 1) || 1)));
   const deferredIngredientPickerQuery = useDeferredValue(ingredientPickerQuery);
   const deferredBatchPickerQuery = useDeferredValue(batchPickerQuery);
   const ingredientLinks = safeIngredientLines
@@ -21839,6 +22138,9 @@ function RecipeWorkflowDetail({
   };
   const menuRestaurants = Array.from(new Set(menuLinks.map((menu) => menu.restaurant).filter(Boolean))).sort();
   const menuServices = Array.from(new Set(menuLinks.map((menu) => menu.service).filter(Boolean))).sort();
+  const currentPortionCount = Math.max(1, Number(record?.portions || 1) || 1);
+  const targetPortionValue = Math.max(1, Number(targetPortionCount || currentPortionCount) || currentPortionCount);
+  const recipeScaleRatio = targetPortionValue / currentPortionCount;
   const recipeSaveState = String(recipeSharedSyncState || "").trim();
   const latestEditableRecipe = getLatestRecipeSnapshot ? getLatestRecipeSnapshot(record.id) || record : record;
   const persistedRecipe =
@@ -21922,6 +22224,9 @@ function RecipeWorkflowDetail({
     }
     return true;
   };
+  useEffect(() => {
+    setTargetPortionCount(String(Math.max(1, Number(record?.portions || 1) || 1)));
+  }, [record?.id, record?.portions]);
   const goToRecipeStep = async (nextRecipeStep) => {
     if (nextRecipeStep === recipeEditorStep) return;
     setRecipeEditorStep(nextRecipeStep);
@@ -22278,6 +22583,38 @@ function RecipeWorkflowDetail({
               <input type="number" min="0" step="0.01" value={record.salePrice} onChange={(event) => updateRecipeField(record.id, "salePrice", event.target.value)} />
             </label>
           </div>
+          <div className="v2-editor-block">
+            <strong>Scale recipe</strong>
+            <div className="v2-micro-note">
+              Reset the recipe to a new practical portion count. Ingredient and component quantities scale proportionally, while the sale price stays per portion.
+            </div>
+            <div className="v2-form-grid">
+              <label className="v2-field">
+                <span>Target portions</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={targetPortionCount}
+                  onChange={(event) => setTargetPortionCount(event.target.value)}
+                />
+              </label>
+              <label className="v2-field">
+                <span>Scale ratio</span>
+                <input value={`x${recipeScaleRatio.toFixed(2)}`} readOnly />
+              </label>
+            </div>
+            <div className="v2-link-list">
+              <button
+                type="button"
+                className="v2-secondary-button"
+                onClick={() => scaleRecipePortions(record.id, targetPortionValue)}
+                disabled={recipeSaveState === "syncing" || targetPortionValue === currentPortionCount}
+              >
+                Rescale recipe
+              </button>
+            </div>
+          </div>
           <div className="v2-summary-grid v2-summary-grid-pricing-main">
             <SummaryCard label="Recipe Cost / Portion" value={formatCurrency(pricingMetrics.recipeCost)} tone="default" />
             <SummaryCard label="Gross Sale Price" value={formatCurrency(record.salePrice)} tone="default" />
@@ -22608,6 +22945,7 @@ function BatchWorkflowDetail({
   ingredientMaster,
   sharedDrinkItems = [],
   updateBatchField,
+  scaleBatchYield,
   updateBatchIngredientLine,
   toggleBatchIngredientLink,
   applyMissingSharedBatchIngredientSuggestion,
@@ -22645,6 +22983,7 @@ function BatchWorkflowDetail({
   const [ingredientPickerQuery, setIngredientPickerQuery] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [ingredientPickerSource, setIngredientPickerSource] = useState("food");
+  const [targetYieldAmount, setTargetYieldAmount] = useState(String(Number(record?.yieldAmount || 0) || 0));
   const deferredIngredientPickerQuery = useDeferredValue(ingredientPickerQuery);
   const publishedIngredient = record.publishedIngredientId ? maps.ingredient.get(record.publishedIngredientId) : null;
   const ingredientLinks = safeIngredientLines
@@ -22692,6 +23031,9 @@ function BatchWorkflowDetail({
   const progress = getBatchWorkflowProgress(record, maps.ingredient);
   const batchReadyToPublish = progress.completeCount === progress.total;
   const batchYieldUnitKey = String(record.yieldUnit || "").trim().toLowerCase();
+  const currentYieldAmount = Number(record?.yieldAmount || 0) || 0;
+  const targetYieldValue = Number(targetYieldAmount || 0) || 0;
+  const batchScaleRatio = currentYieldAmount > 0 && targetYieldValue > 0 ? targetYieldValue / currentYieldAmount : 0;
   const batchCostUnitKey = String(batchCostSource?.costUnit || record.costUnit || "").trim().toLowerCase();
   const batchYieldUnitFamily = getMeasurementUnitFamily(batchYieldUnitKey);
   const batchCostUnitFamily = getMeasurementUnitFamily(batchCostUnitKey);
@@ -22895,6 +23237,9 @@ function BatchWorkflowDetail({
     updateBatchField(record.id, "yieldUnit", normalizedUnit);
     updateBatchField(record.id, "costUnit", normalizedUnit);
   };
+  useEffect(() => {
+    setTargetYieldAmount(String(Number(record?.yieldAmount || 0) || 0));
+  }, [record?.id, record?.yieldAmount]);
 
   return (
     <div className={`v2-recipe-shell ${pickerOpen ? "picker-open" : ""}`}>
@@ -23168,6 +23513,38 @@ function BatchWorkflowDetail({
                 readOnly
               />
             </label>
+          </div>
+          <div className="v2-editor-block">
+            <strong>Scale component</strong>
+            <div className="v2-micro-note">
+              Reset the component to the yield you actually want to make. Ingredient quantities scale proportionally while the yield updates to the new target.
+            </div>
+            <div className="v2-form-grid">
+              <label className="v2-field">
+                <span>Target yield amount</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={targetYieldAmount}
+                  onChange={(event) => setTargetYieldAmount(event.target.value)}
+                />
+              </label>
+              <label className="v2-field">
+                <span>Scale ratio</span>
+                <input value={batchScaleRatio > 0 ? `x${batchScaleRatio.toFixed(2)}` : "-"} readOnly />
+              </label>
+            </div>
+            <div className="v2-link-list">
+              <button
+                type="button"
+                className="v2-secondary-button"
+                onClick={() => scaleBatchYield(record.id, targetYieldValue)}
+                disabled={batchSaveState === "syncing" || !(targetYieldValue > 0) || targetYieldValue === currentYieldAmount}
+              >
+                Rescale component
+              </button>
+            </div>
           </div>
         </DetailSection>
       ) : null}
@@ -24708,6 +25085,7 @@ function RecordDetail({
   ingredientRuleCatchupMap,
   batches,
   updateRecipeField,
+  scaleRecipePortions,
   markRecipeReady,
   publishRecipeLive,
   moveRecipeToDraft,
@@ -24734,6 +25112,7 @@ function RecordDetail({
   openRecipeChefSheetPreview,
   openBatchCostSheetPreview,
   openBatchChefSheetPreview,
+  scaleBatchYield,
   convertRecipeToBatchDraft,
   learningRules,
   updateIngredientField,
@@ -24837,6 +25216,7 @@ function RecordDetail({
         sharedDrinkItems={sharedDrinkItems}
         batches={batches}
         updateRecipeField={updateRecipeField}
+        scaleRecipePortions={scaleRecipePortions}
         markRecipeReady={markRecipeReady}
         publishRecipeLive={publishRecipeLive}
         moveRecipeToDraft={moveRecipeToDraft}
@@ -24879,6 +25259,7 @@ function RecordDetail({
         ingredientMaster={ingredientMaster}
         sharedDrinkItems={sharedDrinkItems}
         updateBatchField={updateBatchField}
+        scaleBatchYield={scaleBatchYield}
         updateBatchIngredientLine={updateBatchIngredientLine}
         toggleBatchIngredientLink={toggleBatchIngredientLink}
         applyMissingSharedBatchIngredientSuggestion={applyMissingSharedBatchIngredientSuggestion}
