@@ -7897,12 +7897,13 @@ function buildChefSheetDocumentHtmlV2(title, sectionsHtml, header = {}) {
   const eyebrow = String(header.eyebrow || "Peligoni chef sheet").trim();
   const heading = String(header.heading || "").trim();
   const subheading = String(header.subheading || "").trim();
+  const documentTitle = String(title || heading || "chef sheet").trim();
 
   return `<!doctype html>
   <html lang="en">
     <head>
       <meta charset="utf-8" />
-      <title>${record.name} chef sheet</title>
+      <title>${documentTitle}</title>
       <style>
         body { font-family: "Helvetica Neue", Arial, sans-serif; margin: 0; color: #0f172a; background: #f8fafc; }
         .page { max-width: 980px; margin: 0 auto; padding: 32px; }
@@ -18886,6 +18887,7 @@ function App() {
                 sharedDrinkItems={sharedDrinkItems}
                 batches={batches}
                 updateRecipeField={updateRecipeField}
+                scaleRecipePortions={scaleRecipePortions}
                 markRecipeReady={markRecipeReady}
                 publishRecipeLive={publishRecipeLive}
                 moveRecipeToDraft={moveRecipeToDraft}
@@ -20787,32 +20789,6 @@ function ExportDetail({
   }
 
   if (recordType === "menu") {
-    const menuSaveState = String(menuSharedSyncState || "").trim();
-    const goToMenuStep = async (nextMenuStep) => {
-      if (nextMenuStep === menuEditorStep) return;
-      if (record.sharedDirty && saveMenuToSharedData) {
-        const saved = await saveMenuToSharedData(record.id, { quiet: true });
-        if (!saved) return;
-      }
-      setMenuEditorStep(nextMenuStep);
-    };
-
-    const approveMenuWithSave = async () => {
-      if (record.sharedDirty && saveMenuToSharedData) {
-        const saved = await saveMenuToSharedData(record.id, { quiet: true });
-        if (!saved) return;
-      }
-      approveMenu(record.id);
-    };
-
-    const publishMenuLiveWithSave = async () => {
-      if (record.sharedDirty && saveMenuToSharedData) {
-        const saved = await saveMenuToSharedData(record.id, { quiet: true });
-        if (!saved) return;
-      }
-      publishMenuLive(record.id);
-    };
-
     return (
       <>
         <DetailHeader
