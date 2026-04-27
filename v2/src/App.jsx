@@ -13624,6 +13624,129 @@ function App() {
     });
   };
 
+  const applyIngredientReplacementToRecipes = (fromIngredientId, toIngredientId) => {
+    const nextDrafts = {
+      ...recipeDraftsRef.current,
+    };
+    const touchedRecipeIds = [];
+
+    (recipesRef.current || []).forEach((recipe) => {
+      const recipeId = String(recipe?.id || "").trim();
+      if (!recipeId) return;
+
+      const currentRecipe = nextDrafts[recipeId] || recipe;
+      const outcome = substituteIngredientLines(currentRecipe.ingredientLines || [], fromIngredientId, toIngredientId);
+      if (!outcome.applied) return;
+
+      clearScheduledRecordSync("dish", recipeId);
+
+      nextDrafts[recipeId] = syncRecipeRelations({
+        ...currentRecipe,
+        ingredientLines: outcome.lines,
+        localEditRevision: Number(currentRecipe.localEditRevision || 0) + 1,
+        sharedDirty: true,
+      });
+      touchedRecipeIds.push(recipeId);
+      persistLocalRecipePersistenceTrace(recipeId, {
+        lastSaveError: "",
+      });
+    });
+
+    if (!touchedRecipeIds.length) return [];
+
+    recipeDraftsRef.current = nextDrafts;
+    setRecipeDraftsState(nextDrafts);
+    setRecipeSharedSyncState((current) => ({
+      ...current,
+      ...Object.fromEntries(touchedRecipeIds.map((recipeId) => [recipeId, ""])),
+    }));
+
+    return touchedRecipeIds;
+  };
+
+  const applyIngredientReplacementToBatches = (fromIngredientId, toIngredientId) => {
+    const touchedBatchIds = [];
+
+    [...(batchesRef.current || [])].forEach((batch) => {
+      const batchId = String(batch?.id || "").trim();
+      if (!batchId) return;
+
+      const outcome = substituteIngredientLines(batch.ingredientLines || [], fromIngredientId, toIngredientId);
+      if (!outcome.applied) return;
+
+      updateBatch(batchId, (current) => ({
+        ...current,
+        ingredientLines: outcome.lines,
+      }), { scheduleSync: false });
+      touchedBatchIds.push(batchId);
+    });
+
+    return touchedBatchIds;
+  };
+
+  const persistIngredientReplacementOperation = async ({
+    recipeIds = [],
+    batchIds = [],
+    ingredientIds = [],
+    source = "ingredient-replacement",
+  } = {}) => {
+    if (!supabaseEnabled || !supabase) {
+      return {
+        ok: true,
+        ingredientFailures: [],
+        recipeFailures: [],
+        batchFailures: [],
+      };
+    }
+
+    await waitForNextBrowserFrame();
+
+    const uniqueIngredientIds = Array.from(new Set((ingredientIds || []).filter(Boolean)));
+    const uniqueRecipeIds = Array.from(new Set((recipeIds || []).filter(Boolean)));
+    const uniqueBatchIds = Array.from(new Set((batchIds || []).filter(Boolean)));
+
+    const ingredientFailures = [];
+    const recipeFailures = [];
+    const batchFailures = [];
+
+    for (const ingredientId of uniqueIngredientIds) {
+      const ingredient = ingredientMasterRef.current.find((item) => item.id === ingredientId) || null;
+      if (!ingredient) continue;
+      if (!ingredient.sharedDirty && ingredient.sharedRecordId) continue;
+
+      const saved = await syncIngredientToSharedData(ingredientId, { quiet: true });
+      if (!saved) {
+        ingredientFailures.push(ingredient.name || ingredient.code || ingredientId);
+      }
+    }
+
+    for (const recipeId of uniqueRecipeIds) {
+      const saved = await saveRecipeToSharedData(recipeId, { quiet: true, source: `${source}:recipe` });
+      if (!saved) {
+        const recipe =
+          recipeDraftsRef.current[String(recipeId)] ||
+          recipesRef.current.find((item) => item.id === recipeId) ||
+          null;
+        recipeFailures.push(recipe?.name || recipe?.code || recipeId);
+      }
+    }
+
+    for (const batchId of uniqueBatchIds) {
+      const saved = await saveBatchToSharedData(batchId, { quiet: true, source: `${source}:batch` });
+      if (!saved) {
+        const batch = batchesRef.current.find((item) => item.id === batchId) || null;
+        batchFailures.push(batch?.name || batch?.code || batchId);
+      }
+    }
+
+    return {
+      ok: !(ingredientFailures.length || recipeFailures.length || batchFailures.length),
+      ingredientFailures,
+      recipeFailures,
+      batchFailures,
+    };
+  };
+
   const closeIngredientSubstitution = () => {
     setIngredientSubstitutionModal({
       isOpen: false,
@@ -13957,7 +14080,7 @@ function App() {
     closeIngredientMaker();
   };
 
-  const applyIngredientSubstitution = () => {
+  const applyIngredientSubstitution = async () => {
     const sourceIngredient = ingredientSubstitutionSource;
     const replacementIngredient = ingredientSubstitutionReplacement;
     if (!sourceIngredient || !replacementIngredient) return;
@@ -13988,27 +14111,8 @@ function App() {
       if (!confirmed) return;
     }
 
-    setRecipes((current) =>
-      current.map((recipe) => {
-        const outcome = substituteIngredientLines(recipe.ingredientLines || [], sourceIngredient.id, replacementIngredient.id);
-        if (!outcome.applied) return recipe;
-        return syncRecipeRelations({
-          ...recipe,
-          ingredientLines: outcome.lines,
-        });
-      })
-    );
-
-    setBatches((current) =>
-      current.map((batch) => {
-        const outcome = substituteIngredientLines(batch.ingredientLines || [], sourceIngredient.id, replacementIngredient.id);
-        if (!outcome.applied) return batch;
-        return syncBatchRecord({
-          ...batch,
-          ingredientLines: outcome.lines,
-        });
-      })
-    );
+    const touchedRecipeIds = applyIngredientReplacementToRecipes(sourceIngredient.id, replacementIngredient.id);
+    const touchedBatchIds = applyIngredientReplacementToBatches(sourceIngredient.id, replacementIngredient.id);
 
     setIngredientMaster((current) =>
       current.map((ingredient) => {
@@ -14018,6 +14122,7 @@ function App() {
             ...ingredient,
             archived: ingredientSubstitutionModal.archiveOriginal ? true : ingredient.archived,
             notes: [String(ingredient.notes || "").trim(), nextNote].filter(Boolean).join(" "),
+            ...(ingredient.sharedRecordId ? { sharedDirty: true } : {}),
           };
         }
         if (ingredient.id === replacementIngredient.id) {
@@ -14025,6 +14130,7 @@ function App() {
           return {
             ...ingredient,
             notes: [String(ingredient.notes || "").trim(), nextNote].filter(Boolean).join(" "),
+            ...(ingredient.sharedRecordId ? { sharedDirty: true } : {}),
           };
         }
         return ingredient;
@@ -14032,6 +14138,32 @@ function App() {
     );
 
     closeIngredientSubstitution();
+
+    const persistResult = await persistIngredientReplacementOperation({
+      recipeIds: touchedRecipeIds,
+      batchIds: touchedBatchIds,
+      ingredientIds: [sourceIngredient.id, replacementIngredient.id],
+      source: "ingredient-substitution",
+    });
+
+    if (!persistResult.ok && typeof window !== "undefined") {
+      window.alert(
+        [
+          "Applied the substitution locally, but some shared updates did not persist.",
+          persistResult.ingredientFailures.length
+            ? `Ingredients not saved: ${persistResult.ingredientFailures.join(", ")}`
+            : "",
+          persistResult.recipeFailures.length
+            ? `Recipes not saved: ${persistResult.recipeFailures.join(", ")}`
+            : "",
+          persistResult.batchFailures.length
+            ? `Components not saved: ${persistResult.batchFailures.join(", ")}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      );
+    }
   };
 
   const applyIngredientMerge = async () => {
@@ -14141,29 +14273,8 @@ function App() {
       ingredientMaster.length
     );
 
-    setRecipes((current) =>
-      current.map((recipe) => {
-        const outcome = substituteIngredientLines(recipe.ingredientLines || [], sourceIngredient.id, targetIngredient.id);
-        if (!outcome.applied) return recipe;
-        return syncRecipeRelations({
-          ...recipe,
-          ingredientLines: outcome.lines,
-          sharedDirty: true,
-        });
-      })
-    );
-
-    setBatches((current) =>
-      current.map((batch) => {
-        const outcome = substituteIngredientLines(batch.ingredientLines || [], sourceIngredient.id, targetIngredient.id);
-        if (!outcome.applied) return batch;
-        return syncBatchRecord({
-          ...batch,
-          ingredientLines: outcome.lines,
-          sharedDirty: true,
-        });
-      })
-    );
+    const touchedRecipeIds = applyIngredientReplacementToRecipes(sourceIngredient.id, targetIngredient.id);
+    const touchedBatchIds = applyIngredientReplacementToBatches(sourceIngredient.id, targetIngredient.id);
 
     setIngredientMaster((current) =>
       current.map((ingredient) => {
@@ -14328,6 +14439,29 @@ function App() {
           masterReviewStatus: "ready",
         }));
       }
+    }
+
+    const persistResult = await persistIngredientReplacementOperation({
+      recipeIds: touchedRecipeIds,
+      batchIds: touchedBatchIds,
+      ingredientIds: [],
+      source: "ingredient-merge",
+    });
+
+    if (!persistResult.ok && typeof window !== "undefined") {
+      window.alert(
+        [
+          "Merged the ingredient records locally, but some linked shared records did not persist.",
+          persistResult.recipeFailures.length
+            ? `Recipes not saved: ${persistResult.recipeFailures.join(", ")}`
+            : "",
+          persistResult.batchFailures.length
+            ? `Components not saved: ${persistResult.batchFailures.join(", ")}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      );
     }
 
     setSelectedImportRowId("");
