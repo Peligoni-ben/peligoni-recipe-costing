@@ -7112,17 +7112,29 @@ function buildCsvContent(rows = [], { includeSeparatorHint = true, dialect = get
   return lines.join("\r\n");
 }
 
-function buildMenuPreviewGroups(menu, recipeMap = new Map()) {
+function buildMenuPreviewGroups(
+  menu,
+  recipeMap = new Map(),
+  ingredientMap = new Map(),
+  batchMap = new Map()
+) {
   const knownCourseOrder = ["Starters", "Mains", "Desserts"];
   const enrichedItems = (menu?.items || []).map((item) => {
     const recipe = item.recipeId ? recipeMap.get(item.recipeId) : null;
+    const effectivePrice = Number(item.price || recipe?.salePrice || 0);
+    const pricedRecipe = recipe ? { ...recipe, salePrice: effectivePrice } : null;
+    const pricing = pricedRecipe ? getRecipePricingMetrics(pricedRecipe, ingredientMap, batchMap) : null;
+    const grossProfit =
+      pricing && Number(pricing.netSalePrice || 0) > 0 ? Number(pricing.grossProfit || 0) : null;
     return {
       ...item,
       recipe,
+      pricing,
+      grossProfit,
       course: getMenuCourseLabel(item, recipe),
       dishName: item.dishName || item.name || recipe?.name || "",
       description: item.description || item.recipeDescription || recipe?.menuDescription || "",
-      price: Number(item.price || recipe?.salePrice || 0),
+      price: effectivePrice,
     };
   });
   const discoveredCourses = Array.from(new Set(enrichedItems.map((item) => item.course).filter(Boolean)));
@@ -7135,6 +7147,22 @@ function buildMenuPreviewGroups(menu, recipeMap = new Map()) {
     course,
     items: enrichedItems.filter((item) => item.course === course),
   }));
+}
+
+function getMenuPreviewGrossProfitSummary(groups = []) {
+  const pricedItems = groups
+    .flatMap((group) => group.items || [])
+    .filter((item) => Number.isFinite(Number(item?.grossProfit)) && Number(item?.pricing?.netSalePrice || 0) > 0);
+
+  const pricedDishCount = pricedItems.length;
+  const averageGrossProfit = pricedDishCount
+    ? pricedItems.reduce((sum, item) => sum + Number(item.grossProfit || 0), 0) / pricedDishCount
+    : 0;
+
+  return {
+    pricedDishCount,
+    averageGrossProfit,
+  };
 }
 
 function buildRecipeCostingCsv(recipe, ingredientMap = new Map(), batchMap = new Map()) {
@@ -7398,8 +7426,14 @@ function buildIngredientMasterExportHtml(ingredients = []) {
   </html>`;
 }
 
-function buildMenuPrintHtml(menu, recipeMap = new Map()) {
-  const groups = buildMenuPreviewGroups(menu, recipeMap);
+function buildMenuPrintHtml(
+  menu,
+  recipeMap = new Map(),
+  ingredientMap = new Map(),
+  batchMap = new Map()
+) {
+  const groups = buildMenuPreviewGroups(menu, recipeMap, ingredientMap, batchMap);
+  const summary = getMenuPreviewGrossProfitSummary(groups);
   const groupHtml = groups
     .map((group) => {
       if (!group.items.length) return "";
@@ -7410,6 +7444,7 @@ function buildMenuPrintHtml(menu, recipeMap = new Map()) {
               <td>${item.dishName || item.recipe?.name || ""}</td>
               <td>${item.description || item.recipe?.menuDescription || ""}</td>
               <td>${formatCurrency(item.price || 0)}</td>
+              <td>${item.grossProfit === null ? "" : formatPercent(item.grossProfit)}</td>
             </tr>
           `
         )
@@ -7419,7 +7454,7 @@ function buildMenuPrintHtml(menu, recipeMap = new Map()) {
           <h2>${group.course}</h2>
           <table>
             <thead>
-              <tr><th>Name</th><th>Description</th><th>Price</th></tr>
+              <tr><th>Name</th><th>Description</th><th>Price</th><th>GP</th></tr>
             </thead>
             <tbody>${itemHtml}</tbody>
           </table>
@@ -7438,18 +7473,26 @@ function buildMenuPrintHtml(menu, recipeMap = new Map()) {
       .paper { width: 210mm; min-height: 297mm; margin: 0 auto; background: #fffdfb; padding: 18mm; box-sizing: border-box; }
       h1 { margin: 0 0 8px; font-size: 26px; }
       .meta { margin-bottom: 18px; color: #6f6257; font-size: 13px; }
+      .summary { margin: 0 0 20px; padding: 12px 14px; border: 1px solid #eadfd4; background: #fbf6f0; font-size: 13px; color: #4f4338; }
+      .summary strong { display: block; margin-bottom: 4px; color: #241d18; font-size: 16px; }
       .course-block { margin-top: 20px; }
       h2 { margin: 0 0 8px; font-size: 16px; letter-spacing: 0.08em; text-transform: uppercase; }
       table { width: 100%; border-collapse: collapse; }
       th, td { text-align: left; padding: 8px 0; border-bottom: 1px solid #eadfd4; vertical-align: top; font-size: 14px; }
       th { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7f7267; }
-      td:last-child, th:last-child { text-align: right; white-space: nowrap; }
+      td:nth-child(3), td:nth-child(4), th:nth-child(3), th:nth-child(4) { text-align: right; white-space: nowrap; }
     </style>
   </head>
   <body>
     <div class="paper">
       <h1>${menu.name}</h1>
       <div class="meta">${menu.restaurant} · ${menu.service}</div>
+      ${summary.pricedDishCount ? `
+        <div class="summary">
+          <strong>Average dish GP ${formatPercent(summary.averageGrossProfit)}</strong>
+          Calculated from ${summary.pricedDishCount} priced dish${summary.pricedDishCount === 1 ? "" : "es"} on this menu.
+        </div>
+      ` : ""}
       ${groupHtml}
     </div>
   </body>
@@ -17115,7 +17158,7 @@ function App() {
     const menu = recordMaps.menu.get(menuId);
     if (!menu) return;
     const csv = buildMenuExportCsv(menu, recordMaps.recipe);
-    const html = buildMenuPrintHtml(menu, recordMaps.recipe);
+    const html = buildMenuPrintHtml(menu, recordMaps.recipe, recordMaps.ingredient, recordMaps.batch);
     openExportPreview({
       title: `${menu.name} menu proof`,
       html,
@@ -19148,6 +19191,8 @@ function App() {
           <MenuPreviewModal
             menu={recordMaps.menu.get(menuPreviewModal.id)}
             recipeMap={recordMaps.recipe}
+            ingredientMap={recordMaps.ingredient}
+            batchMap={recordMaps.batch}
             onClose={closeMenuPreview}
           />
         ) : null}
@@ -24624,8 +24669,9 @@ function MenuMakerModal({ restaurant, draft, serviceOptions, onFieldChange, onCl
   );
 }
 
-function MenuPreviewModal({ menu, recipeMap, onClose }) {
-  const previewGroups = buildMenuPreviewGroups(menu, recipeMap);
+function MenuPreviewModal({ menu, recipeMap, ingredientMap, batchMap, onClose }) {
+  const previewGroups = buildMenuPreviewGroups(menu, recipeMap, ingredientMap, batchMap);
+  const previewSummary = getMenuPreviewGrossProfitSummary(previewGroups);
   const draftDishCount = previewGroups.reduce(
     (sum, group) => sum + group.items.filter((item) => item.recipe?.status === "draft").length,
     0
@@ -24657,10 +24703,17 @@ function MenuPreviewModal({ menu, recipeMap, onClose }) {
               <span>Draft dishes stay on the menu for review, but they should be checked before this menu is treated as fully trusted.</span>
             </div>
           ) : null}
+          {previewSummary.pricedDishCount ? (
+            <div className="v2-inline-callout">
+              <strong>Average dish GP {formatPercent(previewSummary.averageGrossProfit)}</strong>
+              <span>Calculated from {previewSummary.pricedDishCount} priced dish{previewSummary.pricedDishCount === 1 ? "" : "es"} on this menu.</span>
+            </div>
+          ) : null}
           <div className="v2-menu-paper-columns">
             <span>Name</span>
             <span>Description</span>
             <span>Price</span>
+            <span>GP</span>
           </div>
           <div className="v2-menu-paper-body">
             {previewGroups.map((group) => (
@@ -24675,6 +24728,7 @@ function MenuPreviewModal({ menu, recipeMap, onClose }) {
                       </div>
                       <span>{item.description || item.recipe?.menuDescription || ""}</span>
                       <span>{item.price ? formatCurrency(item.price) : ""}</span>
+                      <span>{item.grossProfit === null ? "" : formatPercent(item.grossProfit)}</span>
                     </div>
                   ))
                 ) : (
