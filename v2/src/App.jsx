@@ -128,6 +128,12 @@ function isLocalBrowserSession() {
   return hostname === "localhost" || hostname === "127.0.0.1";
 }
 
+function getPasswordResetRedirectUrl() {
+  if (typeof window === "undefined") return LIVE_FOOD_APP_URL;
+  if (isLocalBrowserSession()) return LIVE_FOOD_APP_URL;
+  return `${window.location.origin}${window.location.pathname}`;
+}
+
 function shouldShowLocalRecipePersistenceTrace() {
   if (!isLocalBrowserSession() || typeof window === "undefined") return false;
   try {
@@ -1369,7 +1375,7 @@ function hydrateSharedDataToV2({
   const mappedMenus = (menuRows || []).map((row) => {
     const restaurantName = String(row.venue || "").trim() || "Unknown restaurant";
     const restaurant = restaurantsByName.get(normalizeSharedKey(restaurantName)) || null;
-    const service = inferMenuServiceFromName(row.name);
+    const service = String(row.service || "").trim() || inferMenuServiceFromName(row.name);
     const items = (menuLinesByMenuId.get(row.id) || [])
       .sort((left, right) => numberValue(left.line_order) - numberValue(right.line_order))
       .map((line, index) => {
@@ -9429,6 +9435,7 @@ function App() {
   const [ingredientCostUnitColumnAvailable, setIngredientCostUnitColumnAvailable] = useState(true);
   const [recipeServiceSuitabilityColumnAvailable, setRecipeServiceSuitabilityColumnAvailable] = useState(true);
   const [recipeExtendedNotesColumnsAvailable, setRecipeExtendedNotesColumnsAvailable] = useState(true);
+  const [menuServiceColumnAvailable, setMenuServiceColumnAvailable] = useState(true);
   const [menuLineDescriptionColumnAvailable, setMenuLineDescriptionColumnAvailable] = useState(true);
   const [venueExtendedColumnsAvailable, setVenueExtendedColumnsAvailable] = useState(true);
   const [ingredientTradeCategoryState, setIngredientTradeCategoryState] = useState(() =>
@@ -9832,30 +9839,48 @@ function App() {
     }
   };
 
-  const sendPasswordResetEmail = async () => {
+  const sendPasswordResetEmail = async (emailOverride = "", options = {}) => {
     if (!supabaseEnabled || !supabase) return;
-    const cleanEmail = authEmail.trim().toLowerCase();
+    const { adminTriggered = false } = options;
+    const cleanEmail = String(emailOverride || authEmail || "").trim().toLowerCase();
     if (!cleanEmail) {
-      setAuthError("Enter an email first, then send the reset link.");
-      setAuthNotice("");
+      if (adminTriggered) {
+        setUserSyncState("error");
+        setUserSyncMessage("Add an email address for this user before sending a reset email.");
+      } else {
+        setAuthError("Enter an email first, then send the reset link.");
+        setAuthNotice("");
+      }
       return false;
     }
 
-    setAuthError("");
-    setAuthNotice("Sending reset email...");
+    if (adminTriggered) {
+      setUserSyncState("saving");
+      setUserSyncMessage(`Sending reset email to ${cleanEmail}...`);
+    } else {
+      setAuthError("");
+      setAuthNotice("Sending reset email...");
+    }
 
-    const redirectTo =
-      typeof window !== "undefined"
-        ? `${window.location.origin}${window.location.pathname}`
-        : undefined;
+    const redirectTo = getPasswordResetRedirectUrl();
     const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, redirectTo ? { redirectTo } : undefined);
     if (error) {
-      setAuthError(error.message || "Could not send reset email.");
-      setAuthNotice("");
+      if (adminTriggered) {
+        setUserSyncState("error");
+        setUserSyncMessage(error.message || "Could not send reset email.");
+      } else {
+        setAuthError(error.message || "Could not send reset email.");
+        setAuthNotice("");
+      }
       return false;
     }
 
-    setAuthNotice(`Password reset email sent to ${cleanEmail}.`);
+    if (adminTriggered) {
+      setUserSyncState("saved");
+      setUserSyncMessage(`Password reset email sent to ${cleanEmail}.`);
+    } else {
+      setAuthNotice(`Password reset email sent to ${cleanEmail}.`);
+    }
     return true;
   };
 
@@ -10762,6 +10787,11 @@ function App() {
     return normalized.includes("description") && normalized.includes("menu_lines");
   };
 
+  const isMissingMenuServiceColumnError = (message = "") => {
+    const normalized = String(message || "").toLowerCase();
+    return normalized.includes("service") && normalized.includes("menus");
+  };
+
   const isMissingVenueExtendedColumnError = (message = "") => {
     const normalized = String(message || "").toLowerCase();
     return (
@@ -10846,14 +10876,22 @@ function App() {
       })),
     });
 
-  const buildSharedMenuPayload = (menu = {}) => ({
-    id: String(menu.id || "").trim(),
-    name: String(menu.name || "").trim() || buildDefaultMenuName(menu.restaurant, menu.service),
-    venue: String(menu.restaurant || "").trim() || null,
-    guest_count: Number((menu.items || []).length || 0),
-    target_gp: 0,
-    is_live: menu.status === "live",
-  });
+  const buildSharedMenuPayload = (menu = {}, { includeService = menuServiceColumnAvailable } = {}) => {
+    const payload = {
+      id: String(menu.id || "").trim(),
+      name: String(menu.name || "").trim() || buildDefaultMenuName(menu.restaurant, menu.service),
+      venue: String(menu.restaurant || "").trim() || null,
+      guest_count: Number((menu.items || []).length || 0),
+      target_gp: 0,
+      is_live: menu.status === "live",
+    };
+
+    if (includeService) {
+      payload.service = String(menu.service || "").trim() || null;
+    }
+
+    return payload;
+  };
 
   const buildSharedMenuLinePayloads = (menu = {}, { includeDescription = menuLineDescriptionColumnAvailable } = {}) => {
     const normalizedItems = (menu.items || []).map((item) => ({
@@ -10919,12 +10957,28 @@ function App() {
         const { normalizedItems } = buildSharedMenuLinePayloads(syncedMenu, {
           includeDescription: menuLineDescriptionColumnAvailable,
         });
-        const menuPayload = buildSharedMenuPayload({
-          ...syncedMenu,
-          items: normalizedItems,
-        });
+        let includeMenuService = menuServiceColumnAvailable;
+        let menuPayload = buildSharedMenuPayload(
+          {
+            ...syncedMenu,
+            items: normalizedItems,
+          },
+          { includeService: includeMenuService }
+        );
 
-        const { error: menuError } = await supabase.from("menus").upsert(menuPayload, { onConflict: "id" });
+        let { error: menuError } = await supabase.from("menus").upsert(menuPayload, { onConflict: "id" });
+        if (menuError && includeMenuService && isMissingMenuServiceColumnError(menuError.message || "")) {
+          setMenuServiceColumnAvailable(false);
+          includeMenuService = false;
+          menuPayload = buildSharedMenuPayload(
+            {
+              ...syncedMenu,
+              items: normalizedItems,
+            },
+            { includeService: includeMenuService }
+          );
+          ({ error: menuError } = await supabase.from("menus").upsert(menuPayload, { onConflict: "id" }));
+        }
         if (menuError) {
           setMenuSharedSyncState((current) => ({
             ...current,
@@ -18646,6 +18700,26 @@ function App() {
     );
   }
 
+  if (supabaseEnabled && authFlowMode === "reset_password") {
+    return (
+      <SharedDataAuthScreen
+        title="Set new password"
+        message="Finish your password reset here, then continue into the shared workspace."
+        mode="reset_password"
+        email={authEmail}
+        password={authResetPassword}
+        confirmPassword={authResetPasswordConfirm}
+        setEmail={setAuthEmail}
+        setPassword={setAuthResetPassword}
+        setConfirmPassword={setAuthResetPasswordConfirm}
+        error={authError}
+        notice={authNotice}
+        onSubmit={completePasswordReset}
+        drinksLink={appSwitcherLinks.drinks}
+      />
+    );
+  }
+
   if (supabaseEnabled && !authUser) {
     return (
       <SharedDataAuthScreen
@@ -18662,26 +18736,6 @@ function App() {
         notice={authNotice}
         onSubmit={authFlowMode === "reset_password" ? completePasswordReset : signInToSharedData}
         onSendResetEmail={sendPasswordResetEmail}
-        drinksLink={appSwitcherLinks.drinks}
-      />
-    );
-  }
-
-  if (supabaseEnabled && authFlowMode === "reset_password") {
-    return (
-      <SharedDataAuthScreen
-        title="Set new password"
-        message="Finish your password reset here, then continue into the shared workspace."
-        mode="reset_password"
-        email={authEmail}
-        password={authResetPassword}
-        confirmPassword={authResetPasswordConfirm}
-        setEmail={setAuthEmail}
-        setPassword={setAuthResetPassword}
-        setConfirmPassword={setAuthResetPasswordConfirm}
-        error={authError}
-        notice={authNotice}
-        onSubmit={completePasswordReset}
         drinksLink={appSwitcherLinks.drinks}
       />
     );
@@ -18929,6 +18983,7 @@ function App() {
                 addUser={addUser}
                 updateUser={updateUser}
                 toggleUserStatus={toggleUserStatus}
+                sendUserPasswordResetEmail={(email) => sendPasswordResetEmail(email, { adminTriggered: true })}
                 userSyncState={userSyncState}
                 userSyncMessage={userSyncMessage}
                 currentUserRole={currentUserRole}
@@ -21164,6 +21219,7 @@ function SettingsPanel({
   addUser,
   updateUser,
   toggleUserStatus,
+  sendUserPasswordResetEmail,
   userSyncState,
   userSyncMessage,
   currentUserRole,
@@ -21625,6 +21681,14 @@ function SettingsPanel({
                     <div className="v2-link-list">
                       <span className="v2-tag">{user.status === "active" ? "Active" : "Inactive"}</span>
                       <span className="v2-tag">{user.isSharedProfile ? "Shared login" : "Local only"}</span>
+                      <button
+                        type="button"
+                        className="v2-secondary-button"
+                        onClick={() => sendUserPasswordResetEmail?.(user.email)}
+                        disabled={currentUserRole !== "Admin" || !user.isSharedProfile || !String(user.email || "").trim()}
+                      >
+                        Send reset email
+                      </button>
                       <button type="button" className="v2-secondary-button" onClick={() => toggleUserStatus(user.id)}>
                         {user.status === "active" ? "Deactivate" : "Reactivate"}
                       </button>

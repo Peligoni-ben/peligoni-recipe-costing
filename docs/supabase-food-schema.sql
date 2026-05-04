@@ -270,12 +270,16 @@ create table if not exists public.menus (
   id text primary key,
   name text not null,
   venue text,
+  service text,
   guest_count integer not null default 0,
   target_gp numeric(12,4) not null default 0,
   is_live boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table if exists public.menus
+  add column if not exists service text;
 
 create table if not exists public.menu_lines (
   id uuid primary key default gen_random_uuid(),
