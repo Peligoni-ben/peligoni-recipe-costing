@@ -25098,6 +25098,8 @@ function MenuEditorCard({
             <div className="v2-stack">
               {(menu.items || []).map((item) => {
                 const recipe = item.recipeId ? maps.recipe.get(item.recipeId) : null;
+                const pricing = recipe ? getRecipePricingMetrics(recipe, maps.ingredient, maps.batch) : null;
+                const effectiveSalePrice = Number(item.price || recipe?.salePrice || 0);
                 return (
                   <div key={item.id} className="v2-line-card">
                     <div className="v2-tag-row">
@@ -25121,6 +25123,17 @@ function MenuEditorCard({
                         <textarea value={item.description || ""} onChange={(event) => updateMenuItemField(menu.id, item.id, "description", event.target.value)} />
                       </label>
                     </div>
+                    {recipe && pricing ? (
+                      <div className="v2-summary-grid v2-summary-grid-pricing-secondary">
+                        <SummaryCard label="Sale price" value={formatCurrency(effectiveSalePrice)} tone="default" />
+                        <SummaryCard label="Dish cost" value={formatCurrency(pricing.recipeCost)} tone="default" />
+                        <SummaryCard
+                          label="GP"
+                          value={formatPercent(pricing.grossProfit)}
+                          tone={pricing.grossProfit >= 75 ? "good" : "review"}
+                        />
+                      </div>
+                    ) : null}
                     <div className="v2-link-list">
                       {recipe ? (
                         <button
