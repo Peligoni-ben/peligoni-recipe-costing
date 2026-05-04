@@ -854,6 +854,7 @@ function buildRestaurantsFromSharedData(baseRestaurants = [], menus = [], recipe
       primaryServices: [],
       secondaryServices: [],
       eventUses: [],
+      archived: false,
     }));
 
   return [...baseRestaurants, ...generatedRestaurants];
@@ -869,6 +870,7 @@ function mapVenueRowToRestaurant(row = {}) {
     primaryServices: dedupeTextList(Array.isArray(row.primary_services) ? row.primary_services : []),
     secondaryServices: dedupeTextList(Array.isArray(row.secondary_services) ? row.secondary_services : []),
     eventUses: dedupeTextList(Array.isArray(row.event_uses) ? row.event_uses : []),
+    archived: Boolean(row.is_archived),
   };
 }
 
@@ -888,6 +890,7 @@ function mergeRestaurantCollections(baseRestaurants = [], additionalRestaurants 
       primaryServices: dedupeTextList(restaurant?.primaryServices || []),
       secondaryServices: dedupeTextList(restaurant?.secondaryServices || []),
       eventUses: dedupeTextList(restaurant?.eventUses || []),
+      archived: Boolean(restaurant?.archived),
     });
   });
 
@@ -10763,7 +10766,7 @@ function App() {
     const normalized = String(message || "").toLowerCase();
     return (
       normalized.includes("venues") &&
-      ["venue_type", "service_pattern", "primary_services", "secondary_services", "event_uses"].some((column) =>
+      ["venue_type", "service_pattern", "primary_services", "secondary_services", "event_uses", "is_archived"].some((column) =>
         normalized.includes(column)
       )
     );
@@ -10892,87 +10895,108 @@ function App() {
   const syncMenuToSharedData = async (menu) => {
     if (!supabaseEnabled || !supabase || !menu?.id) return true;
 
-    setMenuSharedSyncState((current) => ({
-      ...current,
-      [menu.id]: "syncing",
-    }));
+    const syncKey = `menu:${String(menu.id || "").trim()}`;
+    clearScheduledRecordSync("menu", menu.id);
 
-    const syncSignature = getMenuSyncSignature(menu);
-    const executeMenuLineInsert = async (includeDescription = menuLineDescriptionColumnAvailable) => {
-      const { payload } = buildSharedMenuLinePayloads(menu, { includeDescription });
-      if (!payload.length) return { error: null };
-      return supabase.from("menu_lines").insert(payload);
-    };
-    const { normalizedItems } = buildSharedMenuLinePayloads(menu, { includeDescription: menuLineDescriptionColumnAvailable });
-    const menuPayload = buildSharedMenuPayload({
-      ...menu,
-      items: normalizedItems,
-    });
+    const previousSync = recordSyncQueueRef.current.get(syncKey) || Promise.resolve(true);
+    const nextSync = previousSync
+      .catch(() => true)
+      .then(async () => {
+        const syncedMenu = menusRef.current.find((item) => item.id === menu.id) || menu;
+        if (!syncedMenu?.id) return true;
 
-    const { error: menuError } = await supabase.from("menus").upsert(menuPayload, { onConflict: "id" });
-    if (menuError) {
-      setMenuSharedSyncState((current) => ({
-        ...current,
-        [menu.id]: menuError.message || "error",
-      }));
-      if (typeof window !== "undefined") {
-        window.alert(menuError.message || `Could not save menu "${menu.name}".`);
-      }
-      return false;
-    }
-
-    const { error: deleteLineError } = await supabase.from("menu_lines").delete().eq("menu_id", menu.id);
-    if (deleteLineError) {
-      setMenuSharedSyncState((current) => ({
-        ...current,
-        [menu.id]: deleteLineError.message || "error",
-      }));
-      if (typeof window !== "undefined") {
-        window.alert(deleteLineError.message || `Could not refresh menu lines for "${menu.name}".`);
-      }
-      return false;
-    }
-
-    if (normalizedItems.length) {
-      let { error: insertLineError } = await executeMenuLineInsert();
-      if (
-        insertLineError &&
-        menuLineDescriptionColumnAvailable &&
-        isMissingMenuLineDescriptionColumnError(insertLineError.message || "")
-      ) {
-        setMenuLineDescriptionColumnAvailable(false);
-        ({ error: insertLineError } = await executeMenuLineInsert(false));
-      }
-      if (insertLineError) {
         setMenuSharedSyncState((current) => ({
           ...current,
-          [menu.id]: insertLineError.message || "error",
+          [syncedMenu.id]: "syncing",
         }));
-        if (typeof window !== "undefined") {
-          window.alert(insertLineError.message || `Could not save dishes for "${menu.name}".`);
-        }
-        return false;
-      }
-    }
 
-    setMenus((current) =>
-      current.map((item) => {
-        if (item.id !== menu.id) return item;
-        if (getMenuSyncSignature(item) !== syncSignature) return item;
-        return syncMenuRecord({
-          ...item,
-          items: normalizedItems,
-          sharedDirty: false,
+        const syncSignature = getMenuSyncSignature(syncedMenu);
+        const executeMenuLineInsert = async (includeDescription = menuLineDescriptionColumnAvailable) => {
+          const { payload } = buildSharedMenuLinePayloads(syncedMenu, { includeDescription });
+          if (!payload.length) return { error: null };
+          return supabase.from("menu_lines").insert(payload);
+        };
+        const { normalizedItems } = buildSharedMenuLinePayloads(syncedMenu, {
+          includeDescription: menuLineDescriptionColumnAvailable,
         });
-      })
-    );
+        const menuPayload = buildSharedMenuPayload({
+          ...syncedMenu,
+          items: normalizedItems,
+        });
 
-    setMenuSharedSyncState((current) => ({
-      ...current,
-      [menu.id]: "saved",
-    }));
+        const { error: menuError } = await supabase.from("menus").upsert(menuPayload, { onConflict: "id" });
+        if (menuError) {
+          setMenuSharedSyncState((current) => ({
+            ...current,
+            [syncedMenu.id]: menuError.message || "error",
+          }));
+          if (typeof window !== "undefined") {
+            window.alert(menuError.message || `Could not save menu "${syncedMenu.name}".`);
+          }
+          return false;
+        }
 
-    return true;
+        const { error: deleteLineError } = await supabase.from("menu_lines").delete().eq("menu_id", syncedMenu.id);
+        if (deleteLineError) {
+          setMenuSharedSyncState((current) => ({
+            ...current,
+            [syncedMenu.id]: deleteLineError.message || "error",
+          }));
+          if (typeof window !== "undefined") {
+            window.alert(deleteLineError.message || `Could not refresh menu lines for "${syncedMenu.name}".`);
+          }
+          return false;
+        }
+
+        if (normalizedItems.length) {
+          let { error: insertLineError } = await executeMenuLineInsert();
+          if (
+            insertLineError &&
+            menuLineDescriptionColumnAvailable &&
+            isMissingMenuLineDescriptionColumnError(insertLineError.message || "")
+          ) {
+            setMenuLineDescriptionColumnAvailable(false);
+            ({ error: insertLineError } = await executeMenuLineInsert(false));
+          }
+          if (insertLineError) {
+            setMenuSharedSyncState((current) => ({
+              ...current,
+              [syncedMenu.id]: insertLineError.message || "error",
+            }));
+            if (typeof window !== "undefined") {
+              window.alert(insertLineError.message || `Could not save dishes for "${syncedMenu.name}".`);
+            }
+            return false;
+          }
+        }
+
+        setMenus((current) =>
+          current.map((item) => {
+            if (item.id !== syncedMenu.id) return item;
+            if (getMenuSyncSignature(item) !== syncSignature) return item;
+            return syncMenuRecord({
+              ...item,
+              items: normalizedItems,
+              sharedDirty: false,
+            });
+          })
+        );
+
+        setMenuSharedSyncState((current) => ({
+          ...current,
+          [syncedMenu.id]: "saved",
+        }));
+
+        return true;
+      });
+
+    const trackedSync = nextSync.finally(() => {
+      if (recordSyncQueueRef.current.get(syncKey) === trackedSync) {
+        recordSyncQueueRef.current.delete(syncKey);
+      }
+    });
+    recordSyncQueueRef.current.set(syncKey, trackedSync);
+    return trackedSync;
   };
 
   const buildSharedVenuePayload = (restaurant = {}, { includeExtended = venueExtendedColumnsAvailable } = {}) => {
@@ -10986,6 +11010,7 @@ function App() {
       payload.primary_services = dedupeTextList(restaurant.primaryServices || []);
       payload.secondary_services = dedupeTextList(restaurant.secondaryServices || []);
       payload.event_uses = dedupeTextList(restaurant.eventUses || []);
+      payload.is_archived = Boolean(restaurant.archived);
     }
 
     return payload;
@@ -11896,6 +11921,10 @@ function App() {
 
     const timeoutId = window.setTimeout(async () => {
       scheduledRecordSyncTimeoutsRef.current.delete(syncKey);
+      if (recordType === "menu") {
+        await saveMenuToSharedData(recordId, { quiet: true });
+        return;
+      }
       if (recordType === "batch") {
         await saveBatchToSharedData(recordId, { quiet: true, source: `scheduled:${recordType}` });
         return;
@@ -11910,6 +11939,9 @@ function App() {
     if (!supabaseEnabled || !supabase || !String(recordId || "").trim()) return false;
     clearScheduledRecordSync(recordType, recordId);
     await waitForNextBrowserFrame();
+    if (recordType === "menu") {
+      return saveMenuToSharedData(recordId, { quiet: true });
+    }
     if (recordType === "batch") {
       return saveBatchToSharedData(recordId, { quiet: true, source: `flush:${recordType}` });
     }
@@ -15511,6 +15543,12 @@ function App() {
   const openMenuMaker = (restaurantId, initialService = "") => {
     const restaurant = restaurants.find((item) => item.id === restaurantId);
     if (!restaurant) return;
+    if (restaurant.archived) {
+      if (typeof window !== "undefined") {
+        window.alert("Archived restaurants cannot be used for new menus. Restore the restaurant in Settings first.");
+      }
+      return;
+    }
     setMenuMakerModal({
       isOpen: true,
       restaurantId,
@@ -15570,6 +15608,53 @@ function App() {
       primaryServices: dedupeTextList(draft.primaryServices || []),
       secondaryServices: dedupeTextList(draft.secondaryServices || []),
       eventUses: dedupeTextList(draft.eventUses || []),
+      archived: false,
+    };
+
+    if (supabaseEnabled && supabase && authUser) {
+      const synced = await syncRestaurantToSharedData(nextRestaurant);
+      return Boolean(synced?.ok);
+    }
+
+    setCustomRestaurants((current) => mergeRestaurantCollections(current, [nextRestaurant]));
+    setRestaurants((current) => mergeRestaurantCollections(current, [nextRestaurant]));
+    return true;
+  };
+
+  const archiveRestaurant = async (restaurantId) => {
+    const restaurant = restaurants.find((item) => item.id === restaurantId);
+    if (!restaurant || restaurant.archived) return false;
+
+    const linkedMenuCount = (relationshipMaps?.restaurantMenus?.get(restaurant.id) || []).length;
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(
+        `Archive "${restaurant.name}"?\n\n${linkedMenuCount ? `It currently has ${linkedMenuCount} menu${linkedMenuCount === 1 ? "" : "s"} linked. ` : ""}Archived restaurants stay visible in Settings and existing menus, but they drop out of active menu creation.`
+      );
+      if (!confirmed) return false;
+    }
+
+    const nextRestaurant = {
+      ...restaurant,
+      archived: true,
+    };
+
+    if (supabaseEnabled && supabase && authUser) {
+      const synced = await syncRestaurantToSharedData(nextRestaurant);
+      return Boolean(synced?.ok);
+    }
+
+    setCustomRestaurants((current) => mergeRestaurantCollections(current, [nextRestaurant]));
+    setRestaurants((current) => mergeRestaurantCollections(current, [nextRestaurant]));
+    return true;
+  };
+
+  const restoreRestaurant = async (restaurantId) => {
+    const restaurant = restaurants.find((item) => item.id === restaurantId);
+    if (!restaurant || !restaurant.archived) return false;
+
+    const nextRestaurant = {
+      ...restaurant,
+      archived: false,
     };
 
     if (supabaseEnabled && supabase && authUser) {
@@ -15594,17 +15679,27 @@ function App() {
     closeMenuMaker();
   };
 
-  const updateMenu = (menuId, updater) => {
-    setMenus((current) =>
-      current.map((menu) =>
-        menu.id === menuId
-          ? syncMenuRecord({
-              ...updater(menu),
-              sharedDirty: true,
-            })
-          : menu
-      )
-    );
+  const updateMenu = (menuId, updater, options = {}) => {
+    const { scheduleSync = true, delayMs = 650 } = options;
+    const currentMenu = (menusRef.current || []).find((menu) => menu.id === menuId);
+    if (!currentMenu) return null;
+
+    const nextMenu = syncMenuRecord({
+      ...updater(currentMenu),
+      sharedDirty: true,
+    });
+
+    const nextMenus = (menusRef.current || []).map((menu) => (menu.id === menuId ? nextMenu : menu));
+    menusRef.current = nextMenus;
+    setMenus(nextMenus);
+    setMenuSharedSyncState((current) => ({
+      ...current,
+      [String(menuId)]: "",
+    }));
+    if (nextMenu?.id && scheduleSync) {
+      scheduleSharedRecordSync("menu", nextMenu.id, delayMs);
+    }
+    return nextMenu;
   };
 
   const updateMenuField = (menuId, field, value) => {
@@ -18135,6 +18230,7 @@ function App() {
   });
 
   const menuRows = restaurants.filter((item) => {
+    if (item.archived) return false;
     const query = trimmedSearchQuery;
     if (!query) return true;
     const restaurantMenuNames = (relationshipMaps?.restaurantMenus?.get(item.id) || [])
@@ -18821,6 +18917,8 @@ function App() {
               <SettingsPanel
                 restaurants={restaurants}
                 addRestaurant={addRestaurant}
+                archiveRestaurant={archiveRestaurant}
+                restoreRestaurant={restoreRestaurant}
                 learningRules={learningRules}
                 exportLearningRules={exportLearningRules}
                 learningRulesSyncState={learningRulesSyncState}
@@ -21054,6 +21152,8 @@ function ExportDetail({
 function SettingsPanel({
   restaurants,
   addRestaurant,
+  archiveRestaurant,
+  restoreRestaurant,
   learningRules,
   exportLearningRules,
   learningRulesSyncState,
@@ -21102,7 +21202,9 @@ function SettingsPanel({
   const [ruleDrafts, setRuleDrafts] = useState({});
   const activeUserCount = users.filter((user) => user.status === "active").length;
   const adminUserCount = users.filter((user) => user.role === "Admin").length;
-  const restaurantCount = restaurants.length;
+  const activeRestaurants = restaurants.filter((restaurant) => !restaurant.archived);
+  const archivedRestaurants = restaurants.filter((restaurant) => restaurant.archived);
+  const restaurantCount = activeRestaurants.length;
   const reviewedLearningRules = (learningRules || []).map((rule) => ({
     ...rule,
     risk: getLearningRuleRisk(rule),
@@ -21218,14 +21320,15 @@ function SettingsPanel({
           <>
             <div className="v2-summary-grid v2-summary-grid-library">
               <SummaryCard label="Restaurants" value={String(restaurantCount)} tone="default" />
+              <SummaryCard label="Archived" value={String(archivedRestaurants.length)} tone="warn" />
               <SummaryCard
                 label="Primary services"
-                value={String(restaurants.reduce((count, restaurant) => count + (restaurant.primaryServices || []).length, 0))}
+                value={String(activeRestaurants.reduce((count, restaurant) => count + (restaurant.primaryServices || []).length, 0))}
                 tone="good"
               />
               <SummaryCard
                 label="Event uses"
-                value={String(restaurants.reduce((count, restaurant) => count + (restaurant.eventUses || []).length, 0))}
+                value={String(activeRestaurants.reduce((count, restaurant) => count + (restaurant.eventUses || []).length, 0))}
                 tone="warn"
               />
             </div>
@@ -21288,7 +21391,7 @@ function SettingsPanel({
             <div className="v2-info-card">
               <strong>Current restaurants</strong>
               <div className="v2-rule-list">
-                {restaurants.map((restaurant) => (
+                {activeRestaurants.map((restaurant) => (
                   <div key={restaurant.id} className="v2-rule-card">
                     <div>
                       <strong>{restaurant.name}</strong>
@@ -21311,10 +21414,49 @@ function SettingsPanel({
                         </span>
                       ))}
                     </div>
+                    <div className="v2-link-list">
+                      <button type="button" className="v2-secondary-button" onClick={() => archiveRestaurant?.(restaurant.id)}>
+                        Archive restaurant
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
+            {archivedRestaurants.length ? (
+              <div className="v2-info-card">
+                <strong>Archived restaurants</strong>
+                <span>These stay recoverable here, but they no longer appear in active menu creation or restaurant browsing.</span>
+                <div className="v2-rule-list">
+                  {archivedRestaurants.map((restaurant) => (
+                    <div key={restaurant.id} className="v2-rule-card">
+                      <div>
+                        <strong>{restaurant.name}</strong>
+                        <span>{restaurant.venueType}</span>
+                      </div>
+                      <div className="v2-tag-row">
+                        <span className="v2-tag">Archived</span>
+                        {(restaurant.primaryServices || []).map((service) => (
+                          <span key={`${restaurant.id}-archived-primary-${service}`} className="v2-tag">
+                            Primary: {service}
+                          </span>
+                        ))}
+                        {(restaurant.secondaryServices || []).map((service) => (
+                          <span key={`${restaurant.id}-archived-secondary-${service}`} className="v2-tag">
+                            Also: {service}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="v2-link-list">
+                        <button type="button" className="v2-secondary-button" onClick={() => restoreRestaurant?.(restaurant.id)}>
+                          Restore restaurant
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <div className="v2-info-card">
               <strong>Categories and types</strong>
               <span>Keep shared pick-lists consistent so recipes and components classify cleanly across the app.</span>
@@ -25687,7 +25829,12 @@ function RecordDetail({
 
     return (
       <>
-        <DetailHeader title={record.name} subtitle={record.venueType} status="ready" statusLabel="profile" />
+        <DetailHeader
+          title={record.name}
+          subtitle={record.venueType}
+          status={record.archived ? "archived" : "ready"}
+          statusLabel={record.archived ? "archived" : "profile"}
+        />
         <div className="v2-detail-grid">
           <DetailStat label="Primary services" value={String((record.primaryServices || []).length)} />
           <DetailStat label="Secondary services" value={String((record.secondaryServices || []).length)} />
@@ -25714,19 +25861,27 @@ function RecordDetail({
           </div>
         </DetailSection>
         <DetailSection title="Services and menus">
+          {record.archived ? (
+            <div className="v2-inline-callout warn">
+              <strong>Restaurant archived</strong>
+              <span>This venue stays on historic menus, but it is out of active menu creation until restored from Settings.</span>
+            </div>
+          ) : null}
           {serviceGroups.length ? (
             <div className="v2-stack">
               {serviceGroups.map((group) => (
                 <div key={group.service} className="v2-line-card">
                   <div className="v2-link-list">
                     <strong>{group.service}</strong>
-                    <button
-                      type="button"
-                      className="v2-secondary-button"
-                      onClick={() => createMenuForRestaurant(record.id, group.service)}
-                    >
-                      Add menu
-                    </button>
+                    {!record.archived ? (
+                      <button
+                        type="button"
+                        className="v2-secondary-button"
+                        onClick={() => createMenuForRestaurant(record.id, group.service)}
+                      >
+                        Add menu
+                      </button>
+                    ) : null}
                   </div>
                   {group.menus.length ? (
                     <div className="v2-link-list">
@@ -25750,11 +25905,13 @@ function RecordDetail({
           ) : (
             <div className="v2-micro-note">No services defined for this restaurant yet.</div>
           )}
-          <div className="v2-link-list">
-            <button type="button" className="v2-primary-button" onClick={() => createMenuForRestaurant(record.id)}>
-              Add menu
-            </button>
-          </div>
+          {!record.archived ? (
+            <div className="v2-link-list">
+              <button type="button" className="v2-primary-button" onClick={() => createMenuForRestaurant(record.id)}>
+                Add menu
+              </button>
+            </div>
+          ) : null}
         </DetailSection>
       </>
     );

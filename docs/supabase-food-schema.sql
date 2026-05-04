@@ -6,6 +6,7 @@ create table if not exists public.venues (
   primary_services jsonb not null default '[]'::jsonb,
   secondary_services jsonb not null default '[]'::jsonb,
   event_uses jsonb not null default '[]'::jsonb,
+  is_archived boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -15,7 +16,8 @@ alter table if exists public.venues
   add column if not exists service_pattern text,
   add column if not exists primary_services jsonb not null default '[]'::jsonb,
   add column if not exists secondary_services jsonb not null default '[]'::jsonb,
-  add column if not exists event_uses jsonb not null default '[]'::jsonb;
+  add column if not exists event_uses jsonb not null default '[]'::jsonb,
+  add column if not exists is_archived boolean not null default false;
 
 create table if not exists public.ingredients (
   id uuid primary key default gen_random_uuid(),
